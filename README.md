@@ -25,6 +25,8 @@ The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
 
 ## Use
 
+See [INSTALL.md](INSTALL.md) for simple phone and laptop setup steps.
+
 1. Install the APK on Android 15 or later and grant nearby Wi-Fi and media permissions.
 2. Tap **Start local share**. The app creates a local-only hotspot, which has no internet connection.
 3. Connect the laptop to the SSID and password shown in the app.
