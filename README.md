@@ -18,8 +18,7 @@ Remote control is out of scope for the first release. Android will show its syst
 Use Android SDK Platform 35, Build Tools 35.0.0, Gradle 9.1.0, and JDK 25. Then run:
 
 ```powershell
-.
-\gradlew.bat assembleDebug
+.\gradlew.bat assembleDebug
 ```
 
 The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`.

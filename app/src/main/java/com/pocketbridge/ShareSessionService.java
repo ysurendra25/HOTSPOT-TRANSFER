@@ -51,7 +51,8 @@ public final class ShareSessionService extends Service {
             return START_NOT_STICKY;
         }
         if (ACTION_QUERY.equals(action)) {
-            publish("Local share is active", currentSsid, currentPassword, currentUrl);
+            String status = reservation != null ? "Local share is active" : starting ? "Starting a local-only hotspot…" : "No share is active. Tap Start local share when ready.";
+            publish(status, currentSsid, currentPassword, currentUrl);
             return START_NOT_STICKY;
         }
         if (ACTION_START.equals(action) && reservation == null && !starting) startSession();
