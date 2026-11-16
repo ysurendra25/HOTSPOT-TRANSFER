@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <title>PocketBridge · Local share</title>
+  <style>
+    :root{--ink:#192d3a;--muted:#71818a;--teal:#0e8469;--teal-dark:#096f59;--line:#e7edef;--surface:#fff;--bg:#f4f7f7;--soft:#e8f3f0;--shadow:0 12px 32px rgba(28,52,65,.06)}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}button,input{font:inherit}button{cursor:pointer}
+    .shell{max-width:1120px;margin:auto;padding:0 28px 48px}.topbar{height:78px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line)}
+    .brand{display:flex;align-items:center;gap:11px;font-weight:750;letter-spacing:-.02em;font-size:18px}.mark{width:32px;height:32px;border-radius:11px;background:var(--teal);display:grid;place-items:center;color:#fff;font-size:17px;box-shadow:0 6px 16px rgba(14,132,105,.2)}
+    .local-pill{border:1px solid #cde7df;background:#f0faf6;color:var(--teal-dark);border-radius:99px;padding:7px 12px;font-size:12px;font-weight:700;display:flex;align-items:center;gap:7px}.dot{width:7px;height:7px;border-radius:50%;background:#25a57f;box-shadow:0 0 0 3px #d9f1e8}
+    .hero{padding:34px 0 25px;display:flex;justify-content:space-between;gap:26px;align-items:end}.eyebrow{text-transform:uppercase;font-size:11px;letter-spacing:.14em;font-weight:800;color:var(--teal)}h1{font-size:34px;line-height:1.12;letter-spacing:-.04em;margin:8px 0 9px}.sub{margin:0;color:var(--muted);max-width:590px}.device{font-size:12px;color:var(--muted);white-space:nowrap;padding:9px 12px;border:1px solid var(--line);border-radius:12px;background:white}
+    .screen-card{background:linear-gradient(110deg,#153c43,#145a53 62%,#147765);border-radius:20px;color:white;padding:22px 24px;display:flex;justify-content:space-between;align-items:center;gap:20px;box-shadow:var(--shadow);margin-bottom:24px}.screen-copy{display:flex;align-items:center;gap:15px}.screen-icon{width:44px;height:44px;border-radius:14px;background:rgba(255,255,255,.13);display:grid;place-items:center;font-size:21px}.screen-title{font-size:16px;font-weight:750}.screen-desc{font-size:13px;color:#cde3de;margin-top:2px}.btn{border:0;border-radius:11px;padding:11px 16px;font-weight:750;transition:.15s}.btn:hover{transform:translateY(-1px)}.btn-white{background:white;color:#145a53}.btn-dark{background:var(--ink);color:white}.btn-soft{background:var(--soft);color:var(--teal-dark)}.btn-outline{background:white;border:1px solid var(--line);color:var(--ink)}
+    .screen-view{display:none;margin:-8px 0 24px;background:#0f1b22;border-radius:18px;overflow:hidden}.screen-view.active{display:block}.screen-toolbar{padding:11px 15px;color:white;display:flex;justify-content:space-between;align-items:center}.screen-toolbar span{font-size:13px}.screen-view video{display:block;width:100%;max-height:72vh;background:#000;object-fit:contain}
+    .library-head{display:flex;justify-content:space-between;gap:18px;align-items:center;margin:22px 0 16px}.section-title{font-size:20px;font-weight:800;letter-spacing:-.03em}.count{font-size:13px;color:var(--muted);margin-left:9px;font-weight:500}.search{width:min(280px,40vw);padding:10px 13px;border:1px solid var(--line);border-radius:11px;background:white;outline:none}.search:focus{border-color:#8ecab9;box-shadow:0 0 0 3px #e0f2ed}
+    .filters{display:flex;gap:8px;margin-bottom:17px;overflow-x:auto}.filter{border:1px solid var(--line);background:#fff;border-radius:99px;padding:8px 14px;color:var(--muted);font-weight:700;font-size:13px;white-space:nowrap}.filter.active{background:var(--ink);border-color:var(--ink);color:#fff}
+    .grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px}.card{border:1px solid var(--line);background:var(--surface);border-radius:15px;overflow:hidden;box-shadow:0 4px 14px rgba(23,49,60,.025);min-width:0}.thumb{width:100%;aspect-ratio:1.35;background:#e9eff0;display:grid;place-items:center;position:relative;overflow:hidden;color:#789}.thumb img{width:100%;height:100%;object-fit:cover}.thumb .file-icon{font-size:35px}.thumb .play{position:absolute;width:39px;height:39px;border-radius:50%;background:rgba(18,37,46,.82);color:white;display:grid;place-items:center;font-size:15px;left:50%;top:50%;transform:translate(-50%,-50%);padding-left:2px}.meta{padding:12px 12px 11px}.name{font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.submeta{color:var(--muted);font-size:11px;margin-top:4px}.actions{display:flex;gap:7px;margin-top:10px}.actions .btn{font-size:11px;padding:7px 9px;border-radius:8px}
+    .empty{grid-column:1/-1;text-align:center;border:1px dashed #d4dfe1;background:rgba(255,255,255,.65);border-radius:16px;padding:42px 18px;color:var(--muted)}.empty strong{display:block;color:var(--ink);font-size:15px;margin-bottom:5px}.loading{grid-column:1/-1;text-align:center;color:var(--muted);padding:36px}
+    .foot{padding:28px 0 0;text-align:center;color:#8a989f;font-size:12px}.modal{display:none;position:fixed;inset:0;background:rgba(9,22,30,.78);z-index:4;align-items:center;justify-content:center;padding:28px}.modal.open{display:flex}.modal-box{max-width:min(980px,95vw);width:100%;background:#fff;border-radius:16px;overflow:hidden}.modal-top{display:flex;justify-content:space-between;align-items:center;padding:11px 15px}.modal-top button{background:#eef3f3;border:0;border-radius:8px;padding:7px 10px}.modal video,.modal img{width:100%;max-height:80vh;background:#111;display:block;object-fit:contain}
+    @media(max-width:850px){.grid{grid-template-columns:repeat(3,minmax(0,1fr))}.hero{align-items:start;flex-direction:column;gap:14px}}
+    @media(max-width:600px){.shell{padding:0 15px 34px}.topbar{height:64px}.hero{padding:26px 0 20px}h1{font-size:29px}.screen-card{padding:17px;align-items:flex-start;flex-direction:column}.screen-card>.btn{width:100%}.library-head{align-items:flex-start;flex-direction:column}.search{width:100%}.grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.meta{padding:10px}.device{white-space:normal}}
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar"><div class="brand"><div class="mark">↗</div><span>PocketBridge</span></div><div class="local-pill"><i class="dot"></i> LOCAL &amp; PRIVATE</div></header>
+    <section class="hero"><div><div class="eyebrow">Your phone · your network</div><h1>Everything you want to share,<br>right here.</h1><p class="sub">Browse and play your phone’s photos, videos, and audio. Download the originals straight to this laptop.</p></div><div class="device">No internet connection needed</div></section>
+    <section class="screen-card"><div class="screen-copy"><div class="screen-icon">▣</div><div><div class="screen-title">Live phone screen</div><div class="screen-desc" id="screenHint">Approve screen capture in PocketBridge on your phone to begin.</div></div></div><button class="btn btn-white" id="watchButton" type="button">Watch screen</button></section>
+    <section class="screen-view" id="screenView"><div class="screen-toolbar"><span id="screenState">Connecting to phone…</span><button class="btn btn-outline" id="stopWatch" type="button">Stop viewing</button></div><video id="screenVideo" autoplay playsinline controls></video></section>
+    <section class="library-head"><div><span class="section-title">Your library</span><span class="count" id="count">Loading…</span></div><input class="search" id="search" placeholder="Search your files" autocomplete="off"></section>
+    <nav class="filters" aria-label="Media type"><button class="filter active" data-kind="all">All files</button><button class="filter" data-kind="images">Photos</button><button class="filter" data-kind="videos">Videos</button><button class="filter" data-kind="audio">Audio</button></nav>
+    <section class="grid" id="grid"><div class="loading">Finding media on your phone…</div></section>
+    <footer class="foot">Shared directly over your phone’s local hotspot · PocketBridge open source</footer>
+  </main>
+  <div class="modal" id="modal" role="dialog" aria-modal="true"><div class="modal-box"><div class="modal-top"><strong id="modalName"></strong><button id="closeModal" type="button">Close</button></div><div id="modalMedia"></div></div></div>
+  <script>
+    const TOKEN = "__POCKETBRIDGE_TOKEN__";
+    const grid = document.getElementById('grid');
+    const count = document.getElementById('count');
+    const search = document.getElementById('search');
+    const modal = document.getElementById('modal');
+    let currentKind = 'all';
+    let files = [];
+    let peer = null;
+    const endpoint = (path) => `${path}${path.includes('?') ? '&' : '?'}token=${encodeURIComponent(TOKEN)}`;
+    const formatSize = (bytes) => { if (!bytes) return '0 B'; const units=['B','KB','MB','GB']; let n=bytes,i=0; while(n>=1024&&i<units.length-1){n/=1024;i++} return `${n.toFixed(i?1:0)} ${units[i]}` };
+    const safe = (text) => String(text ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    async function loadFiles() {
+      grid.innerHTML = '<div class="loading">Loading your library…</div>';
+      try {
+        const response = await fetch(endpoint(`/api/files?kind=${encodeURIComponent(currentKind)}`), {cache:'no-store'});
+        if (!response.ok) throw new Error('The share link expired. Reopen the link shown in PocketBridge.');
+        const data = await response.json(); files = data.files || []; renderFiles();
+      } catch (error) {
+        count.textContent = '';
+        grid.innerHTML = `<div class="empty"><strong>Could not load files</strong>${safe(error.message || 'Check that your phone is still sharing.')}</div>`;
+      }
+    }
+    function renderFiles() {
+      const term = search.value.trim().toLowerCase();
+      const shown = files.filter(file => (file.name || '').toLowerCase().includes(term));
+      count.textContent = `${shown.length} item${shown.length === 1 ? '' : 's'}`;
+      if (!shown.length) { grid.innerHTML = '<div class="empty"><strong>No files found</strong>Try another filter or search term.</div>'; return; }
+      grid.innerHTML = shown.map(file => {
+        const url = endpoint(file.url);
+        let visual = '<div class="file-icon">♫</div>';
+        if (file.kind === 'image') visual = `<img loading="lazy" src="${safe(url)}" alt="${safe(file.name)}">`;
+        if (file.kind === 'video') visual = `<div class="file-icon">▶</div><div class="play">▶</div>`;
+        const preview = file.kind === 'image' || file.kind === 'video' ? `<button class="btn btn-soft" data-action="preview" data-id="${safe(file.id)}">Preview</button>` : '';
+        return `<article class="card"><div class="thumb" data-action="preview" data-id="${safe(file.id)}">${visual}</div><div class="meta"><div class="name" title="${safe(file.name)}">${safe(file.name)}</div><div class="submeta">${formatSize(file.size)} · ${file.kind}</div><div class="actions">${preview}<a class="btn btn-outline" href="${safe(endpoint(file.url))}" download="${safe(file.name)}">Download</a></div></div></article>`;
+      }).join('');
+      grid.querySelectorAll('[data-action="preview"]').forEach(button => button.addEventListener('click', () => previewFile(button.dataset.id)));
+    }
+    function previewFile(id) {
+      const file = files.find(item => item.id === id); if (!file) return;
+      document.getElementById('modalName').textContent = file.name;
+      const url = endpoint(file.url);
+      document.getElementById('modalMedia').innerHTML = file.kind === 'video' ? `<video src="${safe(url)}" controls autoplay playsinline></video>` : `<img src="${safe(url)}" alt="${safe(file.name)}">`;
+      modal.classList.add('open');
+    }
+    document.querySelectorAll('.filter').forEach(button => button.addEventListener('click', () => {
+      document.querySelector('.filter.active')?.classList.remove('active'); button.classList.add('active'); currentKind=button.dataset.kind; loadFiles();
+    }));
+    search.addEventListener('input', renderFiles);
+    document.getElementById('closeModal').addEventListener('click', () => { modal.classList.remove('open'); document.getElementById('modalMedia').innerHTML=''; });
+    modal.addEventListener('click', event => { if (event.target === modal) { modal.classList.remove('open'); document.getElementById('modalMedia').innerHTML=''; } });
+    async function waitForIce(pc) {
+      if (pc.iceGatheringState === 'complete') return;
+      await new Promise(resolve => {
+        const timer = setTimeout(resolve, 9000);
+        pc.addEventListener('icegatheringstatechange', () => { if (pc.iceGatheringState === 'complete') { clearTimeout(timer); resolve(); } });
+      });
+    }
+    async function watchScreen() {
+      const screenView=document.getElementById('screenView'); const state=document.getElementById('screenState');
+      screenView.classList.add('active'); state.textContent='Connecting to the phone over the local hotspot…';
+      try {
+        const statusResponse=await fetch(endpoint('/api/screen/status')); const status=await statusResponse.json();
+        if (!status.ready) throw new Error('First tap “Share phone screen” in PocketBridge and approve Android’s prompt.');
+        peer=new RTCPeerConnection({iceServers:[]});
+        peer.addTransceiver('video',{direction:'recvonly'});
+        peer.ontrack=(event)=>{document.getElementById('screenVideo').srcObject=event.streams[0];state.textContent='Live · phone screen is shared peer-to-peer';document.getElementById('screenHint').textContent='Your phone screen is streaming locally.'};
+        peer.onconnectionstatechange=()=>{if(peer&&['failed','disconnected','closed'].includes(peer.connectionState))state.textContent='Connection ended. Reconnect from this page.'};
+        const offer=await peer.createOffer(); await peer.setLocalDescription(offer); await waitForIce(peer);
+        const response=await fetch(endpoint('/api/screen/offer'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sdp:peer.localDescription.sdp})});
+        const answer=await response.json(); if(!response.ok) throw new Error(answer.error||'Could not connect to the phone.');
+        await peer.setRemoteDescription({type:answer.type,sdp:answer.sdp});
+      } catch(error) { state.textContent=error.message||'Screen share failed.'; }
+    }
+    function stopWatching() {
+      if(peer){try{peer.close()}catch{} peer=null}
+      document.getElementById('screenVideo').srcObject=null;
+      document.getElementById('screenView').classList.remove('active');
+      fetch(endpoint('/api/screen/stop'),{method:'POST'}).catch(()=>{});
+      document.getElementById('screenHint').textContent='Approve screen capture in PocketBridge on your phone to begin.';
+    }
+    document.getElementById('watchButton').addEventListener('click',watchScreen);
+    document.getElementById('stopWatch').addEventListener('click',stopWatching);
+    loadFiles();
+  </script>
+</body>
+</html>
