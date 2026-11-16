@@ -1,137 +1,561 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="color-scheme" content="light">
-  <title>PocketBridge · Local share</title>
-  <style>
-    :root{--ink:#192d3a;--muted:#71818a;--teal:#0e8469;--teal-dark:#096f59;--line:#e7edef;--surface:#fff;--bg:#f4f7f7;--soft:#e8f3f0;--shadow:0 12px 32px rgba(28,52,65,.06)}
-    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}button,input{font:inherit}button{cursor:pointer}
-    .shell{max-width:1120px;margin:auto;padding:0 28px 48px}.topbar{height:78px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line)}
-    .brand{display:flex;align-items:center;gap:11px;font-weight:750;letter-spacing:-.02em;font-size:18px}.mark{width:32px;height:32px;border-radius:11px;background:var(--teal);display:grid;place-items:center;color:#fff;font-size:17px;box-shadow:0 6px 16px rgba(14,132,105,.2)}
-    .local-pill{border:1px solid #cde7df;background:#f0faf6;color:var(--teal-dark);border-radius:99px;padding:7px 12px;font-size:12px;font-weight:700;display:flex;align-items:center;gap:7px}.dot{width:7px;height:7px;border-radius:50%;background:#25a57f;box-shadow:0 0 0 3px #d9f1e8}
-    .hero{padding:34px 0 25px;display:flex;justify-content:space-between;gap:26px;align-items:end}.eyebrow{text-transform:uppercase;font-size:11px;letter-spacing:.14em;font-weight:800;color:var(--teal)}h1{font-size:34px;line-height:1.12;letter-spacing:-.04em;margin:8px 0 9px}.sub{margin:0;color:var(--muted);max-width:590px}.device{font-size:12px;color:var(--muted);white-space:nowrap;padding:9px 12px;border:1px solid var(--line);border-radius:12px;background:white}
-    .screen-card{background:linear-gradient(110deg,#153c43,#145a53 62%,#147765);border-radius:20px;color:white;padding:22px 24px;display:flex;justify-content:space-between;align-items:center;gap:20px;box-shadow:var(--shadow);margin-bottom:24px}.screen-copy{display:flex;align-items:center;gap:15px}.screen-icon{width:44px;height:44px;border-radius:14px;background:rgba(255,255,255,.13);display:grid;place-items:center;font-size:21px}.screen-title{font-size:16px;font-weight:750}.screen-desc{font-size:13px;color:#cde3de;margin-top:2px}.btn{border:0;border-radius:11px;padding:11px 16px;font-weight:750;transition:.15s}.btn:hover{transform:translateY(-1px)}.btn-white{background:white;color:#145a53}.btn-dark{background:var(--ink);color:white}.btn-soft{background:var(--soft);color:var(--teal-dark)}.btn-outline{background:white;border:1px solid var(--line);color:var(--ink)}
-    .screen-view{display:none;margin:-8px 0 24px;background:#0f1b22;border-radius:18px;overflow:hidden}.screen-view.active{display:block}.screen-toolbar{padding:11px 15px;color:white;display:flex;justify-content:space-between;align-items:center}.screen-toolbar span{font-size:13px}.screen-view video{display:block;width:100%;max-height:72vh;background:#000;object-fit:contain}
-    .library-head{display:flex;justify-content:space-between;gap:18px;align-items:center;margin:22px 0 16px}.section-title{font-size:20px;font-weight:800;letter-spacing:-.03em}.count{font-size:13px;color:var(--muted);margin-left:9px;font-weight:500}.search{width:min(280px,40vw);padding:10px 13px;border:1px solid var(--line);border-radius:11px;background:white;outline:none}.search:focus{border-color:#8ecab9;box-shadow:0 0 0 3px #e0f2ed}
-    .filters{display:flex;gap:8px;margin-bottom:17px;overflow-x:auto}.filter{border:1px solid var(--line);background:#fff;border-radius:99px;padding:8px 14px;color:var(--muted);font-weight:700;font-size:13px;white-space:nowrap}.filter.active{background:var(--ink);border-color:var(--ink);color:#fff}
-    .grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px}.card{border:1px solid var(--line);background:var(--surface);border-radius:15px;overflow:hidden;box-shadow:0 4px 14px rgba(23,49,60,.025);min-width:0}.thumb{width:100%;aspect-ratio:1.35;background:#e9eff0;display:grid;place-items:center;position:relative;overflow:hidden;color:#789}.thumb img{width:100%;height:100%;object-fit:cover}.thumb .file-icon{font-size:35px}.thumb .play{position:absolute;width:39px;height:39px;border-radius:50%;background:rgba(18,37,46,.82);color:white;display:grid;place-items:center;font-size:15px;left:50%;top:50%;transform:translate(-50%,-50%);padding-left:2px}.meta{padding:12px 12px 11px}.name{font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.submeta{color:var(--muted);font-size:11px;margin-top:4px}.actions{display:flex;gap:7px;margin-top:10px}.actions .btn{font-size:11px;padding:7px 9px;border-radius:8px}
-    .empty{grid-column:1/-1;text-align:center;border:1px dashed #d4dfe1;background:rgba(255,255,255,.65);border-radius:16px;padding:42px 18px;color:var(--muted)}.empty strong{display:block;color:var(--ink);font-size:15px;margin-bottom:5px}.loading{grid-column:1/-1;text-align:center;color:var(--muted);padding:36px}
-    .foot{padding:28px 0 0;text-align:center;color:#8a989f;font-size:12px}.modal{display:none;position:fixed;inset:0;background:rgba(9,22,30,.78);z-index:4;align-items:center;justify-content:center;padding:28px}.modal.open{display:flex}.modal-box{max-width:min(980px,95vw);width:100%;background:#fff;border-radius:16px;overflow:hidden}.modal-top{display:flex;justify-content:space-between;align-items:center;padding:11px 15px}.modal-top button{background:#eef3f3;border:0;border-radius:8px;padding:7px 10px}.modal video,.modal img{width:100%;max-height:80vh;background:#111;display:block;object-fit:contain}
-    @media(max-width:850px){.grid{grid-template-columns:repeat(3,minmax(0,1fr))}.hero{align-items:start;flex-direction:column;gap:14px}}
-    @media(max-width:600px){.shell{padding:0 15px 34px}.topbar{height:64px}.hero{padding:26px 0 20px}h1{font-size:29px}.screen-card{padding:17px;align-items:flex-start;flex-direction:column}.screen-card>.btn{width:100%}.library-head{align-items:flex-start;flex-direction:column}.search{width:100%}.grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.meta{padding:10px}.device{white-space:normal}}
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light">
+<title>PocketBridge · Local share</title>
+<style>
+  :root{
+    --ink:#14262f;--muted:#6b7c85;--teal:#0e8469;--teal-dark:#0a6a55;--teal-soft:#e8f3f0;
+    --line:#e3eaec;--surface:#fff;--bg:#f4f7f7;--shadow:0 14px 40px rgba(20,50,60,.07);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+  button,input,select{font:inherit}
+  button{cursor:pointer}
+  .shell{max-width:1180px;margin:auto;padding:0 26px 56px}
+
+  /* top bar */
+  .topbar{height:76px;display:flex;align-items:center;justify-content:space-between;
+    border-bottom:1px solid var(--line)}
+  .brand{display:flex;align-items:center;gap:11px;font-weight:750;letter-spacing:-.02em;font-size:18px}
+  .mark{width:32px;height:32px;border-radius:11px;background:var(--teal);display:grid;place-items:center;
+    color:#fff;font-size:16px;box-shadow:0 6px 16px rgba(14,132,105,.22)}
+  .pill{border:1px solid #cde7df;background:#f0faf6;color:var(--teal-dark);border-radius:99px;
+    padding:7px 12px;font-size:12px;font-weight:700;display:flex;align-items:center;gap:7px}
+  .dot{width:7px;height:7px;border-radius:50%;background:#25a57f;box-shadow:0 0 0 3px #d9f1e8}
+
+  /* gate */
+  .gate{max-width:430px;margin:56px auto;background:var(--surface);border:1px solid var(--line);
+    border-radius:20px;padding:30px 28px;box-shadow:var(--shadow);text-align:center}
+  .gate h2{margin:0 0 6px;font-size:23px;letter-spacing:-.02em}
+  .gate p{margin:0 0 20px;color:var(--muted);font-size:14px}
+  .code-input{width:100%;padding:16px;border:1.5px solid var(--line);border-radius:14px;text-align:center;
+    font:700 30px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.34em;outline:none;background:#fbfdfd}
+  .code-input:focus{border-color:#8ecab9;box-shadow:0 0 0 4px #e0f2ed}
+  .gate .btn{width:100%;margin-top:14px}
+  .gate-error{margin-top:14px;color:#b03a3a;font-size:13px;min-height:18px}
+
+  /* hero */
+  .hero{padding:30px 0 22px;display:flex;justify-content:space-between;gap:24px;align-items:end;flex-wrap:wrap}
+  .eyebrow{text-transform:uppercase;font-size:11px;letter-spacing:.14em;font-weight:800;color:var(--teal)}
+  h1{font-size:32px;line-height:1.14;letter-spacing:-.035em;margin:8px 0 8px}
+  .sub{margin:0;color:var(--muted);max-width:560px}
+
+  /* buttons */
+  .btn{border:0;border-radius:11px;padding:11px 16px;font-weight:700;transition:.15s;display:inline-flex;
+    align-items:center;gap:8px;justify-content:center}
+  .btn:hover{transform:translateY(-1px)}
+  .btn-white{background:#fff;color:var(--teal-dark)}
+  .btn-dark{background:var(--ink);color:#fff}
+  .btn-soft{background:var(--teal-soft);color:var(--teal-dark)}
+  .btn-outline{background:#fff;border:1px solid var(--line);color:var(--ink)}
+  .btn-ghost{background:#eef3f3;color:var(--ink)}
+
+  /* screen card */
+  .screen-card{background:linear-gradient(110deg,#153c43,#145a53 62%,#147765);border-radius:20px;color:#fff;
+    padding:20px 22px;display:flex;justify-content:space-between;align-items:center;gap:18px;
+    box-shadow:var(--shadow);margin-bottom:22px;flex-wrap:wrap}
+  .screen-copy{display:flex;align-items:center;gap:14px}
+  .screen-icon{width:44px;height:44px;border-radius:14px;background:rgba(255,255,255,.13);display:grid;
+    place-items:center;font-size:20px}
+  .screen-title{font-size:16px;font-weight:750}
+  .screen-desc{font-size:13px;color:#cde3de;margin-top:2px}
+  .screen-view{display:none;margin:0 0 22px;background:#0f1b22;border-radius:18px;overflow:hidden}
+  .screen-view.active{display:block}
+  .screen-toolbar{padding:11px 15px;color:#fff;display:flex;justify-content:space-between;align-items:center;gap:10px}
+  .screen-toolbar span{font-size:13px}
+  .screen-view video{display:block;width:100%;max-height:72vh;background:#000;object-fit:contain}
+
+  /* library */
+  .library-head{display:flex;justify-content:space-between;gap:16px;align-items:center;margin:20px 0 14px;flex-wrap:wrap}
+  .section-title{font-size:20px;font-weight:800;letter-spacing:-.03em}
+  .count{font-size:13px;color:var(--muted);margin-left:9px;font-weight:500}
+  .search{width:min(300px,46vw);padding:10px 13px;border:1px solid var(--line);border-radius:11px;
+    background:#fff;outline:none}
+  .search:focus{border-color:#8ecab9;box-shadow:0 0 0 3px #e0f2ed}
+  .tabs{display:flex;gap:8px;margin-bottom:16px;overflow-x:auto;padding-bottom:2px}
+  .tab{border:1px solid var(--line);background:#fff;border-radius:99px;padding:9px 15px;color:var(--muted);
+    font-weight:700;font-size:13px;white-space:nowrap}
+  .tab.active{background:var(--ink);border-color:var(--ink);color:#fff}
+
+  .grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px}
+  .card{border:1px solid var(--line);background:var(--surface);border-radius:15px;overflow:hidden;
+    box-shadow:0 4px 14px rgba(23,49,60,.025);min-width:0;display:flex;flex-direction:column}
+  .thumb{width:100%;aspect-ratio:1.35;background:#e9eff0;display:grid;place-items:center;position:relative;
+    overflow:hidden;color:#789;border:0;padding:0;cursor:pointer}
+  .thumb img{width:100%;height:100%;object-fit:cover;display:block}
+  .thumb .file-icon{font-size:34px}
+  .thumb .play{position:absolute;width:40px;height:40px;border-radius:50%;background:rgba(18,37,46,.82);
+    color:#fff;display:grid;place-items:center;font-size:15px;left:50%;top:50%;
+    transform:translate(-50%,-50%);padding-left:2px}
+  .meta{padding:11px 12px 12px;display:flex;flex-direction:column;gap:4px;flex:1}
+  .name{font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .submeta{color:var(--muted);font-size:11px}
+  .actions{display:flex;gap:7px;margin-top:auto;padding-top:9px}
+  .actions .btn{font-size:11px;padding:7px 10px;border-radius:8px;flex:1}
+
+  .empty{grid-column:1/-1;text-align:center;border:1px dashed #d4dfe1;background:rgba(255,255,255,.65);
+    border-radius:16px;padding:40px 18px;color:var(--muted)}
+  .empty strong{display:block;color:var(--ink);font-size:15px;margin-bottom:5px}
+  .loading{grid-column:1/-1;text-align:center;color:var(--muted);padding:34px}
+  .foot{padding:26px 0 0;text-align:center;color:#8a989f;font-size:12px}
+
+  /* player */
+  .modal{display:none;position:fixed;inset:0;background:rgba(9,22,30,.86);z-index:9;
+    align-items:center;justify-content:center;padding:22px}
+  .modal.open{display:flex}
+  .modal-box{width:100%;max-width:min(1000px,96vw);background:#101c23;border-radius:16px;overflow:hidden;
+    box-shadow:0 24px 70px rgba(0,0,0,.5)}
+  .modal-top{display:flex;justify-content:space-between;align-items:center;padding:11px 14px;color:#eaf3f1;gap:12px}
+  .modal-top strong{font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .modal-top .btn{background:#1d3038;color:#dfeeeb}
+  .stage{background:#000;display:grid;place-items:center;max-height:74vh;overflow:hidden}
+  .stage video,.stage img{width:100%;max-height:74vh;display:block;object-fit:contain;background:#000}
+  .stage audio{width:100%;margin:26px 0}
+  .controls{display:flex;align-items:center;gap:10px;padding:11px 14px 14px;color:#eaf3f1;flex-wrap:wrap}
+  .ctrl{background:#1d3038;color:#eaf3f1;border:0;border-radius:10px;padding:9px 12px;font-weight:700;font-size:13px}
+  .ctrl:hover{background:#27414b}
+  .ctrl.main{background:var(--teal);color:#fff;min-width:74px}
+  .seek{flex:1;min-width:140px;accent-color:#25a57f;height:4px}
+  .time{font-size:12px;color:#a9c3bd;font-variant-numeric:tabular-nums;white-space:nowrap}
+
+  @media(max-width:900px){.grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+  @media(max-width:640px){
+    .shell{padding:0 14px 40px}.topbar{height:62px}.hero{padding:22px 0 16px}h1{font-size:26px}
+    .grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+    .screen-card{flex-direction:column;align-items:flex-start}
+    .screen-card>.btn{width:100%}
+    .search{width:100%}
+  }
+</style>
 </head>
 <body>
-  <main class="shell">
-    <header class="topbar"><div class="brand"><div class="mark">↗</div><span>PocketBridge</span></div><div class="local-pill"><i class="dot"></i> LOCAL &amp; PRIVATE</div></header>
-    <section class="hero"><div><div class="eyebrow">Your phone · your network</div><h1>Everything you want to share,<br>right here.</h1><p class="sub">Browse and play your phone’s photos, videos, and audio. Download the originals straight to this laptop.</p></div><div class="device">No internet connection needed</div></section>
-    <section class="screen-card"><div class="screen-copy"><div class="screen-icon">▣</div><div><div class="screen-title">Live phone screen</div><div class="screen-desc" id="screenHint">Approve screen capture in PocketBridge on your phone to begin.</div></div></div><button class="btn btn-white" id="watchButton" type="button">Watch screen</button></section>
-    <section class="screen-view" id="screenView"><div class="screen-toolbar"><span id="screenState">Connecting to phone…</span><button class="btn btn-outline" id="stopWatch" type="button">Stop viewing</button></div><video id="screenVideo" autoplay playsinline controls></video></section>
-    <section class="library-head"><div><span class="section-title">Your library</span><span class="count" id="count">Loading…</span></div><input class="search" id="search" placeholder="Search your files" autocomplete="off"></section>
-    <nav class="filters" aria-label="Media type"><button class="filter active" data-kind="all">All files</button><button class="filter" data-kind="images">Photos</button><button class="filter" data-kind="videos">Videos</button><button class="filter" data-kind="audio">Audio</button></nav>
+<main class="shell">
+  <header class="topbar">
+    <div class="brand"><div class="mark">↗</div><span>PocketBridge</span></div>
+    <div class="pill"><i class="dot"></i> LOCAL &amp; PRIVATE</div>
+  </header>
+
+  <!-- code gate -->
+  <section class="gate" id="gate">
+    <h2>Enter your code</h2>
+    <p>Type the 6-digit code shown in PocketBridge on your phone.</p>
+    <input class="code-input" id="codeInput" inputmode="numeric" autocomplete="one-time-code"
+           maxlength="6" placeholder="••••••" aria-label="6 digit code">
+    <button class="btn btn-dark" id="unlockBtn" type="button">Open my files</button>
+    <div class="gate-error" id="gateError"></div>
+  </section>
+
+  <!-- app -->
+  <div id="app" style="display:none">
+    <section class="hero">
+      <div>
+        <div class="eyebrow">Your phone · your network</div>
+        <h1>Everything on your phone,<br>right here.</h1>
+        <p class="sub">Browse photos, videos, audio and files. Play them in the browser or download the originals.</p>
+      </div>
+      <button class="btn btn-ghost" id="lockBtn" type="button">Change code</button>
+    </section>
+
+    <section class="screen-card">
+      <div class="screen-copy">
+        <div class="screen-icon">▣</div>
+        <div>
+          <div class="screen-title">Live phone screen</div>
+          <div class="screen-desc" id="screenHint">Tap “Share phone screen” in PocketBridge on the phone to begin.</div>
+        </div>
+      </div>
+      <button class="btn btn-white" id="watchButton" type="button">Watch screen</button>
+    </section>
+
+    <section class="screen-view" id="screenView">
+      <div class="screen-toolbar">
+        <span id="screenState">Connecting to phone…</span>
+        <button class="btn btn-outline" id="stopWatch" type="button">Stop viewing</button>
+      </div>
+      <video id="screenVideo" autoplay playsinline controls></video>
+    </section>
+
+    <section class="library-head">
+      <div><span class="section-title">Your library</span><span class="count" id="count">Loading…</span></div>
+      <input class="search" id="search" placeholder="Search files" autocomplete="off">
+    </section>
+
+    <nav class="tabs" id="tabs" aria-label="Media type">
+      <button class="tab active" data-kind="all">All</button>
+      <button class="tab" data-kind="images">Photos</button>
+      <button class="tab" data-kind="videos">Videos</button>
+      <button class="tab" data-kind="audio">Audio</button>
+      <button class="tab" data-kind="files">Files</button>
+    </nav>
+
     <section class="grid" id="grid"><div class="loading">Finding media on your phone…</div></section>
-    <footer class="foot">Shared directly over your phone’s local hotspot · PocketBridge open source</footer>
-  </main>
-  <div class="modal" id="modal" role="dialog" aria-modal="true"><div class="modal-box"><div class="modal-top"><strong id="modalName"></strong><button id="closeModal" type="button">Close</button></div><div id="modalMedia"></div></div></div>
-  <script>
-    const TOKEN = "__POCKETBRIDGE_TOKEN__";
-    const grid = document.getElementById('grid');
-    const count = document.getElementById('count');
-    const search = document.getElementById('search');
-    const modal = document.getElementById('modal');
-    let currentKind = 'all';
-    let files = [];
-    let access = {};
-    let peer = null;
-    const endpoint = (path) => `${path}${path.includes('?') ? '&' : '?'}token=${encodeURIComponent(TOKEN)}`;
-    const formatSize = (bytes) => { if (!bytes) return '0 B'; const units=['B','KB','MB','GB']; let n=bytes,i=0; while(n>=1024&&i<units.length-1){n/=1024;i++} return `${n.toFixed(i?1:0)} ${units[i]}` };
-    const safe = (text) => String(text ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-    async function loadFiles() {
-      grid.innerHTML = '<div class="loading">Loading your library…</div>';
-      try {
-        const response = await fetch(endpoint(`/api/files?kind=${encodeURIComponent(currentKind)}`), {cache:'no-store'});
-        if (!response.ok) throw new Error('The share link expired. Reopen the link shown in PocketBridge.');
-        const data = await response.json(); files = data.files || []; access = data.access || {}; renderFiles();
-      } catch (error) {
-        count.textContent = '';
-        grid.innerHTML = `<div class="empty"><strong>Could not load files</strong>${safe(error.message || 'Check that your phone is still sharing.')}</div>`;
+    <footer class="foot">Shared directly over your own network · PocketBridge open source</footer>
+  </div>
+</main>
+
+<!-- player -->
+<div class="modal" id="modal" role="dialog" aria-modal="true">
+  <div class="modal-box">
+    <div class="modal-top">
+      <strong id="modalName"></strong>
+      <button class="btn" id="closeModal" type="button">Close</button>
+    </div>
+    <div class="stage" id="stage"></div>
+    <div class="controls" id="controls">
+      <button class="ctrl" id="back10" type="button" title="Back 10 seconds">−10s</button>
+      <button class="ctrl main" id="playPause" type="button">Play</button>
+      <button class="ctrl" id="fwd10" type="button" title="Forward 10 seconds">+10s</button>
+      <input class="seek" id="seek" type="range" min="0" max="1000" value="0" aria-label="Seek">
+      <span class="time" id="time">0:00 / 0:00</span>
+      <button class="ctrl" id="fullscreen" type="button" title="Fullscreen">⛶</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  const TOKEN = "__POCKETBRIDGE_TOKEN__";
+  const CODE_KEY = 'pocketbridge_code';
+  let code = '';
+  let currentKind = 'all';
+  let files = [];
+  let access = {};
+  let peer = null;
+
+  const gate = document.getElementById('gate');
+  const app = document.getElementById('app');
+  const grid = document.getElementById('grid');
+  const count = document.getElementById('count');
+  const search = document.getElementById('search');
+  const modal = document.getElementById('modal');
+  const stage = document.getElementById('stage');
+  const controls = document.getElementById('controls');
+
+  const hasToken = TOKEN && !TOKEN.startsWith('__');
+
+  function endpoint(path) {
+    const sep = path.includes('?') ? '&' : '?';
+    if (hasToken) return path + sep + 'token=' + encodeURIComponent(TOKEN);
+    return path + sep + 'code=' + encodeURIComponent(code);
+  }
+  const formatSize = (bytes) => {
+    if (!bytes) return '0 B';
+    const units = ['B','KB','MB','GB'];
+    let n = bytes, i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return n.toFixed(i ? 1 : 0) + ' ' + units[i];
+  };
+  const safe = (text) => String(text == null ? '' : text)
+    .replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+  /* ---------- code gate ---------- */
+  async function tryCode(candidate) {
+    const response = await fetch('/api/session?code=' + encodeURIComponent(candidate), {cache:'no-store'});
+    return response.ok;
+  }
+  async function unlock(candidate, remember) {
+    const trimmed = String(candidate || '').trim();
+    if (!/^\d{6}$/.test(trimmed)) {
+      document.getElementById('gateError').textContent = 'Enter the 6-digit code from the phone.';
+      return false;
+    }
+    document.getElementById('gateError').textContent = 'Checking…';
+    try {
+      if (!await tryCode(trimmed)) {
+        document.getElementById('gateError').textContent = 'That code did not work. Check the phone and try again.';
+        return false;
       }
+    } catch (error) {
+      document.getElementById('gateError').textContent = 'Could not reach the phone. Keep it sharing and retry.';
+      return false;
     }
-    function missingAccessHint() {
-      const denied = [];
-      if (access.images === false) denied.push('photos');
-      if (access.videos === false) denied.push('videos');
-      if (access.audio === false) denied.push('audio');
-      if (!denied.length) return '';
-      return `<div class="empty"><strong>Allow media access on the phone</strong>Open PocketBridge and allow access to ${safe(denied.join(', '))}, then reload this page.</div>`;
-    }
-    function renderFiles() {
-      const term = search.value.trim().toLowerCase();
-      const shown = files.filter(file => (file.name || '').toLowerCase().includes(term));
-      count.textContent = `${shown.length} item${shown.length === 1 ? '' : 's'}`;
-      if (!shown.length) { grid.innerHTML = missingAccessHint() || '<div class="empty"><strong>No files found</strong>Try another filter or search term.</div>'; return; }
-      grid.innerHTML = shown.map(file => {
-        const url = endpoint(file.url);
-        let visual = '<div class="file-icon">♫</div>';
-        if (file.kind === 'image') visual = `<img loading="lazy" src="${safe(endpoint(file.thumb || file.url))}" alt="${safe(file.name)}">`;
-        if (file.kind === 'video') visual = `<div class="file-icon">▶</div><div class="play">▶</div>`;
-        const previewable = file.kind === 'image' || file.kind === 'video' || file.kind === 'audio';
-        const preview = previewable ? `<button class="btn btn-soft" data-action="preview" data-id="${safe(file.id)}">Preview</button>` : '';
-        return `<article class="card"><div class="thumb" data-action="preview" data-id="${safe(file.id)}">${visual}</div><div class="meta"><div class="name" title="${safe(file.name)}">${safe(file.name)}</div><div class="submeta">${formatSize(file.size)} · ${file.kind}</div><div class="actions">${preview}<a class="btn btn-outline" href="${safe(endpoint(file.url))}" download="${safe(file.name)}">Download</a></div></div></article>`;
-      }).join('');
-      grid.querySelectorAll('[data-action="preview"]').forEach(button => button.addEventListener('click', () => previewFile(button.dataset.id)));
-    }
-    function previewFile(id) {
-      const file = files.find(item => item.id === id); if (!file) return;
-      document.getElementById('modalName').textContent = file.name;
-      const url = endpoint(file.url);
-      const media = file.kind === 'video' ? `<video src="${safe(url)}" controls autoplay playsinline></video>`
-        : file.kind === 'audio' ? `<audio src="${safe(url)}" controls autoplay></audio>`
-        : `<img src="${safe(url)}" alt="${safe(file.name)}">`;
-      document.getElementById('modalMedia').innerHTML = media;
-      modal.classList.add('open');
-    }
-    document.querySelectorAll('.filter').forEach(button => button.addEventListener('click', () => {
-      document.querySelector('.filter.active')?.classList.remove('active'); button.classList.add('active'); currentKind=button.dataset.kind; loadFiles();
-    }));
-    search.addEventListener('input', renderFiles);
-    document.getElementById('closeModal').addEventListener('click', () => { modal.classList.remove('open'); document.getElementById('modalMedia').innerHTML=''; });
-    modal.addEventListener('click', event => { if (event.target === modal) { modal.classList.remove('open'); document.getElementById('modalMedia').innerHTML=''; } });
-    async function waitForIce(pc) {
-      if (pc.iceGatheringState === 'complete') return;
-      await new Promise(resolve => {
-        const timer = setTimeout(resolve, 9000);
-        pc.addEventListener('icegatheringstatechange', () => { if (pc.iceGatheringState === 'complete') { clearTimeout(timer); resolve(); } });
-      });
-    }
-    async function watchScreen() {
-      const screenView=document.getElementById('screenView'); const state=document.getElementById('screenState');
-      screenView.classList.add('active'); state.textContent='Connecting to the phone over the local hotspot…';
-      try {
-        const statusResponse=await fetch(endpoint('/api/screen/status')); const status=await statusResponse.json();
-        if (!status.ready) throw new Error(status.error ? `Screen capture could not start: ${status.error}` : 'First tap “Share phone screen” in PocketBridge and approve Android’s prompt.');
-        peer=new RTCPeerConnection({iceServers:[]});
-        peer.addTransceiver('video',{direction:'recvonly'});
-        peer.ontrack=(event)=>{document.getElementById('screenVideo').srcObject=event.streams[0];state.textContent='Live · phone screen is shared peer-to-peer';document.getElementById('screenHint').textContent='Your phone screen is streaming locally.'};
-        peer.onconnectionstatechange=()=>{if(peer&&['failed','disconnected','closed'].includes(peer.connectionState))state.textContent='Connection ended. Reconnect from this page.'};
-        const offer=await peer.createOffer(); await peer.setLocalDescription(offer); await waitForIce(peer);
-        const response=await fetch(endpoint('/api/screen/offer'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sdp:peer.localDescription.sdp})});
-        const answer=await response.json(); if(!response.ok) throw new Error(answer.error||'Could not connect to the phone.');
-        await peer.setRemoteDescription({type:answer.type,sdp:answer.sdp});
-      } catch(error) { state.textContent=error.message||'Screen share failed.'; if(peer){try{peer.close()}catch{} peer=null} }
-    }
-    function stopWatching() {
-      if(peer){try{peer.close()}catch{} peer=null}
-      document.getElementById('screenVideo').srcObject=null;
-      document.getElementById('screenView').classList.remove('active');
-      fetch(endpoint('/api/screen/stop'),{method:'POST'}).catch(()=>{});
-      document.getElementById('screenHint').textContent='Approve screen capture in PocketBridge on your phone to begin.';
-    }
-    document.getElementById('watchButton').addEventListener('click',watchScreen);
-    document.getElementById('stopWatch').addEventListener('click',stopWatching);
+    code = trimmed;
+    if (remember) { try { localStorage.setItem(CODE_KEY, code); } catch (e) {} }
+    document.getElementById('gateError').textContent = '';
+    showApp();
+    return true;
+  }
+  function showApp() {
+    gate.style.display = 'none';
+    app.style.display = 'block';
     loadFiles();
-  </script>
+  }
+  document.getElementById('unlockBtn').addEventListener('click', () => unlock(document.getElementById('codeInput').value, true));
+  document.getElementById('codeInput').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') unlock(event.currentTarget.value, true);
+  });
+  document.getElementById('lockBtn').addEventListener('click', () => {
+    try { localStorage.removeItem(CODE_KEY); } catch (e) {}
+    code = '';
+    app.style.display = 'none';
+    gate.style.display = 'block';
+    document.getElementById('codeInput').value = '';
+  });
+
+  /* ---------- library ---------- */
+  async function loadFiles() {
+    grid.innerHTML = '<div class="loading">Loading your library…</div>';
+    try {
+      const response = await fetch(endpoint('/api/files?kind=' + encodeURIComponent(currentKind)), {cache:'no-store'});
+      if (response.status === 403) {
+        app.style.display = 'none';
+        gate.style.display = 'block';
+        document.getElementById('gateError').textContent = 'The code expired. Enter the new code shown on the phone.';
+        return;
+      }
+      if (!response.ok) throw new Error('The share stopped. Check PocketBridge on the phone.');
+      const data = await response.json();
+      files = data.files || [];
+      access = data.access || {};
+      renderFiles();
+    } catch (error) {
+      count.textContent = '';
+      grid.innerHTML = '<div class="empty"><strong>Could not load files</strong>' +
+        safe(error.message || 'Check that your phone is still sharing.') + '</div>';
+    }
+  }
+
+  function missingAccessHint() {
+    const denied = [];
+    if (access.images === false) denied.push('photos');
+    if (access.videos === false) denied.push('videos');
+    if (access.audio === false) denied.push('audio');
+    if (!denied.length) return '';
+    return '<div class="empty"><strong>Allow media access on the phone</strong>Open PocketBridge and allow access to ' +
+      safe(denied.join(', ')) + ', then reload this page.</div>';
+  }
+
+  function iconFor(kind) {
+    if (kind === 'audio') return '♫';
+    if (kind === 'video') return '▶';
+    if (kind === 'file') return '📄';
+    return '🖼';
+  }
+
+  function renderFiles() {
+    const term = search.value.trim().toLowerCase();
+    const shown = files.filter(file => (file.name || '').toLowerCase().includes(term));
+    count.textContent = shown.length + (shown.length === 1 ? ' item' : ' items');
+    if (!shown.length) {
+      grid.innerHTML = missingAccessHint() ||
+        '<div class="empty"><strong>Nothing here yet</strong>Try another tab or search term.</div>';
+      return;
+    }
+    grid.innerHTML = shown.map(file => {
+      let visual = '<div class="file-icon">' + iconFor(file.kind) + '</div>';
+      if (file.kind === 'image') {
+        visual = '<img loading="lazy" src="' + safe(endpoint(file.thumb || file.url)) + '" alt="' + safe(file.name) + '">';
+      }
+      if (file.kind === 'video') {
+        visual = '<div class="file-icon">▶</div><div class="play">▶</div>';
+      }
+      const playable = file.kind === 'video' || file.kind === 'audio';
+      const previewable = playable || file.kind === 'image';
+      const previewBtn = previewable
+        ? '<button class="btn btn-soft" data-preview="' + safe(file.id) + '" type="button">' +
+          (playable ? 'Play' : 'View') + '</button>'
+        : '';
+      return '<article class="card">' +
+        '<button class="thumb" type="button" data-preview="' + safe(file.id) + '">' + visual + '</button>' +
+        '<div class="meta">' +
+          '<div class="name" title="' + safe(file.name) + '">' + safe(file.name) + '</div>' +
+          '<div class="submeta">' + formatSize(file.size) + ' · ' + safe(file.kind) + '</div>' +
+          '<div class="actions">' + previewBtn +
+            '<a class="btn btn-outline" href="' + safe(endpoint(file.url)) + '" download="' + safe(file.name) + '">Download</a>' +
+          '</div>' +
+        '</div></article>';
+    }).join('');
+    grid.querySelectorAll('[data-preview]').forEach(node => {
+      node.addEventListener('click', () => openFile(node.getAttribute('data-preview')));
+    });
+  }
+
+  search.addEventListener('input', renderFiles);
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelector('.tab.active').classList.remove('active');
+      tab.classList.add('active');
+      currentKind = tab.getAttribute('data-kind');
+      loadFiles();
+    });
+  });
+
+  /* ---------- player ---------- */
+  let media = null;
+  const seek = document.getElementById('seek');
+  const timeLabel = document.getElementById('time');
+  const playPause = document.getElementById('playPause');
+
+  function formatTime(seconds) {
+    if (!isFinite(seconds) || seconds < 0) seconds = 0;
+    const total = Math.floor(seconds);
+    const mins = Math.floor(total / 60);
+    const secs = total % 60;
+    return mins + ':' + String(secs).padStart(2, '0');
+  }
+
+  function openFile(id) {
+    const file = files.find(item => item.id === id);
+    if (!file) return;
+    document.getElementById('modalName').textContent = file.name;
+    const url = endpoint(file.url);
+    stage.innerHTML = '';
+    media = null;
+
+    if (file.kind === 'video') {
+      media = document.createElement('video');
+      media.src = url;
+      media.playsInline = true;
+      media.preload = 'metadata';
+      stage.appendChild(media);
+    } else if (file.kind === 'audio') {
+      media = document.createElement('audio');
+      media.src = url;
+      media.preload = 'metadata';
+      stage.appendChild(media);
+    } else {
+      const image = document.createElement('img');
+      image.src = url;
+      image.alt = file.name;
+      stage.appendChild(image);
+    }
+
+    controls.style.display = media ? 'flex' : 'none';
+    if (media) wirePlayer(media, file.kind);
+    modal.classList.add('open');
+  }
+
+  function wirePlayer(element, kind) {
+    seek.value = 0;
+    timeLabel.textContent = '0:00 / 0:00';
+    playPause.textContent = 'Play';
+
+    element.addEventListener('loadedmetadata', () => {
+      timeLabel.textContent = '0:00 / ' + formatTime(element.duration);
+    });
+    element.addEventListener('timeupdate', () => {
+      if (isFinite(element.duration) && element.duration > 0) {
+        seek.value = String(Math.round((element.currentTime / element.duration) * 1000));
+      }
+      timeLabel.textContent = formatTime(element.currentTime) + ' / ' + formatTime(element.duration);
+    });
+    element.addEventListener('play', () => { playPause.textContent = 'Pause'; });
+    element.addEventListener('pause', () => { playPause.textContent = 'Play'; });
+    element.addEventListener('ended', () => { playPause.textContent = 'Play'; });
+    element.addEventListener('error', () => {
+      timeLabel.textContent = 'Cannot play this file — use Download.';
+    });
+
+    playPause.onclick = () => {
+      if (element.paused) element.play().catch(() => {}); else element.pause();
+    };
+    document.getElementById('back10').onclick = () => {
+      element.currentTime = Math.max(0, element.currentTime - 10);
+    };
+    document.getElementById('fwd10').onclick = () => {
+      const limit = isFinite(element.duration) ? element.duration : element.currentTime + 10;
+      element.currentTime = Math.min(limit, element.currentTime + 10);
+    };
+    seek.oninput = () => {
+      if (isFinite(element.duration) && element.duration > 0) {
+        element.currentTime = (Number(seek.value) / 1000) * element.duration;
+      }
+    };
+    const fsButton = document.getElementById('fullscreen');
+    fsButton.style.display = kind === 'video' ? 'inline-flex' : 'none';
+    fsButton.onclick = () => {
+      const box = element.closest('.modal-box') || element;
+      if (document.fullscreenElement) { document.exitFullscreen().catch(() => {}); }
+      else if (box.requestFullscreen) { box.requestFullscreen().catch(() => {}); }
+    };
+  }
+
+  function closeModal() {
+    if (media) { try { media.pause(); } catch (e) {} media.src = ''; media = null; }
+    stage.innerHTML = '';
+    modal.classList.remove('open');
+  }
+  document.getElementById('closeModal').addEventListener('click', closeModal);
+  modal.addEventListener('click', (event) => { if (event.target === modal) closeModal(); });
+  document.addEventListener('keydown', (event) => {
+    if (!modal.classList.contains('open') || !media) return;
+    if (event.key === 'Escape') closeModal();
+    if (event.key === 'ArrowRight') { document.getElementById('fwd10').click(); }
+    if (event.key === 'ArrowLeft') { document.getElementById('back10').click(); }
+    if (event.key === ' ') { event.preventDefault(); playPause.click(); }
+  });
+
+  /* ---------- screen share ---------- */
+  async function waitForIce(pc) {
+    if (pc.iceGatheringState === 'complete') return;
+    await new Promise(resolve => {
+      const timer = setTimeout(resolve, 9000);
+      pc.addEventListener('icegatheringstatechange', () => {
+        if (pc.iceGatheringState === 'complete') { clearTimeout(timer); resolve(); }
+      });
+    });
+  }
+  async function watchScreen() {
+    const screenView = document.getElementById('screenView');
+    const state = document.getElementById('screenState');
+    screenView.classList.add('active');
+    state.textContent = 'Connecting to the phone…';
+    try {
+      const statusResponse = await fetch(endpoint('/api/screen/status'));
+      const status = await statusResponse.json();
+      if (!status.ready) {
+        throw new Error(status.error ? 'Screen capture could not start: ' + status.error
+          : 'First tap “Share phone screen” in PocketBridge and approve Android’s prompt.');
+      }
+      peer = new RTCPeerConnection({iceServers: []});
+      peer.addTransceiver('video', {direction: 'recvonly'});
+      peer.ontrack = (event) => {
+        document.getElementById('screenVideo').srcObject = event.streams[0];
+        state.textContent = 'Live · phone screen is shared peer-to-peer';
+        document.getElementById('screenHint').textContent = 'Your phone screen is streaming locally.';
+      };
+      peer.onconnectionstatechange = () => {
+        if (peer && ['failed','disconnected','closed'].includes(peer.connectionState)) {
+          state.textContent = 'Connection ended. Try again.';
+        }
+      };
+      const offer = await peer.createOffer();
+      await peer.setLocalDescription(offer);
+      await waitForIce(peer);
+      const response = await fetch(endpoint('/api/screen/offer'), {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({sdp: peer.localDescription.sdp})
+      });
+      const answer = await response.json();
+      if (!response.ok) throw new Error(answer.error || 'Could not connect to the phone.');
+      await peer.setRemoteDescription({type: answer.type, sdp: answer.sdp});
+    } catch (error) {
+      state.textContent = error.message || 'Screen share failed.';
+      if (peer) { try { peer.close(); } catch (e) {} peer = null; }
+    }
+  }
+  function stopWatching() {
+    if (peer) { try { peer.close(); } catch (e) {} peer = null; }
+    document.getElementById('screenVideo').srcObject = null;
+    document.getElementById('screenView').classList.remove('active');
+    fetch(endpoint('/api/screen/stop'), {method: 'POST'}).catch(() => {});
+    document.getElementById('screenHint').textContent = 'Tap “Share phone screen” in PocketBridge on the phone to begin.';
+  }
+  document.getElementById('watchButton').addEventListener('click', watchScreen);
+  document.getElementById('stopWatch').addEventListener('click', stopWatching);
+
+  /* ---------- boot ---------- */
+  (async function boot() {
+    if (hasToken) { showApp(); return; }
+    let saved = '';
+    try { saved = localStorage.getItem(CODE_KEY) || ''; } catch (e) {}
+    if (saved && await unlock(saved, false)) return;
+    gate.style.display = 'block';
+    document.getElementById('codeInput').focus();
+  })();
+</script>
 </body>
 </html>

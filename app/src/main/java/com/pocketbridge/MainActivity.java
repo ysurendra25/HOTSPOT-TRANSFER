@@ -32,12 +32,19 @@ public final class MainActivity extends Activity {
     private static final int COLOR_MUTED = Color.rgb(98, 116, 129);
     private static final int COLOR_GREEN = Color.rgb(14, 132, 105);
     private static final int COLOR_BG = Color.rgb(245, 248, 249);
+    private static final int COLOR_SOFT = Color.rgb(226, 237, 235);
 
     private TextView statusText;
     private TextView networkText;
     private TextView linkText;
-    private Button startButton;
+    private TextView codeText;
+    private TextView modeText;
+    private Button wifiButton;
+    private Button hotspotButton;
+    private Button stopButton;
+    private Button copyButton;
     private boolean receiverRegistered;
+    private boolean sharing;
 
     private final BroadcastReceiver statusReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
@@ -45,16 +52,21 @@ public final class MainActivity extends Activity {
             String ssid = intent.getStringExtra(ShareSessionService.EXTRA_SSID);
             String password = intent.getStringExtra(ShareSessionService.EXTRA_PASSWORD);
             String url = intent.getStringExtra(ShareSessionService.EXTRA_URL);
+            String code = intent.getStringExtra(ShareSessionService.EXTRA_CODE);
+            String mode = intent.getStringExtra(ShareSessionService.EXTRA_MODE);
             if (status != null) statusText.setText(status);
             networkText.setText(ssid != null || password != null
-                    ? "Wi-Fi name  " + valueOr(ssid, "starting…") + "\nPassword  " + valueOr(password, "starting…")
-                    : "No local hotspot is active. Start a share to create one.");
-            linkText.setText(url == null || url.isEmpty() ? "The browser link will appear here when ready." : url);
-            boolean ready = url != null && !url.isEmpty();
-            boolean busy = status != null && (status.startsWith("Starting") || status.startsWith("Hotspot ready"));
-            startButton.setText(ready ? "Stop local share" : busy ? "Please wait…" : "Start local share");
-            startButton.setEnabled(!busy || ready);
-            startButton.setTag(ready);
+                    ? "Wi-Fi name  " + valueOr(ssid, "…") + "\nPassword  " + valueOr(password, "…")
+                    : "Pick a mode below to see what the laptop should join.");
+            linkText.setText(url == null || url.isEmpty() ? "The link appears here when sharing starts." : url);
+            codeText.setText(code == null || code.isEmpty() ? "— — — — — —" : code);
+            modeText.setText(mode == null || mode.isEmpty() ? "Not sharing" : mode);
+            sharing = url != null && !url.isEmpty();
+            boolean busy = status != null && (status.startsWith("Starting") || status.startsWith("Looking") || status.startsWith("Hotspot ready"));
+            wifiButton.setEnabled(!sharing && !busy);
+            hotspotButton.setEnabled(!sharing && !busy);
+            stopButton.setEnabled(sharing);
+            copyButton.setEnabled(sharing);
         }
     };
 
@@ -92,7 +104,7 @@ public final class MainActivity extends Activity {
 
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.VERTICAL);
-        header.setPadding(dp(24), dp(30), dp(24), dp(18));
+        header.setPadding(dp(24), dp(28), dp(24), dp(16));
         header.setBackgroundColor(Color.WHITE);
         TextView brand = new TextView(this);
         brand.setText("POCKETBRIDGE");
@@ -103,12 +115,12 @@ public final class MainActivity extends Activity {
         TextView title = new TextView(this);
         title.setText("Share nearby.\nStay offline.");
         title.setTextColor(COLOR_INK);
-        title.setTextSize(29);
+        title.setTextSize(28);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        title.setPadding(0, dp(10), 0, dp(7));
+        title.setPadding(0, dp(8), 0, dp(6));
         header.addView(title);
         TextView intro = new TextView(this);
-        intro.setText("Your phone creates a private Wi-Fi link for your laptop. Files stay on this network.");
+        intro.setText("Choose how the laptop reaches this phone. Files and screen stay on your own network.");
         intro.setTextColor(COLOR_MUTED);
         intro.setTextSize(15);
         header.addView(intro);
@@ -117,69 +129,107 @@ public final class MainActivity extends Activity {
         ScrollView scroll = new ScrollView(this);
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(dp(20), dp(20), dp(20), dp(24));
+        content.setPadding(dp(20), dp(18), dp(20), dp(24));
 
         statusText = new TextView(this);
         statusText.setText("Ready when you are");
         statusText.setTextColor(COLOR_INK);
         statusText.setTextSize(17);
         statusText.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        addCard(content, "SESSION", statusText);
+        addCard(content, "STATUS", statusText);
+
+        // Mode choice: the two ways the laptop can reach this phone.
+        modeText = new TextView(this);
+        modeText.setText("Not sharing");
+        modeText.setTextColor(COLOR_GREEN);
+        modeText.setTextSize(15);
+        modeText.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        addCard(content, "ACTIVE MODE", modeText);
+
+        LinearLayout modeRow = new LinearLayout(this);
+        modeRow.setOrientation(LinearLayout.HORIZONTAL);
+        wifiButton = button("Wi-Fi mode", COLOR_GREEN);
+        wifiButton.setOnClickListener(v -> ensurePermissionsAndStart(ShareSessionService.ACTION_START_WIFI));
+        hotspotButton = button("Hotspot mode", Color.rgb(31, 53, 66));
+        hotspotButton.setOnClickListener(v -> ensurePermissionsAndStart(ShareSessionService.ACTION_START_HOTSPOT));
+        LinearLayout.LayoutParams leftParams = new LinearLayout.LayoutParams(0, -2, 1f);
+        leftParams.rightMargin = dp(6);
+        LinearLayout.LayoutParams rightParams = new LinearLayout.LayoutParams(0, -2, 1f);
+        rightParams.leftMargin = dp(6);
+        modeRow.addView(wifiButton, leftParams);
+        modeRow.addView(hotspotButton, rightParams);
+        addCard(content, "HOW TO CONNECT", modeRow);
+
+        TextView modeHelp = new TextView(this);
+        modeHelp.setText("Wi-Fi mode: the laptop joins the same Wi-Fi this phone is on. Best when both are already on one network.\n\nHotspot mode: this phone creates its own private Wi-Fi. If your hotspot is already switched on in Android settings, PocketBridge reuses it.");
+        modeHelp.setTextColor(COLOR_MUTED);
+        modeHelp.setTextSize(13);
+        modeHelp.setLineSpacing(dp(3), 1f);
+        modeHelp.setPadding(dp(4), dp(4), dp(4), dp(14));
+        content.addView(modeHelp);
 
         networkText = new TextView(this);
-        networkText.setText("Start a share to create a local-only hotspot.");
+        networkText.setText("Pick a mode below to see what the laptop should join.");
         networkText.setTextColor(COLOR_INK);
         networkText.setTextSize(15);
         networkText.setLineSpacing(dp(5), 1f);
-        addCard(content, "CONNECT YOUR LAPTOP", networkText);
+        addCard(content, "ON THE LAPTOP, JOIN", networkText);
 
         linkText = new TextView(this);
-        linkText.setText("The browser link appears here.");
+        linkText.setText("The link appears here when sharing starts.");
         linkText.setTextColor(COLOR_GREEN);
-        linkText.setTextSize(16);
+        linkText.setTextSize(19);
         linkText.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        addCard(content, "OPEN THIS LINK ON THE LAPTOP", linkText);
+        addCard(content, "1 · OPEN THIS LINK", linkText);
 
-        startButton = button("Start local share", COLOR_GREEN);
-        startButton.setOnClickListener(v -> {
-            Object running = startButton.getTag();
-            if (Boolean.TRUE.equals(running)) sendServiceCommand(ShareSessionService.ACTION_STOP);
-            else ensurePermissionsAndStart();
-        });
-        content.addView(startButton, matchWrap());
+        codeText = new TextView(this);
+        codeText.setText("— — — — — —");
+        codeText.setTextColor(COLOR_INK);
+        codeText.setTextSize(34);
+        codeText.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        codeText.setLetterSpacing(0.18f);
+        addCard(content, "2 · THEN ENTER THIS CODE", codeText);
 
-        Button copyButton = button("Copy browser link", Color.rgb(226, 237, 235));
+        copyButton = button("Copy link and code", COLOR_SOFT);
         copyButton.setTextColor(COLOR_GREEN);
+        copyButton.setEnabled(false);
         copyButton.setOnClickListener(v -> {
             String url = linkText.getText().toString();
-            if (url.startsWith("http://")) {
-                ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-                clipboard.setPrimaryClip(ClipData.newPlainText("PocketBridge link", url));
-                Toast.makeText(this, "Link copied", Toast.LENGTH_SHORT).show();
-            } else Toast.makeText(this, "Start a local share first", Toast.LENGTH_SHORT).show();
+            if (!url.startsWith("http://")) { Toast.makeText(this, "Start sharing first", Toast.LENGTH_SHORT).show(); return; }
+            String code = codeText.getText().toString().replace(" ", "");
+            ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            clipboard.setPrimaryClip(ClipData.newPlainText("PocketBridge", url + "  code " + code));
+            Toast.makeText(this, "Link and code copied", Toast.LENGTH_SHORT).show();
         });
-        LinearLayout.LayoutParams buttonGap = matchWrap();
-        buttonGap.topMargin = dp(10);
-        content.addView(copyButton, buttonGap);
+        LinearLayout.LayoutParams copyGap = matchWrap();
+        copyGap.topMargin = dp(2);
+        content.addView(copyButton, copyGap);
+
+        stopButton = button("Stop sharing", Color.rgb(150, 60, 60));
+        stopButton.setEnabled(false);
+        stopButton.setOnClickListener(v -> sendServiceCommand(ShareSessionService.ACTION_STOP));
+        LinearLayout.LayoutParams stopGap = matchWrap();
+        stopGap.topMargin = dp(18);
+        content.addView(stopButton, stopGap);
 
         Button screenButton = button("Share phone screen", Color.rgb(31, 53, 66));
         screenButton.setOnClickListener(v -> {
-            if (linkText == null || !linkText.getText().toString().startsWith("http://")) {
-                Toast.makeText(this, "Start local share first, then approve screen capture.", Toast.LENGTH_LONG).show();
+            if (!sharing) {
+                Toast.makeText(this, "Start a share first, then approve screen capture.", Toast.LENGTH_LONG).show();
                 return;
             }
             MediaProjectionManager manager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
             startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_SCREEN_CAPTURE);
         });
         LinearLayout.LayoutParams screenGap = matchWrap();
-        screenGap.topMargin = dp(18);
+        screenGap.topMargin = dp(10);
         content.addView(screenButton, screenGap);
 
         TextView note = new TextView(this);
-        note.setText("Already have your phone's hotspot turned on? PocketBridge will share over that hotspot instead of creating its own. For screen sharing, Android will ask you to approve capture each time.");
+        note.setText("The code keeps the link private. Anyone who joins the network still needs it to see your files. Android asks for screen-capture approval each time.");
         note.setTextColor(COLOR_MUTED);
         note.setTextSize(13);
-        note.setPadding(dp(4), dp(12), dp(4), 0);
+        note.setPadding(dp(4), dp(14), dp(4), 0);
         content.addView(note);
 
         scroll.addView(content);
@@ -187,7 +237,7 @@ public final class MainActivity extends Activity {
         setContentView(page);
     }
 
-    private void addCard(LinearLayout parent, String label, TextView content) {
+    private void addCard(LinearLayout parent, String label, View content) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(16), dp(14), dp(16), dp(16));
@@ -217,10 +267,12 @@ public final class MainActivity extends Activity {
         return button;
     }
 
-    private void ensurePermissionsAndStart() {
+    private void ensurePermissionsAndStart(String action) {
         List<String> required = new ArrayList<>();
         if (Build.VERSION.SDK_INT >= 33) {
-            addIfMissing(required, Manifest.permission.NEARBY_WIFI_DEVICES);
+            if (ShareSessionService.ACTION_START_HOTSPOT.equals(action)) {
+                addIfMissing(required, Manifest.permission.NEARBY_WIFI_DEVICES);
+            }
             // Android 14+ can grant access to selected photos only. Do not keep
             // asking for full library access once that partial access is granted.
             boolean partialMedia = Build.VERSION.SDK_INT >= 34
@@ -233,12 +285,17 @@ public final class MainActivity extends Activity {
             addIfMissing(required, Manifest.permission.READ_MEDIA_AUDIO);
             addIfMissing(required, Manifest.permission.POST_NOTIFICATIONS);
         } else {
-            addIfMissing(required, Manifest.permission.ACCESS_FINE_LOCATION);
+            if (ShareSessionService.ACTION_START_HOTSPOT.equals(action)) {
+                addIfMissing(required, Manifest.permission.ACCESS_FINE_LOCATION);
+            }
             addIfMissing(required, Manifest.permission.READ_EXTERNAL_STORAGE);
         }
+        pendingAction = action;
         if (!required.isEmpty()) requestPermissions(required.toArray(new String[0]), REQUEST_PERMISSIONS);
-        else sendServiceCommand(ShareSessionService.ACTION_START);
+        else sendServiceCommand(action);
     }
+
+    private String pendingAction = ShareSessionService.ACTION_START_HOTSPOT;
 
     private void addIfMissing(List<String> permissions, String permission) {
         if (checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) permissions.add(permission);
@@ -249,8 +306,10 @@ public final class MainActivity extends Activity {
         if (requestCode == REQUEST_PERMISSIONS) {
             boolean nearbyAllowed = Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED;
             boolean locationAllowed = Build.VERSION.SDK_INT >= 33 || checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
-            if (nearbyAllowed && locationAllowed) sendServiceCommand(ShareSessionService.ACTION_START);
-            else statusText.setText("Nearby Wi-Fi permission is needed to start the private hotspot.");
+            boolean needsHotspot = ShareSessionService.ACTION_START_HOTSPOT.equals(pendingAction);
+            boolean allowed = (!needsHotspot || nearbyAllowed) && (!needsHotspot || locationAllowed);
+            if (allowed) sendServiceCommand(pendingAction);
+            else statusText.setText("Nearby Wi-Fi permission is needed to start a hotspot. Wi-Fi mode still works without it.");
         }
     }
 
@@ -270,7 +329,10 @@ public final class MainActivity extends Activity {
 
     private void sendServiceCommand(String action) {
         Intent service = new Intent(this, ShareSessionService.class).setAction(action);
-        if (Build.VERSION.SDK_INT >= 26 && ShareSessionService.ACTION_START.equals(action)) startForegroundService(service);
+        boolean foregroundStart = ShareSessionService.ACTION_START.equals(action)
+                || ShareSessionService.ACTION_START_WIFI.equals(action)
+                || ShareSessionService.ACTION_START_HOTSPOT.equals(action);
+        if (Build.VERSION.SDK_INT >= 26 && foregroundStart) startForegroundService(service);
         else startService(service);
     }
 

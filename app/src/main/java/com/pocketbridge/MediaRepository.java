@@ -15,6 +15,7 @@ import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 
 final class MediaRepository {
     static final class Item {
@@ -59,6 +60,7 @@ final class MediaRepository {
         if ("all".equals(kind) || "images".equals(kind)) collect(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image", "images", output);
         if ("all".equals(kind) || "videos".equals(kind)) collect(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, "video", "videos", output);
         if ("all".equals(kind) || "audio".equals(kind)) collect(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, "audio", "audio", output);
+        if ("all".equals(kind) || "files".equals(kind)) collectDocuments(output);
         Collections.sort(output, (a, b) -> Long.compare(b.modified, a.modified));
         return output;
     }
@@ -68,7 +70,8 @@ final class MediaRepository {
         if ("images".equals(kind)) return grantedImageOrVideo(Manifest.permission.READ_MEDIA_IMAGES);
         if ("videos".equals(kind)) return grantedImageOrVideo(Manifest.permission.READ_MEDIA_VIDEO);
         if ("audio".equals(kind)) return grantedSimple(Manifest.permission.READ_MEDIA_AUDIO);
-        return granted("images") || granted("videos") || granted("audio");
+        if ("files".equals(kind)) return grantedDocuments();
+        return granted("images") || granted("videos") || granted("audio") || granted("files");
     }
 
     JSONObject accessJson() {
@@ -77,6 +80,7 @@ final class MediaRepository {
             result.put("images", granted("images"));
             result.put("videos", granted("videos"));
             result.put("audio", granted("audio"));
+            result.put("files", granted("files"));
         } catch (Exception ignored) { }
         return result;
     }
@@ -92,6 +96,12 @@ final class MediaRepository {
 
     private boolean grantedSimple(String permission) {
         if (Build.VERSION.SDK_INT >= 33) return check(permission);
+        return check(Manifest.permission.READ_EXTERNAL_STORAGE);
+    }
+
+    private boolean grantedDocuments() {
+        // Android 11+ has no broad "documents" permission for ordinary apps, so the
+        // Files tab can only show what the media store already indexes for us.
         return check(Manifest.permission.READ_EXTERNAL_STORAGE);
     }
 
@@ -111,6 +121,7 @@ final class MediaRepository {
         if ("image".equals(type)) { base = MediaStore.Images.Media.EXTERNAL_CONTENT_URI; kind = "image"; }
         else if ("video".equals(type)) { base = MediaStore.Video.Media.EXTERNAL_CONTENT_URI; kind = "video"; }
         else if ("audio".equals(type)) { base = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI; kind = "audio"; }
+        else if ("file".equals(type)) { base = MediaStore.Files.getContentUri("external"); kind = "file"; }
         else return null;
         Uri uri = ContentUris.withAppendedId(base, id);
         String[] projection = {MediaStore.MediaColumns.DISPLAY_NAME, MediaStore.MediaColumns.MIME_TYPE, MediaStore.MediaColumns.SIZE, MediaStore.MediaColumns.DATE_MODIFIED};
@@ -139,6 +150,28 @@ final class MediaRepository {
                 String mime = value(cursor, 2, "application/octet-stream");
                 output.add(new Item(prefix + ":" + id, value(cursor, 1, "File"), mime, kind,
                         number(cursor, 3), number(cursor, 4), itemUri));
+            }
+        } catch (SecurityException ignored) { }
+    }
+
+    /** Non-media files the media store knows about (documents, archives, and so on). */
+    private void collectDocuments(List<Item> output) {
+        Uri collection = MediaStore.Files.getContentUri("external");
+        String[] projection = {MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME,
+                MediaStore.MediaColumns.MIME_TYPE, MediaStore.MediaColumns.SIZE, MediaStore.MediaColumns.DATE_MODIFIED};
+        String selection = MediaStore.Files.FileColumns.MEDIA_TYPE + " IS NULL OR "
+                + MediaStore.Files.FileColumns.MEDIA_TYPE + " = 0";
+        try (Cursor cursor = context.getContentResolver().query(collection, projection, selection, null,
+                MediaStore.MediaColumns.DATE_MODIFIED + " DESC")) {
+            if (cursor == null) return;
+            int limit = 2000;
+            while (cursor.moveToNext() && limit-- > 0) {
+                long id = number(cursor, 0);
+                String mime = value(cursor, 2, "application/octet-stream").toLowerCase(Locale.ROOT);
+                // Skip anything that already appears in the photo, video or audio tabs.
+                if (mime.startsWith("image/") || mime.startsWith("video/") || mime.startsWith("audio/")) continue;
+                output.add(new Item("file:" + id, value(cursor, 1, "File"), mime, "file",
+                        number(cursor, 3), number(cursor, 4), ContentUris.withAppendedId(collection, id)));
             }
         } catch (SecurityException ignored) { }
     }

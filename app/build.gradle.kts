@@ -10,8 +10,8 @@ android {
         applicationId = "com.pocketbridge"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.4.0"
+        versionCode = 5
+        versionName = "0.5.0"
         if (project.findProperty("pocketbridgeUniversal") != "true") {
             ndk {
                 abiFilters += "arm64-v8a"

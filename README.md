@@ -2,13 +2,12 @@
 
 PocketBridge is an open-source Android app for sharing phone media and the phone screen to a laptop browser over a local-only Wi-Fi hotspot. An optional portable open-source Windows helper also lets the phone view and control the laptop. Both workflows work without mobile data or internet access.
 
-## Version 0.4.0
+## Version 0.5.0
 
-- Start a private local-only hotspot from the phone app.
-- Share over a hotspot you already turned on from Android settings, or over the Wi-Fi network the phone is already on, when Android refuses to create a second hotspot.
+- Two ways to connect, chosen on the phone: **Wi-Fi mode** (laptop joins the same Wi-Fi as the phone) and **Hotspot mode** (the phone creates its own private Wi-Fi, or reuses the hotspot you already switched on).
+- Open a short link like `http://192.168.43.1:43117` and enter a 6-digit code shown on the phone, instead of typing a long token.
+- Browse photos, videos, audio **and files**, play video and audio in the browser with 10-second skip controls, or download the originals.
 - Show the network name, password, and one-time browser link.
-- Browse photos, videos, and audio from the laptop browser.
-- Play media in the browser or download selected files.
 - Stream the phone screen to the browser using WebRTC with hardware H.264 where available.
 - Control the Windows laptop from the phone using the separate portable, open-source helper in this release. The helper is a companion because Windows requires a PC-side screen/input process.
 - Keep file and screen data on the local hotspot; no cloud relay or account.
@@ -32,17 +31,17 @@ To build the larger universal APK with all WebRTC Android ABIs, run `.\gradlew.b
 See [INSTALL.md](INSTALL.md) for simple phone and laptop setup steps.
 
 1. Install the APK on Android and grant nearby Wi-Fi and media permissions.
-2. Tap **Start local share**. The app creates a local-only hotspot, which has no internet connection. If your phone's own hotspot is already on, PocketBridge shares over that one instead of failing.
-3. Connect the laptop to the SSID and password shown in the app.
-4. Open the one-time local link in the laptop browser.
+2. Choose a mode: **Wi-Fi mode** if the laptop is already on the same Wi-Fi as the phone, or **Hotspot mode** to have the phone create its own network.
+3. Join the network named on the phone screen (in Wi-Fi mode there is nothing to join).
+4. Open the short link in the laptop browser and enter the 6-digit code shown on the phone.
 5. For screen sharing, tap **Share phone screen** in the app and approve Android's capture prompt. Then choose **Watch screen** in the browser.
-6. For PC control, download and extract `PocketBridge-Windows-Control-v0.4.0.zip` on the laptop, then double-click `Start-Control.bat`. Keep the helper running, and open the printed link on your phone while it is connected to the PocketBridge hotspot. If Windows Firewall asks, allow it on private networks only.
+6. For PC control, download and extract `PocketBridge-Windows-Control-v0.5.0.zip` on the laptop, then double-click `Start-Control.bat`. Keep the helper running, and open the printed link on your phone while it is connected to the PocketBridge hotspot. If Windows Firewall asks, allow it on private networks only.
 
 Android 8.0 (API 26) and newer are supported by the project. Android 14 and 15 may ask for access to selected photos and videos; grant access to the items you want to share.
 
 ## Security
 
-The phone host and PC helper each use temporary random link tokens. Keep both links private and close both services when finished. The local-only hotspot uses Android-generated Wi-Fi credentials. Phone screen video is sent peer-to-peer with WebRTC encryption; files are streamed directly from the phone over the private hotspot. The third-party PC helper's control page is plain HTTP on the local hotspot, so anyone who knows its link and joins that hotspot could control the PC.
+The phone host uses a random 6-digit code for the browser, rate limited against guessing, plus a long token for legacy links. Keep both links private and close both services when finished. The local-only hotspot uses Android-generated Wi-Fi credentials. Phone screen video is sent peer-to-peer with WebRTC encryption; files are streamed directly from the phone over the private hotspot. The third-party PC helper's control page is plain HTTP on the local hotspot, so anyone who knows its link and joins that hotspot could control the PC.
 
 ## Open source
 

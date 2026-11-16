@@ -14,7 +14,7 @@ import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URLEncoder;
@@ -27,17 +27,22 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 final class MediaHttpServer {
     private static final int PORT = 43117;
     private static final int THUMB_TARGET = 384;
     private static final int THUMB_CACHE_BYTES = 24 * 1024 * 1024;
+    // A six digit code is short enough to type on a laptop, so it is rate limited.
+    private static final int MAX_BAD_CODES_PER_WINDOW = 20;
+    private static final long BAD_CODE_WINDOW_MS = 60_000L;
     private final Context context;
+    private final String code;
     private final String token;
     private final MediaRepository media;
     private final AtomicBoolean running = new AtomicBoolean(false);
-    // A phone serves one laptop; a handful of parallel connections keeps the
-    // thumbnail grid moving without starving a large download.
+    private final AtomicInteger badCodes = new AtomicInteger(0);
+    private volatile long badCodeWindowStart = 0L;
     private final ExecutorService clients = new ThreadPoolExecutor(
             4, 24, 60L, TimeUnit.SECONDS,
             new LinkedBlockingQueue<>(64),
@@ -53,14 +58,19 @@ final class MediaHttpServer {
     private ServerSocket serverSocket;
     private Thread acceptThread;
 
-    MediaHttpServer(Context context, String token) {
+    MediaHttpServer(Context context, String code, String token) {
         this.context = context.getApplicationContext();
+        this.code = code;
         this.token = token;
         this.media = new MediaRepository(context);
     }
 
     void start() throws Exception {
-        serverSocket = new ServerSocket(PORT, 24, InetAddress.getByName("0.0.0.0"));
+        // setReuseAddress lets a quick restart rebind the port instead of failing
+        // with "Address already in use" while the old socket is still closing.
+        serverSocket = new ServerSocket();
+        serverSocket.setReuseAddress(true);
+        serverSocket.bind(new InetSocketAddress("0.0.0.0", PORT), 24);
         running.set(true);
         acceptThread = new Thread(() -> {
             while (running.get()) {
@@ -101,25 +111,42 @@ final class MediaHttpServer {
             try { if (lengthText != null) contentLength = Math.min(Integer.parseInt(lengthText), 2 * 1024 * 1024); } catch (Exception ignoredLength) { }
             byte[] body = method.equals("POST") ? readBytes(input, contentLength) : new byte[0];
 
+            // The page itself carries no data, so it loads before the code is entered.
+            if (path.equals("/") || path.equals("/index.html")) {
+                respond(output, 200, "text/html; charset=utf-8", page(false), "Cache-Control: no-store\r\n");
+                return;
+            }
+            // Old links that embedded the long token keep working.
             if (path.startsWith("/share/")) {
                 String requestToken = path.substring("/share/".length());
-                if (!constantTimeEquals(requestToken, token)) { respond(output, 403, "text/plain; charset=utf-8", "This share link is invalid or expired.", null); return; }
-                byte[] html;
-                try (InputStream asset = context.getAssets().open("www/index.html")) { html = readAll(asset); }
-                String page = new String(html, StandardCharsets.UTF_8).replace("__POCKETBRIDGE_TOKEN__", token);
-                respond(output, 200, "text/html; charset=utf-8", page, "Cache-Control: no-store\r\n");
+                if (!constantTimeEquals(requestToken, token)) {
+                    respond(output, 403, "text/plain; charset=utf-8", "This share link is invalid or expired.", null);
+                    return;
+                }
+                respond(output, 200, "text/html; charset=utf-8", page(true), "Cache-Control: no-store\r\n");
                 return;
             }
             if (path.equals("/health")) { respond(output, 200, "application/json", "{\"ok\":true}", null); return; }
             if (path.equals("/favicon.ico")) { writeHead(output, 204, "text/plain", 0, null, null); output.flush(); return; }
 
-            String auth = headers.get("authorization");
-            String queryToken = target.getQueryParameter("token");
-            if (!constantTimeEquals(token, queryToken) && (auth == null || !constantTimeEquals("Bearer " + token, auth))) {
-                respond(output, 403, "application/json", "{\"error\":\"Invalid share link\"}", null);
+            if (!authorized(target, headers)) {
+                if (looksLikeCodeAttempt(target)) {
+                    if (tooManyBadCodes()) {
+                        respond(output, 429, "application/json; charset=utf-8",
+                                "{\"error\":\"Too many wrong codes. Wait a minute and try again.\"}", null);
+                        return;
+                    }
+                }
+                respond(output, 403, "application/json; charset=utf-8",
+                        "{\"error\":\"Enter the code shown in PocketBridge on the phone.\"}", null);
                 return;
             }
+            resetBadCodes();
 
+            if (path.equals("/api/session") && method.equals("GET")) {
+                respond(output, 200, "application/json", "{\"ok\":true}", null);
+                return;
+            }
             if (path.equals("/api/files") && method.equals("GET")) {
                 String kind = target.getQueryParameter("kind");
                 if (kind == null) kind = "all";
@@ -172,6 +199,46 @@ final class MediaHttpServer {
         } catch (Exception error) {
             android.util.Log.w("PocketBridge", "HTTP client closed", error);
         }
+    }
+
+    /**
+     * @param withToken only the legacy /share/<token> link embeds the long token;
+     *                  the plain / page must never leak it, because anyone on the
+     *                  network can load / and read the source.
+     */
+    private String page(boolean withToken) throws Exception {
+        byte[] html;
+        try (InputStream asset = context.getAssets().open("www/index.html")) { html = readAll(asset); }
+        return new String(html, StandardCharsets.UTF_8).replace("__POCKETBRIDGE_TOKEN__", withToken ? token : "");
+    }
+
+    /** Accepts the short code, the legacy long token, or a bearer token. */
+    private boolean authorized(Uri target, Map<String, String> headers) {
+        String suppliedCode = target.getQueryParameter("code");
+        if (suppliedCode != null && constantTimeEquals(code, suppliedCode.trim())) return true;
+        String suppliedToken = target.getQueryParameter("token");
+        if (suppliedToken != null && constantTimeEquals(token, suppliedToken)) return true;
+        String auth = headers.get("authorization");
+        return auth != null && constantTimeEquals("Bearer " + token, auth);
+    }
+
+    private static boolean looksLikeCodeAttempt(Uri target) {
+        String suppliedCode = target.getQueryParameter("code");
+        return suppliedCode != null && !suppliedCode.trim().isEmpty();
+    }
+
+    private boolean tooManyBadCodes() {
+        long now = System.currentTimeMillis();
+        if (now - badCodeWindowStart > BAD_CODE_WINDOW_MS) {
+            badCodeWindowStart = now;
+            badCodes.set(0);
+        }
+        return badCodes.incrementAndGet() > MAX_BAD_CODES_PER_WINDOW;
+    }
+
+    private void resetBadCodes() {
+        badCodes.set(0);
+        badCodeWindowStart = System.currentTimeMillis();
     }
 
     /** Cached JPEG preview so the browser grid never downloads full-size originals. */
@@ -310,6 +377,7 @@ final class MediaHttpServer {
                 : status == 404 ? "Not Found"
                 : status == 409 ? "Conflict"
                 : status == 416 ? "Range Not Satisfiable"
+                : status == 429 ? "Too Many Requests"
                 : "Bad Request";
         String headers = "HTTP/1.1 " + status + " " + reason + "\r\n" +
                 "Content-Type: " + type + "\r\n" +
