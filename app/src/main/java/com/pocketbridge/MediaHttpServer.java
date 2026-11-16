@@ -114,7 +114,10 @@ final class MediaHttpServer {
                 return;
             }
             if (path.equals("/api/screen/status") && method.equals("GET")) {
-                respond(output, 200, "application/json", "{\"ready\":" + ScreenCaptureService.isRunning() + "}", null);
+                JSONObject state = new JSONObject().put("ready", ScreenCaptureService.isRunning());
+                String setupError = ScreenCaptureService.getSetupError();
+                if (setupError != null) state.put("error", setupError);
+                respond(output, 200, "application/json; charset=utf-8", state.toString(), null);
                 return;
             }
             if (path.equals("/api/screen/offer") && method.equals("POST")) {

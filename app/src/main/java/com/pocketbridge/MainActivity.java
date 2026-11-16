@@ -46,12 +46,14 @@ public final class MainActivity extends Activity {
             String password = intent.getStringExtra(ShareSessionService.EXTRA_PASSWORD);
             String url = intent.getStringExtra(ShareSessionService.EXTRA_URL);
             if (status != null) statusText.setText(status);
-            if (ssid != null || password != null) {
-                networkText.setText("Wi-Fi name  " + valueOr(ssid, "starting…") + "\nPassword  " + valueOr(password, "starting…"));
-            }
-            if (url != null) linkText.setText(url);
+            networkText.setText(ssid != null || password != null
+                    ? "Wi-Fi name  " + valueOr(ssid, "starting…") + "\nPassword  " + valueOr(password, "starting…")
+                    : "No local hotspot is active. Start a share to create one.");
+            linkText.setText(url == null || url.isEmpty() ? "The browser link will appear here when ready." : url);
             boolean ready = url != null && !url.isEmpty();
-            startButton.setText(ready ? "Stop local share" : "Start local share");
+            boolean busy = status != null && (status.startsWith("Starting") || status.startsWith("Hotspot ready"));
+            startButton.setText(ready ? "Stop local share" : busy ? "Please wait…" : "Start local share");
+            startButton.setEnabled(!busy || ready);
             startButton.setTag(ready);
         }
     };
@@ -61,6 +63,7 @@ public final class MainActivity extends Activity {
         buildScreen();
     }
 
+    @android.annotation.SuppressLint("UnspecifiedRegisterReceiverFlag")
     @Override protected void onStart() {
         super.onStart();
         IntentFilter filter = new IntentFilter(ShareSessionService.ACTION_STATUS);
@@ -161,6 +164,10 @@ public final class MainActivity extends Activity {
 
         Button screenButton = button("Share phone screen", Color.rgb(31, 53, 66));
         screenButton.setOnClickListener(v -> {
+            if (linkText == null || !linkText.getText().toString().startsWith("http://")) {
+                Toast.makeText(this, "Start local share first, then approve screen capture.", Toast.LENGTH_LONG).show();
+                return;
+            }
             MediaProjectionManager manager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
             startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_SCREEN_CAPTURE);
         });
@@ -217,6 +224,7 @@ public final class MainActivity extends Activity {
             addIfMissing(required, Manifest.permission.READ_MEDIA_IMAGES);
             addIfMissing(required, Manifest.permission.READ_MEDIA_VIDEO);
             addIfMissing(required, Manifest.permission.READ_MEDIA_AUDIO);
+            if (Build.VERSION.SDK_INT >= 34) addIfMissing(required, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED);
             addIfMissing(required, Manifest.permission.POST_NOTIFICATIONS);
         } else {
             addIfMissing(required, Manifest.permission.ACCESS_FINE_LOCATION);
@@ -248,7 +256,8 @@ public final class MainActivity extends Activity {
                 service.putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, resultCode);
                 service.putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, data);
                 if (Build.VERSION.SDK_INT >= 26) startForegroundService(service); else startService(service);
-                Toast.makeText(this, "Screen sharing is ready. Choose Watch screen on the laptop.", Toast.LENGTH_LONG).show();
+                statusText.setText("Screen capture approved. Starting screen encoder…");
+                Toast.makeText(this, "Keep PocketBridge open. Choose Watch screen on the laptop.", Toast.LENGTH_LONG).show();
             } else Toast.makeText(this, "Screen sharing was cancelled", Toast.LENGTH_SHORT).show();
         }
     }

@@ -41,6 +41,7 @@ public final class ScreenCaptureService extends Service {
     private static final String CHANNEL_ID = "pocketbridge_screen";
     private static final int NOTIFICATION_ID = 1202;
     private static volatile ScreenCaptureService instance;
+    private static volatile String lastSetupError;
 
     private EglBase eglBase;
     private PeerConnectionFactory factory;
@@ -55,6 +56,8 @@ public final class ScreenCaptureService extends Service {
     private volatile boolean iceGatheringComplete;
 
     public static boolean isRunning() { return instance != null && instance.videoTrack != null; }
+
+    public static String getSetupError() { return lastSetupError; }
 
     public static String answerOffer(String sdp) {
         ScreenCaptureService service = instance;
@@ -75,16 +78,20 @@ public final class ScreenCaptureService extends Service {
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent == null || intent.getIntExtra(EXTRA_RESULT_CODE, 0) == 0) {
+            lastSetupError = "Android screen-capture permission was not provided.";
             stopSelf();
             return START_NOT_STICKY;
         }
-        if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
-        else startForeground(NOTIFICATION_ID, buildNotification());
-        Intent permissionData = intent.getParcelableExtra(EXTRA_RESULT_DATA);
-        if (permissionData == null) { stopSelf(); return START_NOT_STICKY; }
+        if (isRunning()) return START_NOT_STICKY;
         try {
+            lastSetupError = null;
+            if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
+            else startForeground(NOTIFICATION_ID, buildNotification());
+            Intent permissionData = intent.getParcelableExtra(EXTRA_RESULT_DATA);
+            if (permissionData == null) throw new IllegalArgumentException("Android did not return screen-capture permission data.");
             initialize(permissionData);
         } catch (Exception error) {
+            lastSetupError = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
             android.util.Log.e("PocketBridge", "Screen share setup failed", error);
             stopSelf();
         }
@@ -133,7 +140,7 @@ public final class ScreenCaptureService extends Service {
         ArrayList<PeerConnection.IceServer> iceServers = new ArrayList<>();
         PeerConnection.RTCConfiguration configuration = new PeerConnection.RTCConfiguration(iceServers);
         configuration.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN;
-        peer = factory.createPeerConnection(configuration, new PeerConnection.Observer() {
+        PeerConnection activePeer = factory.createPeerConnection(configuration, new PeerConnection.Observer() {
             @Override public void onSignalingChange(PeerConnection.SignalingState state) { }
             @Override public void onIceConnectionChange(PeerConnection.IceConnectionState state) { }
             @Override public void onIceConnectionReceivingChange(boolean receiving) { }
@@ -151,8 +158,9 @@ public final class ScreenCaptureService extends Service {
             @Override public void onRenegotiationNeeded() { }
             @Override public void onAddTrack(org.webrtc.RtpReceiver receiver, org.webrtc.MediaStream[] streams) { }
         });
-        if (peer == null) { answerLatch = null; return null; }
-        sender = peer.addTrack(videoTrack, Collections.singletonList("pocketbridge"));
+        peer = activePeer;
+        if (activePeer == null) { answerLatch = null; return null; }
+        sender = activePeer.addTrack(videoTrack, Collections.singletonList("pocketbridge"));
         if (sender != null) {
             try {
                 RtpParameters parameters = sender.getParameters();
@@ -161,17 +169,19 @@ public final class ScreenCaptureService extends Service {
             } catch (Exception ignored) { }
         }
         SessionDescription offer = new SessionDescription(SessionDescription.Type.OFFER, offerSdp);
-        peer.setRemoteDescription(new EmptySdpObserver() {
+        activePeer.setRemoteDescription(new EmptySdpObserver() {
             @Override public void onSetSuccess() {
-                peer.createAnswer(new EmptySdpObserver() {
+                activePeer.createAnswer(new EmptySdpObserver() {
                     @Override public void onCreateSuccess(SessionDescription answer) {
-                        peer.setLocalDescription(new EmptySdpObserver() {
+                        activePeer.setLocalDescription(new EmptySdpObserver() {
                             @Override public void onSetSuccess() { maybeCompleteAnswer(); }
+                            @Override public void onSetFailure(String error) { failAnswer("Could not set the local WebRTC description: " + error); }
                         }, answer);
                     }
+                    @Override public void onCreateFailure(String error) { failAnswer("Could not create a WebRTC answer: " + error); }
                 }, new MediaConstraints());
             }
-            @Override public void onSetFailure(String error) { pendingAnswer = ""; latch.countDown(); }
+            @Override public void onSetFailure(String error) { failAnswer("Could not read the browser's WebRTC offer: " + error); }
         }, offer);
         try {
             if (!latch.await(18, TimeUnit.SECONDS)) return null;
@@ -188,6 +198,13 @@ public final class ScreenCaptureService extends Service {
         if (description == null) return;
         pendingAnswer = description.description;
         answerLatch.countDown();
+    }
+
+    private void failAnswer(String message) {
+        android.util.Log.e("PocketBridge", message);
+        pendingAnswer = "";
+        CountDownLatch latch = answerLatch;
+        if (latch != null) latch.countDown();
     }
 
     private void closePeer() {

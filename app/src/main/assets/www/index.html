@@ -98,7 +98,7 @@
       screenView.classList.add('active'); state.textContent='Connecting to the phone over the local hotspot…';
       try {
         const statusResponse=await fetch(endpoint('/api/screen/status')); const status=await statusResponse.json();
-        if (!status.ready) throw new Error('First tap “Share phone screen” in PocketBridge and approve Android’s prompt.');
+        if (!status.ready) throw new Error(status.error ? `Screen capture could not start: ${status.error}` : 'First tap “Share phone screen” in PocketBridge and approve Android’s prompt.');
         peer=new RTCPeerConnection({iceServers:[]});
         peer.addTransceiver('video',{direction:'recvonly'});
         peer.ontrack=(event)=>{document.getElementById('screenVideo').srcObject=event.streams[0];state.textContent='Live · phone screen is shared peer-to-peer';document.getElementById('screenHint').textContent='Your phone screen is streaming locally.'};
@@ -107,7 +107,7 @@
         const response=await fetch(endpoint('/api/screen/offer'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sdp:peer.localDescription.sdp})});
         const answer=await response.json(); if(!response.ok) throw new Error(answer.error||'Could not connect to the phone.');
         await peer.setRemoteDescription({type:answer.type,sdp:answer.sdp});
-      } catch(error) { state.textContent=error.message||'Screen share failed.'; }
+      } catch(error) { state.textContent=error.message||'Screen share failed.'; if(peer){try{peer.close()}catch{} peer=null} }
     }
     function stopWatching() {
       if(peer){try{peer.close()}catch{} peer=null}

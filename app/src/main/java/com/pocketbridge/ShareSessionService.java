@@ -9,6 +9,10 @@ import android.content.Context;
 import android.content.Intent;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiManager;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.LinkProperties;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -127,22 +131,39 @@ public final class ShareSessionService extends Service {
 
     private String findHotspotAddress() {
         try {
+            // LocalOnlyHotspot exposes the AP through a Wi-Fi Network. Prefer that
+            // network's own address over an unrelated VPN/cellular private address.
+            ConnectivityManager connectivity = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            Network[] networks = connectivity.getAllNetworks();
+            // The phone's local-only hotspot has no internet capability. Prefer it
+            // when Android is also connected to another Wi-Fi network.
+            for (int pass = 0; pass < 2; pass++) {
+                for (Network network : networks) {
+                    NetworkCapabilities caps = connectivity.getNetworkCapabilities(network);
+                    if (caps == null || !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue;
+                    boolean internet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+                    if ((pass == 0 && internet) || (pass == 1 && !internet)) continue;
+                    LinkProperties properties = connectivity.getLinkProperties(network);
+                    if (properties == null) continue;
+                    for (android.net.LinkAddress link : properties.getLinkAddresses()) {
+                        if (link.getAddress() instanceof Inet4Address && link.getAddress().isSiteLocalAddress()) return link.getAddress().getHostAddress();
+                    }
+                }
+            }
+            String fallback = null;
             for (NetworkInterface network : Collections.list(NetworkInterface.getNetworkInterfaces())) {
                 if (!network.isUp() || network.isLoopback()) continue;
-                boolean hotspotLike = network.getName().toLowerCase().contains("ap") || network.getName().toLowerCase().contains("wlan");
+                String name = network.getName().toLowerCase(java.util.Locale.ROOT);
+                boolean hotspotLike = name.startsWith("ap") || name.contains("softap") || name.startsWith("wlan");
                 for (java.net.InetAddress address : Collections.list(network.getInetAddresses())) {
                     if (address instanceof Inet4Address && address.isSiteLocalAddress() && !address.isLoopbackAddress()) {
                         String ip = address.getHostAddress();
                         if (hotspotLike && ip.endsWith(".1")) return ip;
+                        if (hotspotLike && fallback == null) fallback = ip;
                     }
                 }
             }
-            for (NetworkInterface network : Collections.list(NetworkInterface.getNetworkInterfaces())) {
-                if (!network.isUp() || network.isLoopback()) continue;
-                for (java.net.InetAddress address : Collections.list(network.getInetAddresses())) {
-                    if (address instanceof Inet4Address && address.isSiteLocalAddress() && !address.isLoopbackAddress()) return address.getHostAddress();
-                }
-            }
+            if (fallback != null) return fallback;
         } catch (Exception ignored) { }
         return null;
     }
