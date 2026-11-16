@@ -2,7 +2,7 @@ package com.pocketbridge;
 
 import android.Manifest;
 import android.app.Activity;
-import android.app.MediaProjectionManager;
+import android.media.projection.MediaProjectionManager;
 import android.content.BroadcastReceiver;
 import android.content.ClipData;
 import android.content.ClipboardManager;

@@ -150,7 +150,6 @@ public final class ScreenCaptureService extends Service {
             @Override public void onDataChannel(org.webrtc.DataChannel channel) { }
             @Override public void onRenegotiationNeeded() { }
             @Override public void onAddTrack(org.webrtc.RtpReceiver receiver, org.webrtc.MediaStream[] streams) { }
-            @Override public void onTrack(PeerConnection.RtpTransceiver transceiver) { }
         });
         if (peer == null) { answerLatch = null; return null; }
         sender = peer.addTrack(videoTrack, Collections.singletonList("pocketbridge"));
