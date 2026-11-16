@@ -176,7 +176,7 @@ public final class MainActivity extends Activity {
         content.addView(screenButton, screenGap);
 
         TextView note = new TextView(this);
-        note.setText("For screen sharing, Android will ask you to approve capture each time. Keep this app open while the share is active.");
+        note.setText("Already have your phone's hotspot turned on? PocketBridge will share over that hotspot instead of creating its own. For screen sharing, Android will ask you to approve capture each time.");
         note.setTextColor(COLOR_MUTED);
         note.setTextSize(13);
         note.setPadding(dp(4), dp(12), dp(4), 0);
@@ -221,10 +221,16 @@ public final class MainActivity extends Activity {
         List<String> required = new ArrayList<>();
         if (Build.VERSION.SDK_INT >= 33) {
             addIfMissing(required, Manifest.permission.NEARBY_WIFI_DEVICES);
-            addIfMissing(required, Manifest.permission.READ_MEDIA_IMAGES);
-            addIfMissing(required, Manifest.permission.READ_MEDIA_VIDEO);
+            // Android 14+ can grant access to selected photos only. Do not keep
+            // asking for full library access once that partial access is granted.
+            boolean partialMedia = Build.VERSION.SDK_INT >= 34
+                    && checkSelfPermission(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) == PackageManager.PERMISSION_GRANTED;
+            if (!partialMedia) {
+                addIfMissing(required, Manifest.permission.READ_MEDIA_IMAGES);
+                addIfMissing(required, Manifest.permission.READ_MEDIA_VIDEO);
+                if (Build.VERSION.SDK_INT >= 34) addIfMissing(required, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED);
+            }
             addIfMissing(required, Manifest.permission.READ_MEDIA_AUDIO);
-            if (Build.VERSION.SDK_INT >= 34) addIfMissing(required, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED);
             addIfMissing(required, Manifest.permission.POST_NOTIFICATIONS);
         } else {
             addIfMissing(required, Manifest.permission.ACCESS_FINE_LOCATION);

@@ -1,11 +1,13 @@
 package com.pocketbridge;
 
 import android.content.Context;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Matrix;
 import android.net.Uri;
-import android.os.ParcelFileDescriptor;
+import android.util.LruCache;
 
 import org.json.JSONObject;
-import org.webrtc.SessionDescription;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
@@ -15,23 +17,39 @@ import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 final class MediaHttpServer {
     private static final int PORT = 43117;
+    private static final int THUMB_TARGET = 384;
+    private static final int THUMB_CACHE_BYTES = 24 * 1024 * 1024;
     private final Context context;
     private final String token;
     private final MediaRepository media;
     private final AtomicBoolean running = new AtomicBoolean(false);
-    private final ExecutorService clients = Executors.newFixedThreadPool(6);
+    // A phone serves one laptop; a handful of parallel connections keeps the
+    // thumbnail grid moving without starving a large download.
+    private final ExecutorService clients = new ThreadPoolExecutor(
+            4, 24, 60L, TimeUnit.SECONDS,
+            new LinkedBlockingQueue<>(64),
+            runnable -> {
+                Thread thread = new Thread(runnable, "PocketBridge-http-client");
+                thread.setDaemon(true);
+                return thread;
+            },
+            new ThreadPoolExecutor.CallerRunsPolicy());
+    private final LruCache<String, byte[]> thumbCache = new LruCache<String, byte[]>(THUMB_CACHE_BYTES) {
+        @Override protected int sizeOf(String key, byte[] value) { return value == null ? 0 : value.length; }
+    };
     private ServerSocket serverSocket;
     private Thread acceptThread;
 
@@ -42,13 +60,14 @@ final class MediaHttpServer {
     }
 
     void start() throws Exception {
-        serverSocket = new ServerSocket(PORT, 12, InetAddress.getByName("0.0.0.0"));
+        serverSocket = new ServerSocket(PORT, 24, InetAddress.getByName("0.0.0.0"));
         running.set(true);
         acceptThread = new Thread(() -> {
             while (running.get()) {
                 try {
                     Socket socket = serverSocket.accept();
                     socket.setSoTimeout(20000);
+                    socket.setTcpNoDelay(true);
                     clients.execute(() -> handle(socket));
                 } catch (Exception error) {
                     if (running.get()) android.util.Log.e("PocketBridge", "HTTP accept failed", error);
@@ -62,6 +81,7 @@ final class MediaHttpServer {
         running.set(false);
         try { if (serverSocket != null) serverSocket.close(); } catch (Exception ignored) { }
         clients.shutdownNow();
+        thumbCache.evictAll();
     }
 
     private void handle(Socket socket) {
@@ -91,6 +111,7 @@ final class MediaHttpServer {
                 return;
             }
             if (path.equals("/health")) { respond(output, 200, "application/json", "{\"ok\":true}", null); return; }
+            if (path.equals("/favicon.ico")) { writeHead(output, 204, "text/plain", 0, null, null); output.flush(); return; }
 
             String auth = headers.get("authorization");
             String queryToken = target.getQueryParameter("token");
@@ -102,8 +123,21 @@ final class MediaHttpServer {
             if (path.equals("/api/files") && method.equals("GET")) {
                 String kind = target.getQueryParameter("kind");
                 if (kind == null) kind = "all";
-                JSONObject response = new JSONObject().put("files", media.listJson(kind));
+                JSONObject response = new JSONObject()
+                        .put("files", media.listJson(kind))
+                        .put("access", media.accessJson());
                 respond(output, 200, "application/json; charset=utf-8", response.toString(), null);
+                return;
+            }
+            if (path.startsWith("/api/thumb/") && method.equals("GET")) {
+                String key = Uri.decode(path.substring("/api/thumb/".length()));
+                MediaRepository.Item item = media.find(key);
+                if (item == null) { respond(output, 404, "text/plain", "Media not found or permission is missing", null); return; }
+                byte[] preview = thumbnail(item);
+                if (preview == null) { respond(output, 404, "text/plain", "No preview available", null); return; }
+                writeHead(output, 200, "image/jpeg", preview.length, null, null);
+                output.write(preview);
+                output.flush();
                 return;
             }
             if (path.startsWith("/api/media/") && (method.equals("GET") || method.equals("HEAD"))) {
@@ -137,6 +171,80 @@ final class MediaHttpServer {
             respond(output, 404, "text/plain; charset=utf-8", "Not found", null);
         } catch (Exception error) {
             android.util.Log.w("PocketBridge", "HTTP client closed", error);
+        }
+    }
+
+    /** Cached JPEG preview so the browser grid never downloads full-size originals. */
+    private byte[] thumbnail(MediaRepository.Item item) {
+        byte[] cached = thumbCache.get(item.key);
+        if (cached != null) return cached;
+        byte[] built = buildThumbnail(item);
+        if (built != null) thumbCache.put(item.key, built);
+        return built;
+    }
+
+    private byte[] buildThumbnail(MediaRepository.Item item) {
+        try {
+            if ("video".equals(item.kind)) {
+                if (android.os.Build.VERSION.SDK_INT < 29) return null;
+                Bitmap frame = context.getContentResolver().loadThumbnail(item.uri, new android.util.Size(THUMB_TARGET, THUMB_TARGET), null);
+                return compress(frame);
+            }
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            try (InputStream probe = context.getContentResolver().openInputStream(item.uri)) {
+                if (probe == null) return null;
+                BitmapFactory.decodeStream(probe, null, bounds);
+            }
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null;
+            int sample = 1;
+            while (bounds.outWidth / (sample * 2) >= THUMB_TARGET && bounds.outHeight / (sample * 2) >= THUMB_TARGET) sample *= 2;
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inSampleSize = sample;
+            options.inPreferredConfig = Bitmap.Config.RGB_565;
+            Bitmap bitmap;
+            try (InputStream stream = context.getContentResolver().openInputStream(item.uri)) {
+                if (stream == null) return null;
+                bitmap = BitmapFactory.decodeStream(stream, null, options);
+            }
+            if (bitmap == null) return null;
+            int rotation = readRotation(item);
+            if (rotation != 0) {
+                Matrix matrix = new Matrix();
+                matrix.postRotate(rotation);
+                Bitmap rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+                if (rotated != bitmap) bitmap.recycle();
+                bitmap = rotated;
+            }
+            return compress(bitmap);
+        } catch (Exception | OutOfMemoryError error) {
+            return null;
+        }
+    }
+
+    private int readRotation(MediaRepository.Item item) {
+        try (InputStream stream = context.getContentResolver().openInputStream(item.uri)) {
+            if (stream == null) return 0;
+            android.media.ExifInterface exif = new android.media.ExifInterface(stream);
+            int orientation = exif.getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, android.media.ExifInterface.ORIENTATION_NORMAL);
+            if (orientation == android.media.ExifInterface.ORIENTATION_ROTATE_90) return 90;
+            if (orientation == android.media.ExifInterface.ORIENTATION_ROTATE_180) return 180;
+            if (orientation == android.media.ExifInterface.ORIENTATION_ROTATE_270) return 270;
+            return 0;
+        } catch (Exception error) {
+            return 0;
+        }
+    }
+
+    private static byte[] compress(Bitmap bitmap) {
+        if (bitmap == null) return null;
+        try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 82, out);
+            return out.toByteArray();
+        } catch (Exception error) {
+            return null;
+        } finally {
+            bitmap.recycle();
         }
     }
 
@@ -195,7 +303,14 @@ final class MediaHttpServer {
     }
 
     private static void writeHead(OutputStream output, int status, String type, long length, String extra, String unused) throws Exception {
-        String reason = status == 200 ? "OK" : status == 206 ? "Partial Content" : status == 403 ? "Forbidden" : status == 404 ? "Not Found" : status == 409 ? "Conflict" : status == 416 ? "Range Not Satisfiable" : "Bad Request";
+        String reason = status == 200 ? "OK"
+                : status == 204 ? "No Content"
+                : status == 206 ? "Partial Content"
+                : status == 403 ? "Forbidden"
+                : status == 404 ? "Not Found"
+                : status == 409 ? "Conflict"
+                : status == 416 ? "Range Not Satisfiable"
+                : "Bad Request";
         String headers = "HTTP/1.1 " + status + " " + reason + "\r\n" +
                 "Content-Type: " + type + "\r\n" +
                 "Content-Length: " + length + "\r\n" +

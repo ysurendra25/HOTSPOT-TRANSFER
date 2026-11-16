@@ -1,9 +1,12 @@
 package com.pocketbridge;
 
+import android.Manifest;
 import android.content.ContentUris;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.Build;
 import android.provider.MediaStore;
 
 import org.json.JSONArray;
@@ -38,6 +41,11 @@ final class MediaRepository {
                 result.put("size", size);
                 result.put("modified", modified);
                 result.put("url", "/api/media/" + Uri.encode(key));
+                // Images and videos get a small preview so the browser grid does not
+                // have to pull multi-megabyte originals over the hotspot.
+                if ("image".equals(kind) || "video".equals(kind)) {
+                    result.put("thumb", "/api/thumb/" + Uri.encode(key));
+                }
             } catch (Exception ignored) { }
             return result;
         }
@@ -53,6 +61,42 @@ final class MediaRepository {
         if ("all".equals(kind) || "audio".equals(kind)) collect(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, "audio", "audio", output);
         Collections.sort(output, (a, b) -> Long.compare(b.modified, a.modified));
         return output;
+    }
+
+    /** True when the app may read this media kind. Used to explain an empty library. */
+    boolean granted(String kind) {
+        if ("images".equals(kind)) return grantedImageOrVideo(Manifest.permission.READ_MEDIA_IMAGES);
+        if ("videos".equals(kind)) return grantedImageOrVideo(Manifest.permission.READ_MEDIA_VIDEO);
+        if ("audio".equals(kind)) return grantedSimple(Manifest.permission.READ_MEDIA_AUDIO);
+        return granted("images") || granted("videos") || granted("audio");
+    }
+
+    JSONObject accessJson() {
+        JSONObject result = new JSONObject();
+        try {
+            result.put("images", granted("images"));
+            result.put("videos", granted("videos"));
+            result.put("audio", granted("audio"));
+        } catch (Exception ignored) { }
+        return result;
+    }
+
+    private boolean grantedImageOrVideo(String permission) {
+        if (Build.VERSION.SDK_INT >= 33) {
+            if (check(permission)) return true;
+            // Android 14+ lets the user share only selected items.
+            return Build.VERSION.SDK_INT >= 34 && check(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED);
+        }
+        return check(Manifest.permission.READ_EXTERNAL_STORAGE);
+    }
+
+    private boolean grantedSimple(String permission) {
+        if (Build.VERSION.SDK_INT >= 33) return check(permission);
+        return check(Manifest.permission.READ_EXTERNAL_STORAGE);
+    }
+
+    private boolean check(String permission) {
+        return context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED;
     }
 
     Item find(String key) {

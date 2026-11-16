@@ -43,6 +43,7 @@
     const modal = document.getElementById('modal');
     let currentKind = 'all';
     let files = [];
+    let access = {};
     let peer = null;
     const endpoint = (path) => `${path}${path.includes('?') ? '&' : '?'}token=${encodeURIComponent(TOKEN)}`;
     const formatSize = (bytes) => { if (!bytes) return '0 B'; const units=['B','KB','MB','GB']; let n=bytes,i=0; while(n>=1024&&i<units.length-1){n/=1024;i++} return `${n.toFixed(i?1:0)} ${units[i]}` };
@@ -52,23 +53,32 @@
       try {
         const response = await fetch(endpoint(`/api/files?kind=${encodeURIComponent(currentKind)}`), {cache:'no-store'});
         if (!response.ok) throw new Error('The share link expired. Reopen the link shown in PocketBridge.');
-        const data = await response.json(); files = data.files || []; renderFiles();
+        const data = await response.json(); files = data.files || []; access = data.access || {}; renderFiles();
       } catch (error) {
         count.textContent = '';
         grid.innerHTML = `<div class="empty"><strong>Could not load files</strong>${safe(error.message || 'Check that your phone is still sharing.')}</div>`;
       }
     }
+    function missingAccessHint() {
+      const denied = [];
+      if (access.images === false) denied.push('photos');
+      if (access.videos === false) denied.push('videos');
+      if (access.audio === false) denied.push('audio');
+      if (!denied.length) return '';
+      return `<div class="empty"><strong>Allow media access on the phone</strong>Open PocketBridge and allow access to ${safe(denied.join(', '))}, then reload this page.</div>`;
+    }
     function renderFiles() {
       const term = search.value.trim().toLowerCase();
       const shown = files.filter(file => (file.name || '').toLowerCase().includes(term));
       count.textContent = `${shown.length} item${shown.length === 1 ? '' : 's'}`;
-      if (!shown.length) { grid.innerHTML = '<div class="empty"><strong>No files found</strong>Try another filter or search term.</div>'; return; }
+      if (!shown.length) { grid.innerHTML = missingAccessHint() || '<div class="empty"><strong>No files found</strong>Try another filter or search term.</div>'; return; }
       grid.innerHTML = shown.map(file => {
         const url = endpoint(file.url);
         let visual = '<div class="file-icon">♫</div>';
-        if (file.kind === 'image') visual = `<img loading="lazy" src="${safe(url)}" alt="${safe(file.name)}">`;
+        if (file.kind === 'image') visual = `<img loading="lazy" src="${safe(endpoint(file.thumb || file.url))}" alt="${safe(file.name)}">`;
         if (file.kind === 'video') visual = `<div class="file-icon">▶</div><div class="play">▶</div>`;
-        const preview = file.kind === 'image' || file.kind === 'video' ? `<button class="btn btn-soft" data-action="preview" data-id="${safe(file.id)}">Preview</button>` : '';
+        const previewable = file.kind === 'image' || file.kind === 'video' || file.kind === 'audio';
+        const preview = previewable ? `<button class="btn btn-soft" data-action="preview" data-id="${safe(file.id)}">Preview</button>` : '';
         return `<article class="card"><div class="thumb" data-action="preview" data-id="${safe(file.id)}">${visual}</div><div class="meta"><div class="name" title="${safe(file.name)}">${safe(file.name)}</div><div class="submeta">${formatSize(file.size)} · ${file.kind}</div><div class="actions">${preview}<a class="btn btn-outline" href="${safe(endpoint(file.url))}" download="${safe(file.name)}">Download</a></div></div></article>`;
       }).join('');
       grid.querySelectorAll('[data-action="preview"]').forEach(button => button.addEventListener('click', () => previewFile(button.dataset.id)));
@@ -77,7 +87,10 @@
       const file = files.find(item => item.id === id); if (!file) return;
       document.getElementById('modalName').textContent = file.name;
       const url = endpoint(file.url);
-      document.getElementById('modalMedia').innerHTML = file.kind === 'video' ? `<video src="${safe(url)}" controls autoplay playsinline></video>` : `<img src="${safe(url)}" alt="${safe(file.name)}">`;
+      const media = file.kind === 'video' ? `<video src="${safe(url)}" controls autoplay playsinline></video>`
+        : file.kind === 'audio' ? `<audio src="${safe(url)}" controls autoplay></audio>`
+        : `<img src="${safe(url)}" alt="${safe(file.name)}">`;
+      document.getElementById('modalMedia').innerHTML = media;
       modal.classList.add('open');
     }
     document.querySelectorAll('.filter').forEach(button => button.addEventListener('click', () => {

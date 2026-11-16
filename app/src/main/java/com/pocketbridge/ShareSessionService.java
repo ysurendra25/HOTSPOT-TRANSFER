@@ -20,8 +20,10 @@ import android.os.Looper;
 import android.content.pm.ServiceInfo;
 
 import java.net.Inet4Address;
+import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.util.Collections;
+import java.util.Locale;
 import java.util.UUID;
 
 public final class ShareSessionService extends Service {
@@ -35,6 +37,12 @@ public final class ShareSessionService extends Service {
     public static final String EXTRA_URL = "url";
     private static final String CHANNEL_ID = "pocketbridge_share";
     private static final int NOTIFICATION_ID = 1201;
+    // Shown in the "connect your laptop" card when PocketBridge is borrowing a
+    // hotspot the user already turned on from Android settings.
+    private static final String EXISTING_SSID_HINT = "Use the hotspot already on this phone";
+    private static final String EXISTING_PASSWORD_HINT = "Keep the laptop on that same Wi-Fi";
+    private static final String SAME_WIFI_SSID_HINT = "Join the same Wi-Fi as this phone";
+    private static final String SAME_WIFI_PASSWORD_HINT = "Use that network's usual password";
     private final Handler handler = new Handler(Looper.getMainLooper());
     private WifiManager.LocalOnlyHotspotReservation reservation;
     private MediaHttpServer server;
@@ -42,10 +50,16 @@ public final class ShareSessionService extends Service {
     private String currentPassword;
     private String currentUrl;
     private boolean starting;
+    /** True when we serve over an existing system hotspot instead of owning one. */
+    private boolean usingExistingHotspot;
 
     @Override public void onCreate() {
         super.onCreate();
         createNotificationChannel();
+    }
+
+    private boolean sessionActive() {
+        return reservation != null || usingExistingHotspot;
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
@@ -55,11 +69,13 @@ public final class ShareSessionService extends Service {
             return START_NOT_STICKY;
         }
         if (ACTION_QUERY.equals(action)) {
-            String status = reservation != null ? "Local share is active" : starting ? "Starting a local-only hotspot…" : "No share is active. Tap Start local share when ready.";
+            String status = sessionActive() ? "Local share is active" : starting ? "Starting a local-only hotspot…" : "No share is active. Tap Start local share when ready.";
             publish(status, currentSsid, currentPassword, currentUrl);
+            // A status query must not leave an idle service running forever.
+            if (!sessionActive() && !starting) stopSelf();
             return START_NOT_STICKY;
         }
-        if (ACTION_START.equals(action) && reservation == null && !starting) startSession();
+        if (ACTION_START.equals(action) && !sessionActive() && !starting) startSession();
         return START_STICKY;
     }
 
@@ -91,7 +107,18 @@ public final class ShareSessionService extends Service {
 
                 @Override public void onFailed(int reason) {
                     starting = false;
-                    String message = reason == ERROR_NO_CHANNEL ? "The phone has no Wi-Fi channel available. Close another hotspot and try again." : "Android could not start its local-only hotspot (error " + reason + ").";
+                    // Android refuses to create a local-only hotspot while the phone's
+                    // own hotspot/tethering is already running. That is the common
+                    // "hotspot is on but file sharing does nothing" case: serve over
+                    // the hotspot the user already has instead of giving up.
+                    if (reason == WifiManager.LocalOnlyHotspotCallback.ERROR_INCOMPATIBLE_MODE
+                            || reason == WifiManager.LocalOnlyHotspotCallback.ERROR_TETHERING_DISALLOWED
+                            || reason == WifiManager.LocalOnlyHotspotCallback.ERROR_GENERIC) {
+                        if (startServerOnExistingHotspot()) return;
+                    }
+                    String message = reason == WifiManager.LocalOnlyHotspotCallback.ERROR_NO_CHANNEL
+                            ? "The phone has no Wi-Fi channel available. Close another hotspot and try again."
+                            : "Android could not start its local-only hotspot (error " + reason + "). Turn off the phone's hotspot in Settings, then try again.";
                     publish(message, null, null, null);
                     stopForegroundCompat();
                     stopSelf();
@@ -103,6 +130,55 @@ public final class ShareSessionService extends Service {
             stopForegroundCompat();
             stopSelf();
         }
+    }
+
+    /**
+     * Serves files over a hotspot the user already enabled from Android settings.
+     * Returns false when no usable access-point address can be found.
+     */
+    private boolean startServerOnExistingHotspot() {
+        String address = findAccessPointAddress();
+        boolean overHotspot = address != null;
+        // Nothing on this phone is acting as an access point, so fall back to the
+        // Wi-Fi network the phone is already joined to.
+        if (address == null) address = findWifiClientAddress();
+        if (address == null) return false;
+        String token = UUID.randomUUID().toString().replace("-", "");
+        try {
+            server = new MediaHttpServer(this, token);
+            server.start();
+            usingExistingHotspot = true;
+            currentSsid = overHotspot ? EXISTING_SSID_HINT : SAME_WIFI_SSID_HINT;
+            currentPassword = overHotspot ? EXISTING_PASSWORD_HINT : SAME_WIFI_PASSWORD_HINT;
+            currentUrl = "http://" + address + ":43117/share/" + token;
+            publish(overHotspot
+                    ? "Your phone's hotspot is already on, so PocketBridge is sharing over it. Connect the laptop to that hotspot, then open the link."
+                    : "Android would not start a private hotspot, so PocketBridge is sharing over the Wi-Fi network this phone is already on. Connect the laptop to the same Wi-Fi, then open the link.",
+                    currentSsid, currentPassword, currentUrl);
+            updateNotification("Browser link ready · " + address + ":43117");
+            return true;
+        } catch (Exception error) {
+            closeServer();
+            usingExistingHotspot = false;
+            return false;
+        }
+    }
+
+    /** The phone's own Wi-Fi address, used when both devices share one Wi-Fi network. */
+    private String findWifiClientAddress() {
+        try {
+            for (NetworkInterface network : Collections.list(NetworkInterface.getNetworkInterfaces())) {
+                if (!network.isUp() || network.isLoopback()) continue;
+                String name = network.getName() == null ? "" : network.getName().toLowerCase(Locale.ROOT);
+                if (!name.startsWith("wlan") || isAccessPointInterface(name)) continue;
+                for (InetAddress address : Collections.list(network.getInetAddresses())) {
+                    if (address instanceof Inet4Address && address.isSiteLocalAddress() && !address.isLoopbackAddress()) {
+                        return address.getHostAddress();
+                    }
+                }
+            }
+        } catch (Exception ignored) { }
+        return null;
     }
 
     private void findAddressAndStartServer(int attempt) {
@@ -130,42 +206,65 @@ public final class ShareSessionService extends Service {
     }
 
     private String findHotspotAddress() {
+        // Prefer the local-only hotspot network when Android also has the phone
+        // joined to another Wi-Fi network, then fall back to interface scanning.
+        String internetWifi = null;
         try {
-            // LocalOnlyHotspot exposes the AP through a Wi-Fi Network. Prefer that
-            // network's own address over an unrelated VPN/cellular private address.
             ConnectivityManager connectivity = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
             Network[] networks = connectivity.getAllNetworks();
-            // The phone's local-only hotspot has no internet capability. Prefer it
-            // when Android is also connected to another Wi-Fi network.
-            for (int pass = 0; pass < 2; pass++) {
-                for (Network network : networks) {
-                    NetworkCapabilities caps = connectivity.getNetworkCapabilities(network);
-                    if (caps == null || !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue;
-                    boolean internet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
-                    if ((pass == 0 && internet) || (pass == 1 && !internet)) continue;
-                    LinkProperties properties = connectivity.getLinkProperties(network);
-                    if (properties == null) continue;
-                    for (android.net.LinkAddress link : properties.getLinkAddresses()) {
-                        if (link.getAddress() instanceof Inet4Address && link.getAddress().isSiteLocalAddress()) return link.getAddress().getHostAddress();
-                    }
+            for (Network network : networks) {
+                NetworkCapabilities caps = connectivity.getNetworkCapabilities(network);
+                if (caps == null || !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue;
+                boolean internet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+                LinkProperties properties = connectivity.getLinkProperties(network);
+                if (properties == null) continue;
+                for (android.net.LinkAddress link : properties.getLinkAddresses()) {
+                    if (!(link.getAddress() instanceof Inet4Address) || !link.getAddress().isSiteLocalAddress()) continue;
+                    String ip = link.getAddress().getHostAddress();
+                    // A hotspot network has no internet capability. Keep an internet
+                    // Wi-Fi address only as a last resort.
+                    if (!internet) return ip;
+                    if (internetWifi == null) internetWifi = ip;
                 }
             }
-            String fallback = null;
+        } catch (Exception ignored) { }
+        String accessPoint = findAccessPointAddress();
+        if (accessPoint != null) return accessPoint;
+        return internetWifi;
+    }
+
+    /**
+     * Finds the phone's own access-point address. Hotspot interfaces end in .1
+     * (for example 192.168.43.1), while a Wi-Fi client address does not, so the
+     * .1 rule avoids handing the laptop the phone's home-network address.
+     */
+    private String findAccessPointAddress() {
+        String accessPointCandidate = null;
+        try {
             for (NetworkInterface network : Collections.list(NetworkInterface.getNetworkInterfaces())) {
                 if (!network.isUp() || network.isLoopback()) continue;
-                String name = network.getName().toLowerCase(java.util.Locale.ROOT);
-                boolean hotspotLike = name.startsWith("ap") || name.contains("softap") || name.startsWith("wlan");
-                for (java.net.InetAddress address : Collections.list(network.getInetAddresses())) {
-                    if (address instanceof Inet4Address && address.isSiteLocalAddress() && !address.isLoopbackAddress()) {
-                        String ip = address.getHostAddress();
-                        if (hotspotLike && ip.endsWith(".1")) return ip;
-                        if (hotspotLike && fallback == null) fallback = ip;
-                    }
+                String name = network.getName() == null ? "" : network.getName().toLowerCase(Locale.ROOT);
+                boolean accessPointLike = isAccessPointInterface(name);
+                for (InetAddress address : Collections.list(network.getInetAddresses())) {
+                    if (!(address instanceof Inet4Address) || !address.isSiteLocalAddress() || address.isLoopbackAddress()) continue;
+                    String ip = address.getHostAddress();
+                    if (ip.endsWith(".1")) return ip;
+                    if (accessPointLike && accessPointCandidate == null) accessPointCandidate = ip;
                 }
             }
-            if (fallback != null) return fallback;
         } catch (Exception ignored) { }
-        return null;
+        return accessPointCandidate;
+    }
+
+    private static boolean isAccessPointInterface(String name) {
+        if (name.isEmpty()) return false;
+        if (name.startsWith("ap") || name.contains("softap") || name.startsWith("swlan")) return true;
+        // Secondary WLAN interfaces (wlan1, wlan2, …) host the access point when
+        // wlan0 is already used as a Wi-Fi client.
+        if (name.startsWith("wlan") && name.length() > 4) {
+            try { return Integer.parseInt(name.substring(4)) > 0; } catch (NumberFormatException ignored) { return false; }
+        }
+        return name.startsWith("eth") || name.startsWith("rndis");
     }
 
     private void publish(String status, String ssid, String password, String url) {
@@ -175,7 +274,7 @@ public final class ShareSessionService extends Service {
         intent.putExtra(EXTRA_PASSWORD, password);
         intent.putExtra(EXTRA_URL, url);
         sendBroadcast(intent);
-        if (reservation != null) updateNotification(status);
+        if (sessionActive()) updateNotification(status);
     }
 
     private void stopSession() {
@@ -184,6 +283,7 @@ public final class ShareSessionService extends Service {
             try { reservation.close(); } catch (Exception ignored) { }
             reservation = null;
         }
+        usingExistingHotspot = false;
         currentSsid = null;
         currentPassword = null;
         currentUrl = null;
@@ -237,6 +337,7 @@ public final class ShareSessionService extends Service {
             try { reservation.close(); } catch (Exception ignored) { }
             reservation = null;
         }
+        usingExistingHotspot = false;
         super.onDestroy();
     }
 
