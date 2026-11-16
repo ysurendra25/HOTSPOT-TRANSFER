@@ -2,12 +2,12 @@
 
 ## Install the APK on Android 15
 
-1. Download `PocketBridge-v0.3.0.apk` to your phone from the project's GitHub release. You can also copy it from your laptop by USB.
-2. Open the APK from the phone's Downloads app or Files app.
+1. Download `PocketBridge-v0.3.0.apk` for 64-bit ARM phones. For other Android architectures, download `PocketBridge-v0.3.0-universal.apk.zip`, extract it, and use the APK inside.
+2. Open the APK from the phone's Downloads app or Files app. If you downloaded the universal ZIP, extract it first.
 3. If Android asks, allow the app you used to open the APK to install unknown apps, then return and tap **Install**.
 4. Open PocketBridge and allow nearby Wi-Fi and access to the media you want to share.
 
-The release APK targets 64-bit ARM (`arm64-v8a`).
+The small release APK targets 64-bit ARM (`arm64-v8a`). The universal APK includes ARM and x86 variants.
 
 The debug APK is signed with a development key. It is suitable for personal installation. Future builds signed with a different key cannot update this installation in place; uninstall this copy first if Android reports a signature conflict.
 
