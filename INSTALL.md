@@ -7,6 +7,8 @@
 3. If Android asks, allow the app you used to open the APK to install unknown apps, then return and tap **Install**.
 4. Open PocketBridge and allow nearby Wi-Fi and access to the media you want to share.
 
+The release APK targets 64-bit ARM (`arm64-v8a`).
+
 The debug APK is signed with a development key. It is suitable for personal installation. Future builds signed with a different key cannot update this installation in place; uninstall this copy first if Android reports a signature conflict.
 
 ## Share files or the phone screen

@@ -23,6 +23,7 @@ Use Android SDK Platform 35, Build Tools 35.0.0, Gradle 9.1.0, and JDK 25. Then 
 ```
 
 The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
+The release APK is built for 64-bit ARM (`arm64-v8a`) to keep the download small; this matches current Android phones, including Android 15 devices. Other ABIs can be enabled in `app/build.gradle.kts` if needed.
 
 ## Use
 
