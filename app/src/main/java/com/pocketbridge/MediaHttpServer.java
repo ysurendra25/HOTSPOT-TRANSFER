@@ -80,8 +80,9 @@ final class MediaHttpServer {
             while (running.get()) {
                 try {
                     Socket socket = serverSocket.accept();
-                    socket.setSoTimeout(20000);
+                    socket.setSoTimeout(40000);
                     socket.setTcpNoDelay(true);
+                    socket.setSendBufferSize(512 * 1024);
                     clients.execute(() -> handle(socket));
                 } catch (Exception error) {
                     if (running.get()) android.util.Log.e("PocketBridge", "HTTP accept failed", error);
@@ -189,6 +190,8 @@ final class MediaHttpServer {
                         .put("iceState", ScreenCaptureService.getIceState());
                 String setupError = ScreenCaptureService.getSetupError();
                 if (setupError != null) state.put("error", setupError);
+                String offerError = ScreenCaptureService.getLastOfferError();
+                if (offerError != null) state.put("offerError", offerError);
                 respond(output, 200, "application/json; charset=utf-8", state.toString(), null);
                 return;
             }
@@ -196,7 +199,14 @@ final class MediaHttpServer {
                 JSONObject request = new JSONObject(new String(body, StandardCharsets.UTF_8));
                 String sdp = request.optString("sdp", "");
                 String answer = ScreenCaptureService.answerOffer(sdp);
-                if (answer == null) { respond(output, 409, "application/json", "{\"error\":\"Start screen sharing on the phone first\"}", null); return; }
+                if (answer == null) {
+                    String error = ScreenCaptureService.getLastOfferError();
+                    JSONObject failure = new JSONObject().put("error", error == null
+                            ? "Screen setup did not finish. Restart screen sharing on the phone and try again."
+                            : error);
+                    respond(output, 409, "application/json; charset=utf-8", failure.toString(), null);
+                    return;
+                }
                 JSONObject response = new JSONObject().put("type", "answer").put("sdp", answer);
                 respond(output, 200, "application/json", response.toString(), null);
                 return;
@@ -264,9 +274,14 @@ final class MediaHttpServer {
     private byte[] buildThumbnail(MediaRepository.Item item) {
         try {
             if ("video".equals(item.kind)) {
-                if (android.os.Build.VERSION.SDK_INT < 29) return null;
-                Bitmap frame = context.getContentResolver().loadThumbnail(item.uri, new android.util.Size(THUMB_TARGET, THUMB_TARGET), null);
-                return compress(frame);
+                if (android.os.Build.VERSION.SDK_INT >= 29) {
+                    try {
+                        Bitmap frame = context.getContentResolver().loadThumbnail(item.uri,
+                                new android.util.Size(THUMB_TARGET, THUMB_TARGET), null);
+                        if (frame != null) return compress(frame);
+                    } catch (Exception ignored) { /* vendor providers can omit MediaStore previews */ }
+                }
+                return videoFrameThumbnail(item);
             }
             BitmapFactory.Options bounds = new BitmapFactory.Options();
             bounds.inJustDecodeBounds = true;
@@ -297,6 +312,31 @@ final class MediaHttpServer {
             return compress(bitmap);
         } catch (Exception | OutOfMemoryError error) {
             return null;
+        }
+    }
+
+    /** Uses a frame from the original video when the device's thumbnail provider fails. */
+    private byte[] videoFrameThumbnail(MediaRepository.Item item) {
+        android.media.MediaMetadataRetriever retriever = new android.media.MediaMetadataRetriever();
+        try (ParcelFileDescriptor descriptor = context.getContentResolver().openFileDescriptor(item.uri, "r")) {
+            if (descriptor == null) return null;
+            retriever.setDataSource(descriptor.getFileDescriptor());
+            Bitmap frame = retriever.getFrameAtTime(0, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+            if (frame == null) return null;
+            int width = frame.getWidth();
+            int height = frame.getHeight();
+            float scale = Math.min(1f, (float) THUMB_TARGET / Math.max(width, height));
+            if (scale < 1f) {
+                Bitmap scaled = Bitmap.createScaledBitmap(frame, Math.max(1, Math.round(width * scale)),
+                        Math.max(1, Math.round(height * scale)), true);
+                if (scaled != frame) frame.recycle();
+                frame = scaled;
+            }
+            return compress(frame);
+        } catch (Exception | OutOfMemoryError error) {
+            return null;
+        } finally {
+            try { retriever.release(); } catch (Exception ignored) { }
         }
     }
 

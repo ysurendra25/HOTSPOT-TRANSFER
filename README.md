@@ -2,7 +2,7 @@
 
 PocketBridge is an open-source Android app for sharing phone media and the phone screen to a laptop browser over a local-only Wi-Fi hotspot. An optional portable open-source Windows helper also lets the phone view and control the laptop. Both workflows work without mobile data or internet access.
 
-## Version 0.5.3
+## Version 0.5.4
 
 - Two ways to connect, chosen on the phone: **Wi-Fi mode** (laptop joins the same Wi-Fi as the phone) and **Hotspot mode** (the phone creates its own private Wi-Fi, or reuses the hotspot you already switched on).
 - Open a short link like `http://192.168.43.1:43117` and enter a 6-digit code shown on the phone, instead of typing a long token.
@@ -11,14 +11,16 @@ PocketBridge is an open-source Android app for sharing phone media and the phone
 - Browse photos, videos, audio **and files**, play video and audio in the browser with 10-second skip controls, or download the originals.
 - Load the media gallery in pages, cache previews on the laptop, and seek within original video files using byte ranges.
 - Show local WebRTC connection progress and clearer screen-share errors.
-- Show the network name, password, and one-time browser link.
+- Show the nearby network name, hotspot password where Android makes it available, and one-time browser link.
 - Stream the phone screen to the browser using WebRTC with hardware H.264 where available.
 - Control the Windows laptop from the phone using the separate portable, open-source helper in this release. The helper is a companion because Windows requires a PC-side screen/input process.
 - Keep file and screen data on the local hotspot; no cloud relay or account.
 
 The Windows helper is unchanged from 0.3.0 and is provided as a separate ZIP; it is not installed as a service. It is based on the open-source [web-remote-desktop](https://github.com/tacitech/web-remote-desktop) project under its MIT license. PocketBridge repaired the upstream offline JPEG fallback; FFmpeg is optional and enables H.264/HEVC. Its optional internet tunnel is not used for hotspot sharing. Android will show its system consent dialog whenever phone screen capture starts. Protected content may appear black because Android apps can block screen capture.
 
-The 0.5.3 APK uses a different debug signing key than 0.5.2. Uninstall 0.5.2 before installing this build.
+Wi-Fi mode shows the current network name when Nearby Wi-Fi access is allowed. Android does not let PocketBridge reveal the saved Wi-Fi password; enter your usual router password on the laptop if it is not already connected. Phone-created hotspot credentials are shown by Android's hotspot configuration.
+
+For illustrated setup steps, see the [Quick Start Guide](docs/QUICK_START_GUIDE.md).
 
 ## Build
 
@@ -41,7 +43,7 @@ See [INSTALL.md](INSTALL.md) for simple phone and laptop setup steps.
 3. Join the network named on the phone screen (in Wi-Fi mode there is nothing to join).
 4. Open the short link in the laptop browser and enter the 6-digit code shown on the phone.
 5. For screen sharing, tap **Share phone screen** in the app and approve Android's capture prompt. Then choose **Watch screen** in the browser.
-6. For PC control, download and extract `PocketBridge-Windows-Control-v0.5.3.zip` on the laptop, then double-click `Start-Control.bat`. Keep the helper running, and open the printed link on your phone while it is connected to the PocketBridge hotspot. If Windows Firewall asks, allow it on private networks only.
+6. For PC control, download and extract `PocketBridge-Windows-Control-v0.5.4.zip` on the laptop, then double-click `Start-Control.bat`. Keep the helper running, and open the printed link on your phone while it is connected to the PocketBridge hotspot. If Windows Firewall asks, allow it on private networks only.
 
 Android 8.0 (API 26) and newer are supported by the project. Android 14 and 15 may ask for access to selected photos and videos; grant access to the items you want to share.
 

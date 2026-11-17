@@ -7,7 +7,6 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
-import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.net.ConnectivityManager;
@@ -52,7 +51,7 @@ public final class ShareSessionService extends Service {
     private static final int NOTIFICATION_ID = 1201;
     private static final String MODE_WIFI = "Wi-Fi network";
     private static final String MODE_HOTSPOT = "Phone hotspot";
-    private static final String WIFI_PASSWORD_HINT = "Not needed — join the same Wi-Fi";
+    private static final String WIFI_PASSWORD_HINT = "Use your usual Wi-Fi password on the laptop, if asked";
     private static final String HOTSPOT_PASSWORD_HINT = "Keep the laptop on that same Wi-Fi";
     private final Handler handler = new Handler(Looper.getMainLooper());
     private WifiManager.LocalOnlyHotspotReservation reservation;
@@ -145,9 +144,21 @@ public final class ShareSessionService extends Service {
                 @Override public void onStarted(WifiManager.LocalOnlyHotspotReservation value) {
                     reservation = value;
                     starting = false;
-                    WifiConfiguration config = value.getWifiConfiguration();
-                    String ssid = config == null ? null : config.SSID;
-                    String password = config == null ? null : config.preSharedKey;
+                    String ssid = null;
+                    String password = null;
+                    if (Build.VERSION.SDK_INT >= 30) {
+                        android.net.wifi.SoftApConfiguration config = value.getSoftApConfiguration();
+                        if (config != null) {
+                            ssid = config.getSsid();
+                            password = config.getPassphrase();
+                        }
+                    } else {
+                        android.net.wifi.WifiConfiguration config = value.getWifiConfiguration();
+                        if (config != null) {
+                            ssid = config.SSID;
+                            password = config.preSharedKey;
+                        }
+                    }
                     currentSsid = ssid == null || ssid.isEmpty() ? "PocketBridge" : ssid;
                     currentPassword = password == null || password.isEmpty() ? "See Android Wi-Fi settings" : password;
                     publish("Hotspot ready. Looking up the browser link…", currentSsid, currentPassword, null, null, MODE_HOTSPOT, "", "");
@@ -299,19 +310,36 @@ public final class ShareSessionService extends Service {
     /** Real Wi-Fi name when Android allows reading it, else a clear description. */
     private String describeWifiNetwork() {
         try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                ConnectivityManager connectivity = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+                for (Network network : connectivity.getAllNetworks()) {
+                    android.net.NetworkCapabilities capabilities = connectivity.getNetworkCapabilities(network);
+                    if (capabilities == null || !capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)) continue;
+                    Object info = capabilities.getTransportInfo();
+                    if (info instanceof WifiInfo) {
+                        String ssid = cleanSsid(((WifiInfo) info).getSSID());
+                        if (ssid != null) return ssid;
+                    }
+                }
+            }
             WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
             WifiInfo info = wifi == null ? null : wifi.getConnectionInfo();
-            String ssid = info == null ? null : info.getSSID();
-            if (ssid != null) {
-                ssid = ssid.trim();
-                if (ssid.length() > 1 && ssid.startsWith("\"") && ssid.endsWith("\"")) {
-                    ssid = ssid.substring(1, ssid.length() - 1);
-                }
-                String lower = ssid.toLowerCase(Locale.ROOT);
-                if (!ssid.isEmpty() && !lower.contains("unknown") && !"0x".equals(ssid)) return ssid;
-            }
+            String ssid = cleanSsid(info == null ? null : info.getSSID());
+            if (ssid != null) return ssid;
         } catch (Exception ignored) { }
-        return "Your current Wi-Fi network";
+        return Build.VERSION.SDK_INT >= 33
+                ? "Allow Nearby Wi-Fi access to show this network name"
+                : "Allow location access to show this network name";
+    }
+
+    private static String cleanSsid(String value) {
+        if (value == null) return null;
+        String ssid = value.trim();
+        if (ssid.length() > 1 && ssid.startsWith("\"") && ssid.endsWith("\"")) {
+            ssid = ssid.substring(1, ssid.length() - 1);
+        }
+        String lower = ssid.toLowerCase(Locale.ROOT);
+        return !ssid.isEmpty() && !lower.contains("unknown") && !"0x".equals(ssid) ? ssid : null;
     }
 
     /**

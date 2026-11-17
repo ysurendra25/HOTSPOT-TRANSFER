@@ -42,6 +42,7 @@ public final class ScreenCaptureService extends Service {
     private static final int NOTIFICATION_ID = 1202;
     private static volatile ScreenCaptureService instance;
     private static volatile String lastSetupError;
+    private static volatile String lastOfferError;
     private static volatile String lastIceState = "new";
 
     private EglBase eglBase;
@@ -62,10 +63,19 @@ public final class ScreenCaptureService extends Service {
 
     public static String getIceState() { return lastIceState; }
 
+    public static String getLastOfferError() { return lastOfferError; }
+
     public static String answerOffer(String sdp) {
         ScreenCaptureService service = instance;
         if (service == null || service.videoTrack == null || sdp == null || sdp.isEmpty()) return null;
-        return service.acceptOffer(sdp);
+        try {
+            return service.acceptOffer(sdp);
+        } catch (RuntimeException error) {
+            lastOfferError = "The phone hit an error preparing screen sharing. Restart screen sharing and retry.";
+            android.util.Log.e("PocketBridge", "Screen offer failed", error);
+            service.closePeer();
+            return null;
+        }
     }
 
     public static void stopPeer() {
@@ -136,6 +146,7 @@ public final class ScreenCaptureService extends Service {
 
     private String acceptOffer(String offerSdp) {
         closePeer();
+        lastOfferError = null;
         pendingAnswer = null;
         iceGatheringComplete = false;
         lastIceState = "new";
@@ -165,7 +176,11 @@ public final class ScreenCaptureService extends Service {
             @Override public void onAddTrack(org.webrtc.RtpReceiver receiver, org.webrtc.MediaStream[] streams) { }
         });
         peer = activePeer;
-        if (activePeer == null) { answerLatch = null; return null; }
+        if (activePeer == null) {
+            lastOfferError = "The phone could not create a WebRTC connection. Close and restart screen sharing.";
+            answerLatch = null;
+            return null;
+        }
         sender = activePeer.addTrack(videoTrack, Collections.singletonList("pocketbridge"));
         if (sender != null) {
             try {
@@ -190,10 +205,20 @@ public final class ScreenCaptureService extends Service {
             @Override public void onSetFailure(String error) { failAnswer("Could not read the browser's WebRTC offer: " + error); }
         }, offer);
         try {
-            if (!latch.await(18, TimeUnit.SECONDS)) return null;
-            return pendingAnswer == null || pendingAnswer.isEmpty() ? null : pendingAnswer;
+            if (!latch.await(32, TimeUnit.SECONDS)) {
+                lastOfferError = "Local screen connection setup timed out. Confirm both devices use the same PocketBridge Wi-Fi and retry.";
+                closePeer();
+                return null;
+            }
+            if (pendingAnswer == null || pendingAnswer.isEmpty()) {
+                if (lastOfferError == null) lastOfferError = "The phone could not finish its screen-sharing answer. Restart screen sharing and retry.";
+                closePeer();
+                return null;
+            }
+            return pendingAnswer;
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
+            lastOfferError = "Screen connection setup was interrupted. Start screen sharing again.";
             return null;
         } finally { answerLatch = null; }
     }
@@ -208,6 +233,7 @@ public final class ScreenCaptureService extends Service {
 
     private void failAnswer(String message) {
         android.util.Log.e("PocketBridge", message);
+        lastOfferError = message;
         pendingAnswer = "";
         CountDownLatch latch = answerLatch;
         if (latch != null) latch.countDown();

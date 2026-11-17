@@ -299,13 +299,14 @@ public final class MainActivity extends Activity {
 
     private void ensurePermissionsAndStart(String action) {
         List<String> required = new ArrayList<>();
-        // Location is needed to read the current Wi-Fi name on every Android
-        // version, and for the hotspot on Android 12 and older.
-        addIfMissing(required, Manifest.permission.ACCESS_FINE_LOCATION);
+        // Android 13+ uses Nearby Wi-Fi access; older versions use location
+        // access to show the connected Wi-Fi name and manage a local hotspot.
+        if (Build.VERSION.SDK_INT >= 33) addIfMissing(required, Manifest.permission.NEARBY_WIFI_DEVICES);
+        else {
+            addIfMissing(required, Manifest.permission.ACCESS_FINE_LOCATION);
+            addIfMissing(required, Manifest.permission.ACCESS_COARSE_LOCATION);
+        }
         if (Build.VERSION.SDK_INT >= 33) {
-            if (ShareSessionService.ACTION_START_HOTSPOT.equals(action)) {
-                addIfMissing(required, Manifest.permission.NEARBY_WIFI_DEVICES);
-            }
             // Android 14+ can grant access to selected photos only. Do not keep
             // asking for full library access once that partial access is granted.
             boolean partialMedia = Build.VERSION.SDK_INT >= 34
@@ -334,12 +335,13 @@ public final class MainActivity extends Activity {
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQUEST_PERMISSIONS) {
-            boolean nearbyAllowed = Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED;
-            boolean locationAllowed = Build.VERSION.SDK_INT >= 33 || checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+            boolean wifiPermissionAllowed = Build.VERSION.SDK_INT >= 33
+                    ? checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED
+                    : checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
             boolean needsHotspot = ShareSessionService.ACTION_START_HOTSPOT.equals(pendingAction);
-            boolean allowed = (!needsHotspot || nearbyAllowed) && (!needsHotspot || locationAllowed);
+            boolean allowed = !needsHotspot || wifiPermissionAllowed;
             if (allowed) sendServiceCommand(pendingAction);
-            else statusText.setText("Nearby Wi-Fi permission is needed to start a hotspot. Wi-Fi mode still works without it.");
+            else statusText.setText("Allow Nearby Wi-Fi access to start the phone hotspot. You can still use Wi-Fi mode.");
         }
     }
 
