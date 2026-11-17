@@ -2,7 +2,7 @@
 
 ## Install the APK on Android 15
 
-1. Download `PocketBridge-v0.5.6.apk` for 64-bit ARM phones. For other Android architectures, download `PocketBridge-v0.5.6-universal.apk.zip`, extract it, and use the APK inside.
+1. Download `PocketBridge-v0.5.7.apk` for 64-bit ARM phones. For other Android architectures, download `PocketBridge-v0.5.7-universal.apk.zip`, extract it, and use the APK inside.
 2. Open the APK from the phone's Downloads app or Files app. If you downloaded the universal ZIP, extract it first.
 3. If Android asks, allow the app you used to open the APK to install unknown apps, then return and tap **Install**.
 4. Open PocketBridge and allow nearby Wi-Fi and access to the media you want to share.
@@ -11,7 +11,7 @@ The small release APK targets 64-bit ARM (`arm64-v8a`). The universal APK includ
 
 The debug APK is signed with a development key. It is suitable for personal installation. Future builds signed with a different key cannot update this installation in place; uninstall this copy first if Android reports a signature conflict.
 
-Install 0.5.6 over an older build normally. This build is signed with a fresh development key, so Android may report a signature mismatch: if it does, uninstall the older build first and then install 0.5.6. Your shared media is not affected.
+**Before installing 0.5.7, uninstall 0.5.6.** The 0.5.6 APK and this build use different development signing keys, so Android will reject an in-place update. Photos and videos stored on the phone are not deleted.
 
 ## Share files or the phone screen
 
@@ -20,10 +20,10 @@ Install 0.5.6 over an older build normally. This build is signed with a fresh de
    - **Hotspot mode**: the phone creates a private local-only hotspot. If your hotspot is already switched on in Android settings, PocketBridge reuses it instead of creating a second one.
 2. In Hotspot mode, connect the laptop to the network name and password shown in PocketBridge. In Wi-Fi mode, keep the laptop on the same Wi-Fi as the phone; enter your normal router password on the laptop only if it asks. PocketBridge cannot read a saved router password. Choose to stay connected if Windows reports that the hotspot has no internet.
 3. Open the short link shown on the phone (for example `http://192.168.43.1:43117`) and enter the 6-digit code. The link is short on purpose so it is easy to type; the code keeps it private.
-4. Browse photos, videos, audio and files. The gallery loads 120 items at a time. Tap a video or audio item to play it — the player has **Back 10s** and **Forward 10s** buttons, a seek bar and fullscreen. Video playback sends the original file without recompressing it. To share the screen, tap **Share phone screen** on the phone, approve Android's capture prompt, then tap **Watch screen** in the browser. The browser now shows whether it is gathering a local connection or if the connection failed.
+4. Browse photos, videos, audio and files. The gallery loads 120 items at a time. Tap a video or audio item to play it — the player has **Back 10s** and **Forward 10s** buttons, a seek bar and fullscreen. It first plays the original video; if the browser cannot decode it, PocketBridge creates an H.264/AAC copy on the phone for browser playback. That conversion uses phone storage and may take time; the original remains available to download. To share the screen, tap **Share phone screen** on the phone, approve Android's capture prompt, then tap **Watch screen** in the browser.
 5. Tap **Stop local share** on the phone when finished.
 
-File sharing sends the original file bytes over the local hotspot. Screen sharing uses a peer-to-peer WebRTC stream and Android will ask for capture approval each time. Neither feature uses a cloud account or relay.
+File sharing sends the original file bytes over the local hotspot. Screen sharing sends JPEG frames directly over the local HTTP connection (up to 1280 pixels and 12 fps); Android asks for capture approval each time. Neither feature uses a cloud account or relay. The local HTTP connection is not encrypted, so use a private hotspot and keep the link and code private.
 
 ## If no link appears
 
@@ -64,7 +64,7 @@ Download the APK before going offline. After installation, PocketBridge creates 
 ## Control the laptop from the phone
 
 1. Start the PocketBridge hotspot and connect the laptop to it.
-2. Download and extract `PocketBridge-Windows-Control-v0.5.6.zip` on Windows.
+2. Download and extract `PocketBridge-Windows-Control-v0.5.7.zip` on Windows.
 3. Double-click `Start-Control.bat`. If Windows Firewall asks, allow private network access only.
 4. The helper prints a link in its window. Open that link on the phone while the phone is still connected to the laptop's PocketBridge hotspot.
 5. Use the touch screen for mouse movement and clicks, and the keyboard controls on the page to type. Leave the helper running while connected. Press a key in its console when done to stop it.

@@ -2,11 +2,15 @@
 
 PocketBridge is an open-source Android app for sharing phone media and the phone screen to a laptop browser over a local-only Wi-Fi hotspot. An optional portable open-source Windows helper also lets the phone view and control the laptop. Both workflows work without mobile data or internet access.
 
-## Version 0.5.6
+## Version 0.5.7
 
 What's new:
 
-- **Screen sharing fixes.** The phone now marks the stream as a screencast (sharper text, and the last picture is repeated while the screen is still), forces a fresh first frame when the browser connects so a still screen no longer shows "No screen frame yet", follows phone rotation, and the browser retries a dropped connection twice before giving up.
+- **Direct offline screen sharing.** The browser receives screen frames as a local MJPEG stream over the same HTTP connection as file sharing. It no longer depends on WebRTC ICE negotiation, STUN, a relay, or internet access. Frames are capped at 1280 pixels and 12 fps for hotspot use.
+- **More reliable media labels.** If Android reports a generic MIME type, PocketBridge identifies common photo, video, and audio formats from the filename extension.
+- **More reliable video response headers.** The server infers common MIME types and can stream files whose provider does not report a size instead of returning an empty response.
+
+The local screen-stream design follows the same broad MJPEG-over-HTTP approach used by [ScreenStream's offline local mode](https://github.com/dkrivoruchko/ScreenStream); PocketBridge's implementation is separate and integrated with its existing sharing server.
 - **Stop screen share** from the phone (the button changes to "Stop screen share" while sharing). Stopping the share also stops screen capture.
 - **Video thumbnails on every supported Android version** (they were missing on Android 8 and 9). A frame from about one second in is used instead of a possibly black first frame.
 - **Sharper thumbnails**, lazy-loaded so the first page appears faster, grouped by day (Today, Yesterday, dates).
@@ -20,11 +24,10 @@ Everything from earlier versions:
 - Open a short link like `http://192.168.43.1:43117` and enter a 6-digit code shown on the phone, instead of typing a long token.
 - The file server starts before any network work, and the link is worked out from three independent sources, so a share always produces a link or a precise reason why not.
 - The phone shows a Diagnostics card (server state, chosen address, every address it found) and an "Also try these links" card.
-- Browse photos, videos, audio **and files**, play video and audio in the browser with 10-second skip controls, or download the originals.
+- Browse photos, videos, audio **and files**, play video and audio in the browser with 10-second skip controls, or download the originals. If a browser cannot decode a video, PocketBridge makes an H.264/AAC copy on the phone for playback.
 - Load the media gallery in pages, cache previews on the laptop, and seek within original video files using byte ranges.
-- Show local WebRTC connection progress and clearer screen-share errors.
 - Show the nearby network name, hotspot password where Android makes it available, and one-time browser link.
-- Stream the phone screen to the browser using WebRTC with hardware H.264 where available.
+- Stream the phone screen directly to the browser over the local network.
 - Control the Windows laptop from the phone using the separate portable, open-source helper in this release. The helper is a companion because Windows requires a PC-side screen/input process.
 - Keep file and screen data on the local hotspot; no cloud relay or account.
 
@@ -55,14 +58,14 @@ See [INSTALL.md](INSTALL.md) for simple phone and laptop setup steps.
 3. Join the network named on the phone screen (in Wi-Fi mode there is nothing to join).
 4. Open the short link in the laptop browser and enter the 6-digit code shown on the phone.
 5. For screen sharing, tap **Share phone screen** in the app and approve Android's capture prompt. Then choose **Watch screen** in the browser.
-6. For PC control, download and extract `PocketBridge-Windows-Control-v0.5.6.zip` on the laptop, then double-click `Start-Control.bat`. Keep the helper running, and open the printed link on your phone while it is connected to the PocketBridge hotspot. If Windows Firewall asks, allow it on private networks only.
+6. For PC control, download and extract `PocketBridge-Windows-Control-v0.5.7.zip` on the laptop, then double-click `Start-Control.bat`. Keep the helper running, and open the printed link on your phone while it is connected to the PocketBridge hotspot. If Windows Firewall asks, allow it on private networks only.
 
 Android 8.0 (API 26) and newer are supported by the project. Android 14 and 15 may ask for access to selected photos and videos; grant access to the items you want to share.
 
 ## Security
 
-The phone host uses a random 6-digit code for the browser, rate limited against guessing, plus a long token for legacy links. Keep both links private and close both services when finished. The local-only hotspot uses Android-generated Wi-Fi credentials. Phone screen video is sent peer-to-peer with WebRTC encryption; files are streamed directly from the phone over the private hotspot. The third-party PC helper's control page is plain HTTP on the local hotspot, so anyone who knows its link and joins that hotspot could control the PC.
+The phone host uses a random 6-digit code for the browser, rate limited against guessing, plus a long token for legacy links. Keep both links private and close sharing when finished. The local-only hotspot uses Android-generated Wi-Fi credentials. Files and screen frames use plain HTTP on the local network; the screen stream is not end-to-end encrypted. Use a private hotspot and do not share the code or link with people you do not trust. The third-party PC helper's control page is also plain HTTP on the local hotspot.
 
 ## Open source
 
-This project is licensed under Apache-2.0. The WebRTC Android library is separately licensed by its maintainers; see `THIRD_PARTY_NOTICES.md` for the dependency notice.
+This project is licensed under Apache-2.0. WebRTC and FFmpegKit are separately licensed; see `THIRD_PARTY_NOTICES.md` for dependency notices. The video compatibility library makes the phone APK larger.

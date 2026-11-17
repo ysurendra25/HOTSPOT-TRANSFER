@@ -67,7 +67,8 @@
   .screen-view.active{display:block}
   .screen-toolbar{padding:11px 15px;color:#fff;display:flex;justify-content:space-between;align-items:center;gap:10px}
   .screen-toolbar span{font-size:13px}
-  .screen-view video{display:block;width:100%;max-height:72vh;background:#000;object-fit:contain}
+  .screen-view img{display:block;width:100%;max-height:72vh;min-height:220px;background:#000;object-fit:contain}
+  .screen-view img[hidden]{display:none}
 
   /* library */
   .library-head{display:flex;justify-content:space-between;gap:16px;align-items:center;margin:20px 0 14px;flex-wrap:wrap}
@@ -199,7 +200,7 @@
         <span id="screenState">Connecting to phone…</span>
         <button class="btn btn-outline" id="stopWatch" type="button">Stop viewing</button>
       </div>
-      <video id="screenVideo" autoplay playsinline controls muted></video>
+      <img id="screenImage" alt="Live screen from the Android phone" hidden>
     </section>
 
     <section class="library-head">
@@ -259,7 +260,6 @@
   let currentKind = 'all';
   let files = [];
   let access = {};
-  let peer = null;
   let screenFrameTimer = 0;
   let nextOffset = 0;
   let hasMore = false;
@@ -273,7 +273,6 @@
   let viewList = [];
   let viewIndex = -1;
   let screenWanted = false;
-  let screenRetries = 0;
 
   const gate = document.getElementById('gate');
   const app = document.getElementById('app');
@@ -403,6 +402,10 @@
     return '🖼';
   }
 
+  function labelForKind(kind) {
+    return kind === 'image' ? 'Photo' : kind === 'video' ? 'Video' : kind === 'audio' ? 'Audio' : 'File';
+  }
+
   function renderFiles() {
     const term = search.value.trim().toLowerCase();
     const shown = files.filter(file => (file.name || '').toLowerCase().includes(term));
@@ -442,7 +445,7 @@
         '<button class="thumb" type="button" data-thumb-open="' + safe(file.id) + '">' + visual + '</button>' +
         '<div class="meta">' +
           '<div class="name" title="' + safe(file.name) + '">' + safe(file.name) + '</div>' +
-          '<div class="submeta">' + formatSize(file.size) + ' · ' + safe(file.kind) + '</div>' +
+          '<div class="submeta">' + formatSize(file.size) + ' · ' + labelForKind(file.kind) + '</div>' +
           '<div class="actions">' + previewBtn +
             '<a class="btn btn-outline" href="' + safe(endpoint(file.url)) + '" download="' + safe(file.name) + '">Download</a>' +
           '</div>' +
@@ -685,17 +688,18 @@
     }
 
     controls.style.display = media ? 'flex' : 'none';
-    if (media) wirePlayer(media, file.kind);
+    if (media) wirePlayer(media, file.kind, file);
   }
 
-  function wirePlayer(element, kind) {
+  function wirePlayer(element, kind, file) {
     seek.value = 0;
     timeLabel.textContent = '0:00 / 0:00';
     playPause.textContent = 'Play';
 
     if (kind === 'video') timeLabel.textContent = 'Loading video…';
     element.addEventListener('loadstart', () => {
-      if (kind === 'video') timeLabel.textContent = 'Connecting to the phone…';
+      if (kind === 'video') timeLabel.textContent = element.dataset.compatibilityAttempted === 'yes'
+        ? 'Preparing a browser-compatible copy on the phone…' : 'Connecting to the phone…';
     });
     element.addEventListener('loadedmetadata', () => {
       timeLabel.textContent = '0:00 / ' + formatTime(element.duration);
@@ -716,9 +720,16 @@
     element.addEventListener('error', () => {
       const mediaError = element.error;
       const code = mediaError ? mediaError.code : 0;
+      if (kind === 'video' && (code === 3 || code === 4) && element.dataset.compatibilityAttempted !== 'yes') {
+        element.dataset.compatibilityAttempted = 'yes';
+        timeLabel.textContent = 'This browser cannot decode the original. Preparing a compatible copy on the phone…';
+        element.src = endpoint('/api/video/compatible/' + encodeURIComponent(file.id));
+        element.load();
+        return;
+      }
       timeLabel.textContent = code === 4
-        ? 'This video format is not supported by this browser — download the original.'
-        : 'Video could not load from the phone. Check the phone is still sharing and try again.';
+        ? 'The browser could not play or convert this video. Download the original and try a media player.'
+        : 'Video could not load or convert. Check that the phone is still sharing, or download the original.';
     });
 
     playPause.onclick = () => {
@@ -781,111 +792,50 @@
   }, {passive: true});
 
   /* ---------- screen share ---------- */
-  async function waitForIce(pc) {
-    if (pc.iceGatheringState === 'complete') return;
-    await new Promise((resolve, reject) => {
-      const finish = () => {
-        clearTimeout(timer);
-        pc.removeEventListener('icegatheringstatechange', changed);
-      };
-      const changed = () => {
-        if (pc.iceGatheringState === 'complete') { finish(); resolve(); }
-      };
-      const timer = setTimeout(() => {
-        finish();
-        reject(new Error('This laptop did not finish local network setup. Confirm it is connected to the PocketBridge Wi-Fi, then tap Watch screen again.'));
-      }, 25000);
-      pc.addEventListener('icegatheringstatechange', changed);
-    });
-  }
   async function watchScreen() {
     const screenView = document.getElementById('screenView');
     const state = document.getElementById('screenState');
     const watchButton = document.getElementById('watchButton');
+    const image = document.getElementById('screenImage');
     if (watchButton.disabled) return;
-    if (peer) { try { peer.close(); } catch (e) {} peer = null; }
     clearTimeout(screenFrameTimer);
     screenWanted = true;
     watchButton.disabled = true;
     screenView.classList.add('active');
-    state.textContent = 'Connecting to the phone…';
-    let activePeer = null;
-    try {
-      const statusResponse = await fetch(endpoint('/api/screen/status'), {cache:'no-store'});
-      const status = await statusResponse.json();
-      if (!statusResponse.ok) throw new Error(status.error || 'Could not check screen capture. Reload the page and try again.');
-      if (!status.ready) {
-        throw new Error(status.error ? 'Screen capture could not start: ' + status.error
-          : 'First tap “Share phone screen” in PocketBridge and approve Android’s prompt.');
-      }
-      activePeer = new RTCPeerConnection({iceServers: []});
-      peer = activePeer;
-      activePeer.addTransceiver('video', {direction: 'recvonly'});
-      activePeer.ontrack = (event) => {
-        clearTimeout(screenFrameTimer);
-        document.getElementById('screenVideo').srcObject = event.streams[0] || new MediaStream([event.track]);
-        state.textContent = 'Live · phone screen is shared peer-to-peer';
-        document.getElementById('screenHint').textContent = 'Your phone screen is streaming locally.';
-        document.getElementById('screenVideo').play().catch(() => {
-          state.textContent = 'Screen connected. Press Play on the video to start viewing.';
-        });
-      };
-      activePeer.oniceconnectionstatechange = () => {
-        if (peer !== activePeer) return;
-        const iceState = activePeer.iceConnectionState;
-        if (iceState === 'checking') state.textContent = 'Finding the local phone connection…';
-        if (iceState === 'disconnected') state.textContent = 'Connection interrupted · waiting for the phone…';
-        if (iceState === 'failed') {
-          // A second or third attempt often succeeds after a brief Wi-Fi hiccup.
-          if (screenWanted && screenRetries < 2) {
-            screenRetries++;
-            state.textContent = 'Connection dropped · reconnecting (' + screenRetries + '/2)…';
-            setTimeout(() => {
-              if (peer !== activePeer || !screenWanted) return;
-              watchButton.disabled = false;
-              watchScreen();
-            }, 1500);
-          } else {
-            state.textContent = 'Could not connect the screen stream. Reconnect both devices to the same PocketBridge Wi-Fi and retry.';
-          }
-        }
-        if (iceState === 'connected' || iceState === 'completed') { screenRetries = 0; state.textContent = 'Connected · waiting for the first screen frame…'; }
-      };
-      const offer = await activePeer.createOffer();
-      await activePeer.setLocalDescription(offer);
-      await waitForIce(activePeer);
-      const response = await fetch(endpoint('/api/screen/offer'), {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({sdp: activePeer.localDescription.sdp})
-      });
-      const answer = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(answer.error || 'Could not connect to the phone.');
-      await activePeer.setRemoteDescription({type: answer.type, sdp: answer.sdp});
-      state.textContent = 'Connected · waiting for the first screen frame…';
-      screenFrameTimer = setTimeout(() => {
-        const video = document.getElementById('screenVideo');
-        if (!activePeer || peer !== activePeer || video.videoWidth > 0) return;
-        state.textContent = 'No screen frame yet. On the phone tap “Stop screen share”, then “Share phone screen” again, approve Android’s prompt, and tap Watch screen.';
-        watchButton.disabled = false;
-      }, 15000);
-    } catch (error) {
+    state.textContent = 'Opening a direct local screen stream…';
+    image.hidden = false;
+    image.onload = () => {
+      if (!screenWanted) return;
       clearTimeout(screenFrameTimer);
-      state.textContent = error.message || 'Screen share failed.';
-      if (activePeer) { try { activePeer.close(); } catch (e) {} }
-      if (peer === activePeer) peer = null;
+      state.textContent = 'Live · direct phone-to-laptop stream (no internet needed)';
+      document.getElementById('screenHint').textContent = 'Your phone screen is streaming over the local Wi-Fi connection.';
+    };
+    image.onerror = () => {
+      if (!screenWanted) return;
+      clearTimeout(screenFrameTimer);
+      image.removeAttribute('src');
       watchButton.disabled = false;
-    }
+      state.textContent = 'Could not load a screen frame. On the phone, stop sharing, start Share phone screen again, then retry.';
+    };
+    image.src = endpoint('/api/screen/mjpeg') + '&_=' + Date.now();
+    screenFrameTimer = setTimeout(() => {
+      if (!screenWanted || image.naturalWidth > 0) return;
+      image.removeAttribute('src');
+      watchButton.disabled = false;
+      state.textContent = 'No screen frame arrived. Keep both devices on the PocketBridge Wi-Fi, restart screen sharing on the phone, and retry.';
+    }, 12000);
   }
   function stopWatching() {
     screenWanted = false;
-    screenRetries = 0;
     clearTimeout(screenFrameTimer);
-    if (peer) { try { peer.close(); } catch (e) {} peer = null; }
+    const image = document.getElementById('screenImage');
+    image.onload = null;
+    image.onerror = null;
+    image.removeAttribute('src');
+    image.hidden = true;
     document.getElementById('watchButton').disabled = false;
-    document.getElementById('screenVideo').srcObject = null;
     document.getElementById('screenView').classList.remove('active');
     document.getElementById('screenState').textContent = 'Not connected';
-    fetch(endpoint('/api/screen/stop'), {method: 'POST'}).catch(() => {});
     document.getElementById('screenHint').textContent = 'Tap “Share phone screen” in PocketBridge on the phone to begin.';
   }
   document.getElementById('watchButton').addEventListener('click', watchScreen);

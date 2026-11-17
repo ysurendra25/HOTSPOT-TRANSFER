@@ -42,7 +42,9 @@ final class MediaRepository {
         final Uri uri;
 
         Item(String key, String name, String mime, String kind, long size, long modified, Uri uri) {
-            this.key = key; this.name = name; this.mime = mime; this.kind = kind;
+            this.key = key; this.name = name;
+            this.mime = MediaTypeClassifier.mimeType(name, mime);
+            this.kind = MediaTypeClassifier.kind(this.mime, name, kind);
             this.size = size; this.modified = modified; this.uri = uri;
         }
 
@@ -84,7 +86,12 @@ final class MediaRepository {
         if ("all".equals(kind) || "images".equals(kind)) collect(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image", "images", queryLimit, output);
         if ("all".equals(kind) || "videos".equals(kind)) collect(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, "video", "videos", queryLimit, output);
         if ("all".equals(kind) || "audio".equals(kind)) collect(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, "audio", "audio", queryLimit, output);
-        if ("all".equals(kind) || "files".equals(kind)) collectDocuments(queryLimit, output);
+        if ("all".equals(kind) || "files".equals(kind) || "images".equals(kind)
+                || "videos".equals(kind) || "audio".equals(kind)) collectDocuments(queryLimit, output);
+        if ("images".equals(kind)) output.removeIf(item -> !"image".equals(item.kind));
+        else if ("videos".equals(kind)) output.removeIf(item -> !"video".equals(item.kind));
+        else if ("audio".equals(kind)) output.removeIf(item -> !"audio".equals(item.kind));
+        else if ("files".equals(kind)) output.removeIf(item -> !"file".equals(item.kind));
         Collections.sort(output, (a, b) -> Long.compare(b.modified, a.modified));
         int from = Math.min(safeOffset, output.size());
         int to = Math.min(from + limit, output.size());
@@ -135,6 +142,18 @@ final class MediaRepository {
         return context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED;
     }
 
+    private long resolveSize(Uri uri, long size) {
+        if (size > 0) return size;
+        try (android.content.res.AssetFileDescriptor descriptor = context.getContentResolver().openAssetFileDescriptor(uri, "r")) {
+            if (descriptor == null) return size;
+            long actual = descriptor.getLength();
+            if (actual > 0) return actual;
+            android.os.ParcelFileDescriptor file = descriptor.getParcelFileDescriptor();
+            if (file != null && file.getStatSize() > 0) return file.getStatSize();
+        } catch (Exception ignored) { }
+        return size;
+    }
+
     Item find(String key) {
         if (key == null) return null;
         int split = key.indexOf(':');
@@ -153,8 +172,9 @@ final class MediaRepository {
         String[] projection = {MediaStore.MediaColumns.DISPLAY_NAME, MediaStore.MediaColumns.MIME_TYPE, MediaStore.MediaColumns.SIZE, MediaStore.MediaColumns.DATE_MODIFIED};
         try (Cursor cursor = context.getContentResolver().query(uri, projection, null, null, null)) {
             if (cursor == null || !cursor.moveToFirst()) return null;
-            return new Item(key, value(cursor, 0, "File"), value(cursor, 1, "application/octet-stream"), kind,
-                    number(cursor, 2), number(cursor, 3), uri);
+            String name = value(cursor, 0, "File");
+            return new Item(key, name, value(cursor, 1, "application/octet-stream"), kind,
+                    resolveSize(uri, number(cursor, 2)), number(cursor, 3), uri);
         } catch (SecurityException error) { return null; }
     }
 
@@ -175,7 +195,7 @@ final class MediaRepository {
                 Uri itemUri = ContentUris.withAppendedId(collection, id);
                 String mime = value(cursor, 2, "application/octet-stream");
                 output.add(new Item(prefix + ":" + id, value(cursor, 1, "File"), mime, kind,
-                        number(cursor, 3), number(cursor, 4), itemUri));
+                        resolveSize(itemUri, number(cursor, 3)), number(cursor, 4), itemUri));
             }
         } catch (SecurityException ignored) { }
     }
@@ -192,11 +212,14 @@ final class MediaRepository {
             int limit = maxRows;
             while (cursor.moveToNext() && limit-- > 0) {
                 long id = number(cursor, 0);
-                String mime = value(cursor, 2, "application/octet-stream").toLowerCase(Locale.ROOT);
+                String name = value(cursor, 1, "File");
+                String mime = value(cursor, 2, "application/octet-stream");
                 // Skip anything that already appears in the photo, video or audio tabs.
-                if (mime.startsWith("image/") || mime.startsWith("video/") || mime.startsWith("audio/")) continue;
-                output.add(new Item("file:" + id, value(cursor, 1, "File"), mime, "file",
-                        number(cursor, 3), number(cursor, 4), ContentUris.withAppendedId(collection, id)));
+                String providerMime = mime.trim().toLowerCase(Locale.ROOT);
+                if (providerMime.startsWith("image/") || providerMime.startsWith("video/") || providerMime.startsWith("audio/")) continue;
+                Uri itemUri = ContentUris.withAppendedId(collection, id);
+                output.add(new Item("file:" + id, name, mime, "file",
+                        resolveSize(itemUri, number(cursor, 3)), number(cursor, 4), itemUri));
             }
         } catch (SecurityException ignored) { }
     }

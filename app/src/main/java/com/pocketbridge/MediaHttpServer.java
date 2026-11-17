@@ -13,6 +13,7 @@ import org.json.JSONObject;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -56,6 +57,7 @@ final class MediaHttpServer {
     private final String code;
     private final String token;
     private final MediaRepository media;
+    private final VideoCompatibility videoCompatibility;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicInteger badCodes = new AtomicInteger(0);
     private volatile long badCodeWindowStart = 0L;
@@ -74,6 +76,7 @@ final class MediaHttpServer {
         this.code = code;
         this.token = token;
         this.media = new MediaRepository(context);
+        this.videoCompatibility = new VideoCompatibility(context);
     }
 
     /**
@@ -177,6 +180,27 @@ final class MediaHttpServer {
             }
             resetBadCodes();
 
+            if (path.startsWith("/api/video/compatible/") && (method.equals("GET") || method.equals("HEAD"))) {
+                String key = Uri.decode(path.substring("/api/video/compatible/".length()));
+                MediaRepository.Item item = media.find(key);
+                if (item == null || !"video".equals(item.kind)) {
+                    respond(output, 404, "application/json; charset=utf-8", "{\"error\":\"Video not found or media access is missing.\"}", null);
+                    return;
+                }
+                try {
+                    File compatible = videoCompatibility.makeBrowserCopy(item);
+                    streamFile(output, method, headers, compatible, "video/mp4", item.name + ".browser.mp4");
+                } catch (Exception conversionError) {
+                    JSONObject failure = new JSONObject().put("error", conversionError.getMessage() == null
+                            ? "The phone could not prepare this video for browser playback." : conversionError.getMessage());
+                    respond(output, 422, "application/json; charset=utf-8", failure.toString(), null);
+                } catch (LinkageError missingNativeCodec) {
+                    respond(output, 422, "application/json; charset=utf-8",
+                            "{\"error\":\"Video conversion is not available for this phone's processor. Download the original video instead.\"}", null);
+                }
+                return;
+            }
+
             if (path.equals("/api/session") && method.equals("GET")) {
                 respond(output, 200, "application/json", "{\"ok\":true}", null);
                 return;
@@ -238,6 +262,33 @@ final class MediaHttpServer {
                 String offerError = ScreenCaptureService.getLastOfferError();
                 if (offerError != null) state.put("offerError", offerError);
                 respond(output, 200, "application/json; charset=utf-8", state.toString(), null);
+                return;
+            }
+            if (path.equals("/api/screen/mjpeg") && method.equals("GET")) {
+                if (!ScreenCaptureService.isRunning()) {
+                    respond(output, 409, "application/json; charset=utf-8",
+                            "{\"error\":\"Start Share phone screen on the phone and approve Android's capture prompt first.\"}", null);
+                    return;
+                }
+                ScreenCaptureService.refreshForMjpeg();
+                ScreenCaptureService.JpegFrame frame = ScreenCaptureService.awaitJpegFrame(-1, 6000);
+                if (frame == null) {
+                    respond(output, 503, "application/json; charset=utf-8",
+                            "{\"error\":\"Android did not produce a screen frame. Stop screen sharing on the phone, start it again, and retry.\"}", null);
+                    return;
+                }
+                writeHead(output, 200, "multipart/x-mixed-replace; boundary=pocketbridge-frame", -1,
+                        "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n", null);
+                writeMjpegFrame(output, frame.bytes);
+                long lastSequence = frame.sequence;
+                while (running.get() && ScreenCaptureService.isRunning()) {
+                    ScreenCaptureService.JpegFrame next = ScreenCaptureService.awaitJpegFrame(lastSequence, 2000);
+                    if (next == null) continue;
+                    writeMjpegFrame(output, next.bytes);
+                    lastSequence = next.sequence;
+                }
+                output.write("--pocketbridge-frame--\r\n".getBytes(StandardCharsets.US_ASCII));
+                output.flush();
                 return;
             }
             if (path.equals("/api/screen/offer") && method.equals("POST")) {
@@ -476,6 +527,16 @@ final class MediaHttpServer {
 
     private void streamMedia(OutputStream output, String method, Map<String, String> headers, MediaRepository.Item item) throws Exception {
         long total = Math.max(0, item.size);
+        if (total == 0) {
+            // A provider can expose a readable file but omit its size. Do not
+            // send Content-Length: 0, which makes video playback fail instantly.
+            String safeName = item.name.replace("\"", "_").replace("\r", "_").replace("\n", "_");
+            writeHead(output, 200, item.mime, -1,
+                    "Content-Disposition: inline; filename=\"" + safeName + "\"\r\n", null);
+            output.flush();
+            if (!method.equals("HEAD")) copyMediaRange(output, item, 0, Long.MAX_VALUE);
+            return;
+        }
         ByteRange range = ByteRange.parse(headers.get("range"), total);
         if (range.unsatisfiable) {
             writeHead(output, 416, "text/plain", 0, "Content-Range: bytes */" + total + "\r\n", null);
@@ -493,6 +554,36 @@ final class MediaHttpServer {
         output.flush();
         if (method.equals("HEAD") || length == 0) return;
         copyMediaRange(output, item, start, length);
+    }
+
+    private void streamFile(OutputStream output, String method, Map<String, String> headers, File file,
+                            String mime, String downloadName) throws Exception {
+        long total = file.length();
+        ByteRange range = ByteRange.parse(headers.get("range"), total);
+        if (range.unsatisfiable) {
+            writeHead(output, 416, "text/plain", 0, "Content-Range: bytes */" + total + "\r\n", null);
+            return;
+        }
+        long length = total == 0 ? 0 : range.end - range.start + 1;
+        String safeName = downloadName.replace("\"", "_").replace("\r", "_").replace("\n", "_");
+        String extra = "Accept-Ranges: bytes\r\nCache-Control: private, max-age=3600\r\nContent-Disposition: inline; filename=\"" + safeName + "\"\r\n";
+        if (range.partial) extra += "Content-Range: bytes " + range.start + "-" + range.end + "/" + total + "\r\n";
+        writeHead(output, range.partial ? 206 : 200, mime, length, extra, null);
+        output.flush();
+        if (method.equals("HEAD") || length == 0) return;
+        try (FileInputStream input = new FileInputStream(file)) {
+            input.getChannel().position(range.start);
+            copyBytes(input, output, length);
+        }
+    }
+
+    static void writeMjpegFrame(OutputStream output, byte[] jpeg) throws IOException {
+        output.write("--pocketbridge-frame\r\nContent-Type: image/jpeg\r\nContent-Length: ".getBytes(StandardCharsets.US_ASCII));
+        output.write(Integer.toString(jpeg.length).getBytes(StandardCharsets.US_ASCII));
+        output.write("\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
+        output.write(jpeg);
+        output.write("\r\n".getBytes(StandardCharsets.US_ASCII));
+        output.flush();
     }
 
     /**
@@ -596,7 +687,7 @@ final class MediaHttpServer {
         catch (Exception ignored) { return fallback; }
     }
 
-    private static final class ByteRange {
+    static final class ByteRange {
         final long start;
         final long end;
         final boolean partial;
@@ -648,6 +739,8 @@ final class MediaHttpServer {
                 : status == 409 ? "Conflict"
                 : status == 416 ? "Range Not Satisfiable"
                 : status == 429 ? "Too Many Requests"
+                : status == 503 ? "Service Unavailable"
+                : status == 422 ? "Unprocessable Entity"
                 : "Bad Request";
         String headers = "HTTP/1.1 " + status + " " + reason + "\r\n" +
                 "Content-Type: " + type + "\r\n" +

@@ -10,8 +10,8 @@ android {
         applicationId = "com.pocketbridge"
         minSdk = 26
         targetSdk = 35
-        versionCode = 11
-        versionName = "0.5.6"
+        versionCode = 12
+        versionName = "0.5.7"
         if (project.findProperty("pocketbridgeUniversal") != "true") {
             ndk {
                 abiFilters += "arm64-v8a"
@@ -31,4 +31,6 @@ android {
 
 dependencies {
     implementation("io.github.webrtc-sdk:android:150.7871.04")
+    implementation("dev.ffmpegkit-maintained:ffmpeg-kit-video:8.1.7")
+    testImplementation("junit:junit:4.13.2")
 }

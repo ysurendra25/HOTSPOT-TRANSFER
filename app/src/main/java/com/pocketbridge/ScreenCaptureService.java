@@ -17,6 +17,12 @@ import android.util.DisplayMetrics;
 import android.view.Display;
 import android.view.WindowManager;
 import android.content.pm.ServiceInfo;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.ImageFormat;
+import android.graphics.Matrix;
+import android.graphics.Rect;
+import android.graphics.YuvImage;
 
 import org.webrtc.DefaultVideoDecoderFactory;
 import org.webrtc.DefaultVideoEncoderFactory;
@@ -32,9 +38,13 @@ import org.webrtc.ScreenCapturerAndroid;
 import org.webrtc.SessionDescription;
 import org.webrtc.SurfaceTextureHelper;
 import org.webrtc.VideoSource;
+import org.webrtc.VideoFrame;
+import org.webrtc.VideoSink;
 import org.webrtc.VideoTrack;
 
 import java.util.ArrayList;
+import java.io.ByteArrayOutputStream;
+import java.nio.ByteBuffer;
 import java.util.Collections;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -60,10 +70,17 @@ public final class ScreenCaptureService extends Service {
     private volatile String pendingAnswer;
     private volatile CountDownLatch answerLatch;
     private volatile boolean iceGatheringComplete;
+    private volatile JpegSink jpegSink;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private DisplayManager.DisplayListener displayListener;
     private int captureWidth;
     private int captureHeight;
+
+    static final class JpegFrame {
+        final long sequence;
+        final byte[] bytes;
+        JpegFrame(long sequence, byte[] bytes) { this.sequence = sequence; this.bytes = bytes; }
+    }
 
     public static boolean isRunning() { return instance != null && instance.videoTrack != null; }
 
@@ -72,6 +89,17 @@ public final class ScreenCaptureService extends Service {
     public static String getIceState() { return lastIceState; }
 
     public static String getLastOfferError() { return lastOfferError; }
+
+    static JpegFrame awaitJpegFrame(long afterSequence, long timeoutMs) {
+        ScreenCaptureService service = instance;
+        JpegSink sink = service == null ? null : service.jpegSink;
+        return sink == null ? null : sink.awaitAfter(afterSequence, timeoutMs);
+    }
+
+    static void refreshForMjpeg() {
+        ScreenCaptureService service = instance;
+        if (service != null) service.mainHandler.post(service::refreshCapture);
+    }
 
     public static String answerOffer(String sdp) {
         ScreenCaptureService service = instance;
@@ -149,6 +177,8 @@ public final class ScreenCaptureService extends Service {
         captureHeight = size[1];
         videoTrack = factory.createVideoTrack("pocketbridge-screen", videoSource);
         videoTrack.setEnabled(true);
+        jpegSink = new JpegSink();
+        videoTrack.addSink(jpegSink);
         registerDisplayListener();
     }
 
@@ -311,6 +341,103 @@ public final class ScreenCaptureService extends Service {
         sender = null;
     }
 
+    /** Encodes a modest, crisp browser stream without ICE or an internet relay. */
+    private static final class JpegSink implements VideoSink {
+        private static final int MAX_EDGE = 1280;
+        private static final long MIN_FRAME_NS = 83_000_000L;
+        private final Object frameLock = new Object();
+        private volatile JpegFrame latest;
+        private long sequence;
+        private long lastFrameNs;
+
+        @Override public synchronized void onFrame(VideoFrame frame) {
+            long now = android.os.SystemClock.elapsedRealtimeNanos();
+            if (now - lastFrameNs < MIN_FRAME_NS) return;
+            lastFrameNs = now;
+            byte[] jpeg = encode(frame);
+            if (jpeg == null) return;
+            synchronized (frameLock) {
+                latest = new JpegFrame(++sequence, jpeg);
+                frameLock.notifyAll();
+            }
+        }
+
+        JpegFrame awaitAfter(long afterSequence, long timeoutMs) {
+            long deadline = android.os.SystemClock.elapsedRealtime() + timeoutMs;
+            synchronized (frameLock) {
+                while (latest == null || latest.sequence <= afterSequence) {
+                    long remaining = deadline - android.os.SystemClock.elapsedRealtime();
+                    if (remaining <= 0) return null;
+                    try { frameLock.wait(remaining); }
+                    catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); return null; }
+                }
+                return latest;
+            }
+        }
+
+        private byte[] encode(VideoFrame frame) {
+            VideoFrame.Buffer source = frame.getBuffer();
+            int sourceWidth = source.getWidth();
+            int sourceHeight = source.getHeight();
+            float scale = Math.min(1f, (float) MAX_EDGE / Math.max(sourceWidth, sourceHeight));
+            int width = Math.max(2, ((int) (sourceWidth * scale) / 2) * 2);
+            int height = Math.max(2, ((int) (sourceHeight * scale) / 2) * 2);
+            VideoFrame.Buffer scaled = width != sourceWidth || height != sourceHeight
+                    ? source.cropAndScale(0, 0, sourceWidth, sourceHeight, width, height)
+                    : source;
+            VideoFrame.I420Buffer i420 = null;
+            try {
+                i420 = scaled.toI420();
+                if (i420 == null) return null;
+                byte[] nv21 = toNv21(i420, width, height);
+                if (nv21 == null) return null;
+                ByteArrayOutputStream out = new ByteArrayOutputStream();
+                if (!new YuvImage(nv21, ImageFormat.NV21, width, height, null)
+                        .compressToJpeg(new Rect(0, 0, width, height), 88, out)) return null;
+                byte[] data = out.toByteArray();
+                if (frame.getRotation() == 0) return data;
+                Bitmap bitmap = BitmapFactory.decodeByteArray(data, 0, data.length);
+                if (bitmap == null) return data;
+                Matrix matrix = new Matrix();
+                matrix.postRotate(frame.getRotation());
+                Bitmap rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+                if (rotated != bitmap) bitmap.recycle();
+                ByteArrayOutputStream rotatedOut = new ByteArrayOutputStream();
+                rotated.compress(Bitmap.CompressFormat.JPEG, 88, rotatedOut);
+                rotated.recycle();
+                return rotatedOut.toByteArray();
+            } catch (Exception | OutOfMemoryError error) {
+                android.util.Log.w("PocketBridge", "Could not encode a local screen frame", error);
+                return null;
+            } finally {
+                if (i420 != null) i420.release();
+                if (scaled != source) scaled.release();
+            }
+        }
+
+        private byte[] toNv21(VideoFrame.I420Buffer frame, int width, int height) {
+            int ySize = width * height;
+            byte[] nv21 = new byte[ySize + ySize / 2];
+            ByteBuffer y = frame.getDataY().duplicate();
+            ByteBuffer u = frame.getDataU().duplicate();
+            ByteBuffer v = frame.getDataV().duplicate();
+            int out = 0;
+            for (int row = 0; row < height; row++) {
+                int base = row * frame.getStrideY();
+                for (int col = 0; col < width; col++) nv21[out++] = y.get(base + col);
+            }
+            for (int row = 0; row < height / 2; row++) {
+                int uBase = row * frame.getStrideU();
+                int vBase = row * frame.getStrideV();
+                for (int col = 0; col < width / 2; col++) {
+                    nv21[out++] = v.get(vBase + col);
+                    nv21[out++] = u.get(uBase + col);
+                }
+            }
+            return nv21;
+        }
+    }
+
     @Override public void onDestroy() {
         mainHandler.removeCallbacksAndMessages(null);
         try {
@@ -318,6 +445,10 @@ public final class ScreenCaptureService extends Service {
             if (manager != null && displayListener != null) manager.unregisterDisplayListener(displayListener);
         } catch (Exception ignored) { }
         closePeer();
+        if (jpegSink != null && videoTrack != null) {
+            try { videoTrack.removeSink(jpegSink); } catch (Exception ignored) { }
+            jpegSink = null;
+        }
         try { if (capturer != null) { capturer.stopCapture(); capturer.dispose(); } } catch (Exception ignored) { }
         try { if (videoTrack != null) videoTrack.dispose(); } catch (Exception ignored) { }
         try { if (videoSource != null) videoSource.dispose(); } catch (Exception ignored) { }
