@@ -65,6 +65,7 @@ final class MediaHttpServer {
     private final LruCache<String, byte[]> thumbCache = new LruCache<String, byte[]>(THUMB_CACHE_BYTES) {
         @Override protected int sizeOf(String key, byte[] value) { return value == null ? 0 : value.length; }
     };
+    private static final java.util.concurrent.Semaphore THUMB_SLOTS = new java.util.concurrent.Semaphore(2);
     private final LruCache<String, byte[]> previewCache = new LruCache<String, byte[]>(PREVIEW_CACHE_BYTES) {
         @Override protected int sizeOf(String key, byte[] value) { return value == null ? 0 : value.length; }
     };
@@ -217,11 +218,7 @@ final class MediaHttpServer {
                 return;
             }
             if (path.equals("/api/messages") && method.equals("GET")) {
-                File messageFile = new File(context.getFilesDir(), "share-messages.json");
-                String json = "{\"messages\":[]}";
-                if (messageFile.isFile()) try (InputStream stream = new FileInputStream(messageFile)) {
-                    json = new String(readAll(stream), StandardCharsets.UTF_8);
-                }
+                String json = new JSONObject().put("messages", ChatStore.read(context)).toString();
                 respond(output, 200, "application/json; charset=utf-8", json, "Cache-Control: no-store\r\n");
                 return;
             }
@@ -232,19 +229,7 @@ final class MediaHttpServer {
                     respond(output, 400, "application/json; charset=utf-8", "{\"error\":\"Message must be between 1 and 2000 characters.\"}", null);
                     return;
                 }
-                File messageFile = new File(context.getFilesDir(), "share-messages.json");
-                org.json.JSONArray messages = new org.json.JSONArray();
-                if (messageFile.isFile()) try (InputStream stream = new FileInputStream(messageFile)) {
-                    messages = new JSONObject(new String(readAll(stream), StandardCharsets.UTF_8)).optJSONArray("messages");
-                    if (messages == null) messages = new org.json.JSONArray();
-                }
-                messages.put(new JSONObject().put("text", text).put("time", System.currentTimeMillis()));
-                org.json.JSONArray trimmed = new org.json.JSONArray();
-                for (int i = Math.max(0, messages.length() - 100); i < messages.length(); i++) trimmed.put(messages.get(i));
-                try (java.io.FileOutputStream stream = new java.io.FileOutputStream(messageFile)) {
-                    stream.write(new JSONObject().put("messages", trimmed).toString().getBytes(StandardCharsets.UTF_8));
-                    stream.getFD().sync();
-                }
+                ChatStore.append(context, text, request.optString("from", "laptop"));
                 respond(output, 201, "application/json; charset=utf-8", "{\"ok\":true}", null);
                 return;
             }
@@ -360,11 +345,27 @@ final class MediaHttpServer {
                         "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n", null);
                 writeMjpegFrame(output, frame.bytes);
                 long lastSequence = frame.sequence;
+                byte[] lastBytes = frame.bytes;
+                long lastWrite = android.os.SystemClock.elapsedRealtime();
                 while (running.get() && ScreenCaptureService.isRunning()) {
-                    ScreenCaptureService.JpegFrame next = ScreenCaptureService.awaitJpegFrame(lastSequence, 2000);
-                    if (next == null) continue;
-                    writeMjpegFrame(output, next.bytes);
-                    lastSequence = next.sequence;
+                    ScreenCaptureService.JpegFrame next = ScreenCaptureService.awaitJpegFrame(lastSequence, 250);
+                    boolean wrote = false;
+                    if (next != null) {
+                        lastSequence = next.sequence;
+                        lastBytes = next.bytes;
+                        writeMjpegFrame(output, lastBytes);
+                        output.flush();
+                        lastWrite = android.os.SystemClock.elapsedRealtime();
+                        wrote = true;
+                    }
+                    // Android only hands over a frame when the screen changes, so a still
+                    // screen would leave the browser on one frozen picture and could let
+                    // the connection look dead. Repeat the last picture now and then.
+                    if (!wrote && android.os.SystemClock.elapsedRealtime() - lastWrite >= 700) {
+                        writeMjpegFrame(output, lastBytes);
+                        output.flush();
+                        lastWrite = android.os.SystemClock.elapsedRealtime();
+                    }
                 }
                 output.write("--pocketbridge-frame--\r\n".getBytes(StandardCharsets.US_ASCII));
                 output.flush();
@@ -456,6 +457,18 @@ final class MediaHttpServer {
     }
 
     private byte[] buildThumbnail(MediaRepository.Item item) {
+        // One page can ask for a hundred thumbnails at once. Running a decoder for
+        // each of them in parallel exhausts the phone's memory, which is what made
+        // video previews fail to load. Build at most two at a time.
+        THUMB_SLOTS.acquireUninterruptibly();
+        try {
+            return buildThumbnailNow(item);
+        } finally {
+            THUMB_SLOTS.release();
+        }
+    }
+
+    private byte[] buildThumbnailNow(MediaRepository.Item item) {
         try {
             if ("video".equals(item.kind)) {
                 if (android.os.Build.VERSION.SDK_INT >= 29) {
@@ -557,9 +570,19 @@ final class MediaHttpServer {
     /** Uses a frame from the original video when the device's thumbnail provider fails. */
     private byte[] videoFrameThumbnail(MediaRepository.Item item) {
         android.media.MediaMetadataRetriever retriever = new android.media.MediaMetadataRetriever();
+        boolean prepared = false;
         try (ParcelFileDescriptor descriptor = context.getContentResolver().openFileDescriptor(item.uri, "r")) {
-            if (descriptor == null) return null;
-            retriever.setDataSource(descriptor.getFileDescriptor());
+            // Some providers hand back a pipe instead of a real file, and a descriptor
+            // that cannot seek makes the retriever fail. Fall back to the content URI,
+            // which lets Android resolve it itself.
+            if (descriptor != null) {
+                try { retriever.setDataSource(descriptor.getFileDescriptor()); prepared = true; }
+                catch (Exception ignoredDescriptor) { prepared = false; }
+            }
+            if (!prepared) {
+                try { retriever.setDataSource(context, item.uri); prepared = true; }
+                catch (Exception ignoredUri) { return null; }
+            }
             // A frame a little way in avoids the black or fading-in first frame
             // that many videos start with.
             long timeUs = 0;
@@ -569,6 +592,11 @@ final class MediaHttpServer {
             } catch (Exception ignoredDuration) { }
             Bitmap frame = retriever.getFrameAtTime(timeUs, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
             if (frame == null && timeUs != 0) frame = retriever.getFrameAtTime(0, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+            if (frame == null) {
+                // A video whose only sync frames sit far away can still be read with
+                // the non-sync option, which decodes forward from the nearest keyframe.
+                frame = retriever.getFrameAtTime(0, android.media.MediaMetadataRetriever.OPTION_CLOSEST);
+            }
             if (frame == null) return null;
             return compress(orient(null, frame, THUMB_TARGET, false), 82);
         } catch (Exception | OutOfMemoryError error) {

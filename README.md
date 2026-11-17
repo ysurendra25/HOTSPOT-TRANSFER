@@ -2,9 +2,19 @@
 
 PocketBridge is an open-source Android app for sharing phone media and the phone screen to a laptop browser over a local-only Wi-Fi hotspot. An optional portable open-source Windows helper also lets the phone view and control the laptop. Both workflows work without mobile data or internet access.
 
-## Version 0.5.7
+## Version 0.5.9
 
 What's new:
+
+- **Four tabs on the phone.** Connect, Screen, Library and Chat, chosen from a bottom bar with an icon for each. The selected tab turns green.
+- **Chat on both sides.** The phone now shows the same share chat the laptop sees and can answer from the Chat tab. Messages are kept on the phone and never leave the local network.
+- **Library on the phone.** Photos, videos, audio and files, filterable, newest first. Tap an item to open it in the app that handles it.
+- **Laptop screen on the phone.** Paste the Windows helper link in the Screen tab and its live view opens inside PocketBridge.
+- **A live screen again.** The screen stream no longer freezes on a still picture: connecting restarts the capture to force a fresh frame, and the server repeats the last frame so the browser stream never looks dead.
+- **Video thumbnails that load.** Thumbnail building is capped at two at a time, because a page of video previews used to start a dozen decoders at once and run the phone out of memory. Two extra fallbacks handle providers that hand back an unseekable file.
+- **A real app icon.** A green rounded icon with a white arrow replaces Android's default.
+
+Everything from 0.5.7:
 
 - **Direct offline screen sharing.** The browser receives screen frames as a local MJPEG stream over the same HTTP connection as file sharing. It no longer depends on WebRTC ICE negotiation, STUN, a relay, or internet access. Frames are capped at 1280 pixels and 12 fps for hotspot use.
 - **More reliable media labels.** If Android reports a generic MIME type, PocketBridge identifies common photo, video, and audio formats from the filename extension.

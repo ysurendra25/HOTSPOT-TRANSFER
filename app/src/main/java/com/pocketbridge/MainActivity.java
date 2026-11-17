@@ -119,6 +119,7 @@ public final class MainActivity extends Activity {
     }
 
     @Override protected void onStop() {
+        chatHandler.removeCallbacks(chatPoll);
         if (receiverRegistered) {
             unregisterReceiver(statusReceiver);
             receiverRegistered = false;
@@ -159,10 +160,29 @@ public final class MainActivity extends Activity {
         header.addView(intro);
         page.addView(header);
 
-        ScrollView scroll = new ScrollView(this);
-        LinearLayout content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(dp(20), dp(18), dp(20), dp(24));
+        // Four tabs: Connect, Screen, Library, Chat. Each one gets its own
+        // scrolling column; only the chosen tab is visible.
+        android.widget.FrameLayout tabHost = new android.widget.FrameLayout(this);
+        ScrollView connectScroll = new ScrollView(this);
+        LinearLayout content = tabColumn();
+        connectScroll.addView(content);
+        ScrollView screenScroll = new ScrollView(this);
+        LinearLayout screenContent = tabColumn();
+        screenScroll.addView(screenContent);
+        ScrollView libraryScroll = new ScrollView(this);
+        LinearLayout libraryContent = tabColumn();
+        libraryScroll.addView(libraryContent);
+        ScrollView chatScroll = new ScrollView(this);
+        LinearLayout chatContent = tabColumn();
+        chatScroll.addView(chatContent);
+        tabHost.addView(connectScroll);
+        tabHost.addView(screenScroll);
+        tabHost.addView(libraryScroll);
+        tabHost.addView(chatScroll);
+        screenScroll.setVisibility(View.GONE);
+        libraryScroll.setVisibility(View.GONE);
+        chatScroll.setVisibility(View.GONE);
+        this.tabViews = new ScrollView[]{connectScroll, screenScroll, libraryScroll, chatScroll};
 
         statusText = new TextView(this);
         statusText.setText("Ready when you are");
@@ -259,6 +279,16 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams stopGap = matchWrap();
         stopGap.topMargin = dp(18);
         content.addView(stopButton, stopGap);
+
+        // Everything from here belongs to the Screen tab.
+        content = screenContent;
+        TextView screenHeading = new TextView(this);
+        screenHeading.setText("Share this phone's screen to the laptop, or open the laptop's live view here.");
+        screenHeading.setTextColor(COLOR_MUTED);
+        screenHeading.setTextSize(13);
+        screenHeading.setLineSpacing(dp(3), 1f);
+        screenHeading.setPadding(dp(4), 0, dp(4), dp(12));
+        content.addView(screenHeading);
 
         screenButton = button("Share phone screen", Color.rgb(31, 53, 66));
         screenButton.setOnClickListener(v -> {
@@ -378,6 +408,39 @@ public final class MainActivity extends Activity {
         content.addView(laptopStatus, matchWrap());
         content.addView(laptopResults, matchWrap());
 
+        // Laptop screen on the phone: the Windows helper already streams JPEG over
+        // the hotspot, so show its own live page here instead of duplicating it.
+        android.webkit.WebView laptopView = new android.webkit.WebView(this);
+        laptopView.getSettings().setJavaScriptEnabled(true);
+        laptopView.getSettings().setLoadWithOverviewMode(true);
+        laptopView.getSettings().setUseWideViewPort(true);
+        laptopView.setBackgroundColor(Color.BLACK);
+        laptopView.setVisibility(View.GONE);
+        laptopView.setLayoutParams(new LinearLayout.LayoutParams(-1, dp(240)));
+        Button showLaptop = button("Show laptop screen here", COLOR_GREEN);
+        showLaptop.setOnClickListener(v -> {
+            String link = laptopAddress.getText().toString().trim();
+            if (link.isEmpty()) {
+                Toast.makeText(this, "Paste the helper link above first.", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            laptopView.setVisibility(View.VISIBLE);
+            laptopView.loadUrl(link);
+        });
+        Button hideLaptop = button("Hide laptop screen", COLOR_SOFT);
+        hideLaptop.setTextColor(COLOR_INK);
+        hideLaptop.setOnClickListener(v -> { laptopView.setVisibility(View.GONE); laptopView.loadUrl("about:blank"); });
+        LinearLayout liveRow = new LinearLayout(this);
+        liveRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams liveLeft = new LinearLayout.LayoutParams(0, -2, 1f);
+        liveLeft.rightMargin = dp(6);
+        LinearLayout.LayoutParams liveRight = new LinearLayout.LayoutParams(0, -2, 1f);
+        liveRight.leftMargin = dp(6);
+        liveRow.addView(showLaptop, liveLeft);
+        liveRow.addView(hideLaptop, liveRight);
+        addCard(content, "LAPTOP SCREEN ON THIS PHONE", liveRow);
+        content.addView(laptopView, matchWrap());
+
         TextView note = new TextView(this);
         note.setText("The code keeps the link private. Anyone who joins the network still needs it to see your files. Android asks for screen-capture approval each time.");
         note.setTextColor(COLOR_MUTED);
@@ -385,9 +448,247 @@ public final class MainActivity extends Activity {
         note.setPadding(dp(4), dp(14), dp(4), 0);
         content.addView(note);
 
-        scroll.addView(content);
-        page.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+        content = libraryContent;
+        buildLibraryTab(content);
+        content = chatContent;
+        buildChatTab(content);
+
+        page.addView(tabHost, new LinearLayout.LayoutParams(-1, 0, 1f));
+        page.addView(buildBottomBar(), new LinearLayout.LayoutParams(-1, -2));
         setContentView(page);
+        showTab(0);
+    }
+
+    private ScrollView[] tabViews;
+    private Button[] tabButtons;
+    private LinearLayout libraryList;
+    private TextView libraryStatus;
+    private String libraryFilter = "all";
+    private LinearLayout chatList;
+    private TextView chatStatus;
+    private EditText chatInput;
+    private final android.os.Handler chatHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable chatPoll = new Runnable() {
+        @Override public void run() {
+            refreshChat();
+            chatHandler.postDelayed(this, 2500);
+        }
+    };
+
+    private LinearLayout tabColumn() {
+        LinearLayout column = new LinearLayout(this);
+        column.setOrientation(LinearLayout.VERTICAL);
+        column.setPadding(dp(20), dp(18), dp(20), dp(24));
+        return column;
+    }
+
+    /** The bottom bar real apps use: four icons, the chosen one highlighted. */
+    private View buildBottomBar() {
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setBackgroundColor(Color.WHITE);
+        bar.setPadding(dp(4), dp(8), dp(4), dp(10));
+        bar.setElevation(dp(8));
+        int[] icons = {R.drawable.ic_tab_connect, R.drawable.ic_tab_screen, R.drawable.ic_tab_library, R.drawable.ic_tab_chat};
+        String[] labels = {"Connect", "Screen", "Library", "Chat"};
+        tabButtons = new Button[labels.length];
+        for (int i = 0; i < labels.length; i++) {
+            final int index = i;
+            Button tab = new Button(this);
+            tab.setText(labels[i]);
+            tab.setTextSize(11);
+            tab.setAllCaps(false);
+            tab.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            tab.setBackgroundColor(Color.TRANSPARENT);
+            tab.setCompoundDrawablesWithIntrinsicBounds(0, icons[i], 0, 0);
+            tab.setCompoundDrawableTintList(android.content.res.ColorStateList.valueOf(COLOR_MUTED));
+            tab.setCompoundDrawablePadding(dp(3));
+            tab.setPadding(0, dp(4), 0, 0);
+            tab.setMinHeight(0);
+            tab.setMinimumHeight(0);
+            tab.setOnClickListener(v -> showTab(index));
+            tabButtons[i] = tab;
+            bar.addView(tab, new LinearLayout.LayoutParams(0, -2, 1f));
+        }
+        return bar;
+    }
+
+    private void showTab(int index) {
+        if (tabViews == null) return;
+        for (int i = 0; i < tabViews.length; i++) tabViews[i].setVisibility(i == index ? View.VISIBLE : View.GONE);
+        if (tabButtons != null) {
+            for (int i = 0; i < tabButtons.length; i++) {
+                int tint = i == index ? COLOR_GREEN : COLOR_MUTED;
+                tabButtons[i].setTextColor(tint);
+                tabButtons[i].setCompoundDrawableTintList(android.content.res.ColorStateList.valueOf(tint));
+            }
+        }
+        if (index == 2) refreshLibrary();
+        if (index == 3) {
+            refreshChat();
+            chatHandler.removeCallbacks(chatPoll);
+            chatHandler.postDelayed(chatPoll, 2500);
+        } else {
+            chatHandler.removeCallbacks(chatPoll);
+        }
+        if (index == 1) refreshScreenButton();
+    }
+
+    /** Library tab: what is on this phone, newest first, tap to open. */
+    private void buildLibraryTab(LinearLayout parent) {
+        libraryStatus = new TextView(this);
+        libraryStatus.setText("Reading your media…");
+        libraryStatus.setTextColor(COLOR_INK);
+        libraryStatus.setTextSize(14);
+        libraryStatus.setLineSpacing(dp(3), 1f);
+        addCard(parent, "ON THIS PHONE", libraryStatus);
+
+        LinearLayout filters = new LinearLayout(this);
+        filters.setOrientation(LinearLayout.HORIZONTAL);
+        String[] kinds = {"all", "image", "video", "audio", "file"};
+        String[] labels = {"All", "Photos", "Videos", "Audio", "Files"};
+        for (int i = 0; i < kinds.length; i++) {
+            final String kind = kinds[i];
+            Button chip = button(labels[i], "all".equals(kind) ? COLOR_GREEN : COLOR_SOFT);
+            if (!"all".equals(kind)) chip.setTextColor(COLOR_INK);
+            chip.setTextSize(12);
+            chip.setMinHeight(dp(40));
+            chip.setOnClickListener(v -> { libraryFilter = kind; refreshLibrary(); });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -2, 1f);
+            if (i > 0) lp.leftMargin = dp(4);
+            filters.addView(chip, lp);
+        }
+        addCard(parent, "SHOW", filters);
+
+        libraryList = new LinearLayout(this);
+        libraryList.setOrientation(LinearLayout.VERTICAL);
+        addCard(parent, "ITEMS", libraryList);
+    }
+
+    private void refreshLibrary() {
+        if (libraryList == null) return;
+        final String kind = libraryFilter;
+        libraryList.removeAllViews();
+        libraryStatus.setText("Reading your media…");
+        new Thread(() -> {
+            List<MediaRepository.Item> items = new ArrayList<>();
+            String message;
+            try {
+                MediaRepository repository = new MediaRepository(this);
+                MediaRepository.Page page = repository.listPage(kind, 0, 60);
+                items.addAll(page.items);
+                message = items.isEmpty()
+                        ? "Nothing to show here yet. Allow photo and video access, then start a share."
+                        : items.size() + " item" + (items.size() == 1 ? "" : "s")
+                          + (page.hasMore ? " (first 60 shown)" : "") + " · tap one to open it.";
+            } catch (Exception error) {
+                message = "Could not read the media library: " + error.getMessage();
+            }
+            final String status = message;
+            runOnUiThread(() -> {
+                libraryStatus.setText(status);
+                for (MediaRepository.Item item : items) {
+                    Button row = button(item.name + "\n" + android.text.format.Formatter.formatShortFileSize(this, item.size), Color.WHITE);
+                    row.setTextColor(COLOR_INK);
+                    row.setTextSize(13);
+                    row.setAllCaps(false);
+                    row.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+                    row.setMinHeight(dp(52));
+                    row.setOnClickListener(v -> openMedia(item));
+                    LinearLayout.LayoutParams lp = matchWrap();
+                    lp.topMargin = dp(4);
+                    libraryList.addView(row, lp);
+                }
+            });
+        }, "PocketBridge-library").start();
+    }
+
+    private void openMedia(MediaRepository.Item item) {
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setDataAndType(item.uri, item.mime == null || item.mime.isEmpty() ? "*/*" : item.mime);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(intent);
+        } catch (Exception error) {
+            Toast.makeText(this, "No app on this phone can open that file.", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /** Chat tab: the same conversation the laptop sees, answered from here. */
+    private void buildChatTab(LinearLayout parent) {
+        chatStatus = new TextView(this);
+        chatStatus.setText("Messages stay on this phone and the laptop, on your own network.");
+        chatStatus.setTextColor(COLOR_MUTED);
+        chatStatus.setTextSize(12);
+        chatStatus.setLineSpacing(dp(3), 1f);
+        parent.addView(chatStatus);
+
+        chatList = new LinearLayout(this);
+        chatList.setOrientation(LinearLayout.VERTICAL);
+        chatList.setPadding(dp(2), dp(6), dp(2), dp(6));
+        ScrollView listScroll = new ScrollView(this);
+        listScroll.addView(chatList);
+        listScroll.setLayoutParams(new LinearLayout.LayoutParams(-1, dp(280)));
+        addCard(parent, "SHARE CHAT", listScroll);
+
+        chatInput = new EditText(this);
+        chatInput.setHint("Write a message for the laptop");
+        chatInput.setTextSize(14);
+        chatInput.setMaxLines(3);
+        addCard(parent, "YOUR MESSAGE", chatInput);
+
+        Button send = button("Send message", COLOR_GREEN);
+        send.setOnClickListener(v -> {
+            String text = chatInput.getText().toString().trim();
+            if (text.isEmpty()) return;
+            ChatStore.append(this, text, "phone");
+            chatInput.setText("");
+            refreshChat();
+        });
+        LinearLayout.LayoutParams sendGap = matchWrap();
+        sendGap.topMargin = dp(4);
+        parent.addView(send, sendGap);
+
+        Button clear = button("Clear conversation", COLOR_SOFT);
+        clear.setTextColor(COLOR_INK);
+        clear.setOnClickListener(v -> { ChatStore.clear(this); refreshChat(); });
+        LinearLayout.LayoutParams clearGap = matchWrap();
+        clearGap.topMargin = dp(8);
+        parent.addView(clear, clearGap);
+    }
+
+    private void refreshChat() {
+        if (chatList == null) return;
+        org.json.JSONArray messages = ChatStore.read(this);
+        chatList.removeAllViews();
+        if (messages.length() == 0) {
+            TextView empty = new TextView(this);
+            empty.setText("No messages yet. Write one below, or send one from the laptop page.");
+            empty.setTextColor(COLOR_MUTED);
+            empty.setTextSize(13);
+            empty.setPadding(dp(4), dp(8), dp(4), dp(8));
+            chatList.addView(empty);
+            return;
+        }
+        for (int i = 0; i < messages.length(); i++) {
+            JSONObject item = messages.optJSONObject(i);
+            if (item == null) continue;
+            boolean mine = "phone".equals(item.optString("from", "laptop"));
+            TextView row = new TextView(this);
+            row.setText(item.optString("text", ""));
+            row.setTextSize(14);
+            row.setTextColor(COLOR_INK);
+            row.setPadding(dp(12), dp(10), dp(12), dp(10));
+            android.graphics.drawable.GradientDrawable bubble = new android.graphics.drawable.GradientDrawable();
+            bubble.setCornerRadius(dp(12));
+            bubble.setColor(mine ? COLOR_SOFT : Color.WHITE);
+            row.setBackground(bubble);
+            LinearLayout.LayoutParams lp = matchWrap();
+            lp.topMargin = dp(6);
+            lp.leftMargin = mine ? dp(36) : 0;
+            lp.rightMargin = mine ? 0 : dp(36);
+            chatList.addView(row, lp);
+        }
     }
 
     private void addCard(LinearLayout parent, String label, View content) {

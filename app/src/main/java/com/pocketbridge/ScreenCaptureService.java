@@ -216,8 +216,14 @@ public final class ScreenCaptureService extends Service {
         if (size[0] == captureWidth && size[1] == captureHeight) return;
         captureWidth = size[0];
         captureHeight = size[1];
-        try { active.changeCaptureFormat(size[0], size[1], 30); }
-        catch (Exception error) { android.util.Log.w("PocketBridge", "Could not resize screen capture", error); }
+        try {
+            // Restart rather than resize: a rotation also needs a fresh frame, and a
+            // resized surface alone can keep showing the old orientation.
+            active.stopCapture();
+            active.startCapture(size[0], size[1], 30);
+        } catch (Exception error) {
+            android.util.Log.w("PocketBridge", "Could not resize screen capture", error);
+        }
     }
 
     /**
@@ -228,8 +234,16 @@ public final class ScreenCaptureService extends Service {
     private void refreshCapture() {
         ScreenCapturerAndroid active = capturer;
         if (active == null || captureWidth == 0 || captureHeight == 0) return;
-        try { active.changeCaptureFormat(captureWidth, captureHeight, 30); }
-        catch (Exception error) { android.util.Log.w("PocketBridge", "Could not refresh screen capture", error); }
+        try {
+            // changeCaptureFormat() with the size it already has is ignored, and a
+            // still screen produces no new frame at all. Stopping and starting the
+            // capture rebuilds the virtual display, which hands over a fresh frame
+            // straight away. This is what a frozen "live" picture needed.
+            active.stopCapture();
+            active.startCapture(captureWidth, captureHeight, 30);
+        } catch (Exception error) {
+            android.util.Log.w("PocketBridge", "Could not refresh screen capture", error);
+        }
     }
 
     private String acceptOffer(String offerSdp) {
