@@ -2,6 +2,20 @@
 
 PocketBridge is an open-source Android app for sharing phone media and the phone screen to a laptop browser over a local-only Wi-Fi hotspot. An optional portable open-source Windows helper also lets the phone view and control the laptop. Both workflows work without mobile data or internet access.
 
+## Version 0.5.9.2
+
+What's new:
+
+- **The laptop page has the same four tabs** — Connect, Screen, Files and Chat — along the bottom, matching the phone. Your last tab is remembered.
+- **Laptop files on the phone.** The Library tab now reads the Windows helper's folder as well, with a search box that filters the list as you type, so you no longer need a second window.
+- **Album art for music.** Tracks that carry embedded artwork now show it in the gallery, the way videos show a thumbnail. Tracks without art keep the note icon.
+- **A sturdier screen stream.** The browser reads the stream frame by frame and draws it on a canvas, so a dropped connection reconnects on its own, the state line reports how many frames have arrived, and the phone's own setup error is shown instead of a generic message.
+- **Screen diagnostics.** `/api/screen/status` now reports frame count, how long ago the last frame arrived, and the capture size.
+- **Faster transfers.** File copying uses a 512 KB buffer.
+- **Oversized uploads are refused immediately**, before the phone reads any of the body, instead of after draining it.
+
+Tests: 39 in total, including 14 that start the real server and drive it over HTTP — the page, the code gate and its rate limit, chat in both directions, sending a file to the phone and reading it back, byte ranges, path traversal, and a 20 MB upload being refused.
+
 ## Version 0.5.9.1
 
 A correctness pass over the whole app, with automated tests for each feature.

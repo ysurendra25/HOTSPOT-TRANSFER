@@ -96,6 +96,28 @@ public final class ScreenCaptureService extends Service {
         return sink == null ? null : sink.awaitAfter(afterSequence, timeoutMs);
     }
 
+    /** How many JPEG frames the phone has produced this session. */
+    static long framesSent() {
+        ScreenCaptureService service = instance;
+        JpegSink sink = service == null ? null : service.jpegSink;
+        return sink == null ? 0 : sink.sequence;
+    }
+
+    /** Milliseconds since the last screen frame, or -1 when none has arrived yet. */
+    static long lastFrameAgeMs() {
+        ScreenCaptureService service = instance;
+        JpegSink sink = service == null ? null : service.jpegSink;
+        if (sink == null || sink.lastFrameAtMs == 0) return -1;
+        return android.os.SystemClock.elapsedRealtime() - sink.lastFrameAtMs;
+    }
+
+    /** "1080x1920" for the current capture, or an empty string before capture starts. */
+    static String captureDescription() {
+        ScreenCaptureService service = instance;
+        if (service == null || service.captureWidth == 0) return "";
+        return service.captureWidth + "x" + service.captureHeight;
+    }
+
     static void refreshForMjpeg() {
         ScreenCaptureService service = instance;
         if (service != null) service.mainHandler.post(service::refreshCapture);
@@ -363,6 +385,7 @@ public final class ScreenCaptureService extends Service {
         private volatile JpegFrame latest;
         private long sequence;
         private long lastFrameNs;
+        private volatile long lastFrameAtMs;
 
         @Override public synchronized void onFrame(VideoFrame frame) {
             long now = android.os.SystemClock.elapsedRealtimeNanos();
@@ -372,6 +395,7 @@ public final class ScreenCaptureService extends Service {
             if (jpeg == null) return;
             synchronized (frameLock) {
                 latest = new JpegFrame(++sequence, jpeg);
+                lastFrameAtMs = android.os.SystemClock.elapsedRealtime();
                 frameLock.notifyAll();
             }
         }

@@ -160,6 +160,13 @@ final class MediaHttpServer {
             // silently truncated and reported as a success.
             long declaredLength = 0L;
             try { if (lengthText != null) declaredLength = Long.parseLong(lengthText.trim()); } catch (Exception ignoredLength) { }
+            // Refuse an oversized body before reading it. Reading first would tie up a
+            // worker for the whole socket timeout while a too-large upload drained.
+            if (method.equals("POST") && declaredLength > MAX_BODY_BYTES) {
+                respond(output, 413, "application/json; charset=utf-8",
+                        "{\"error\":\"Choose a file smaller than 16 MB.\"}", null);
+                return;
+            }
             int contentLength = (int) Math.max(0, Math.min(declaredLength, MAX_BODY_BYTES));
             byte[] body = method.equals("POST") ? readBytes(input, contentLength) : new byte[0];
 
@@ -337,7 +344,10 @@ final class MediaHttpServer {
             }
             if (path.equals("/api/screen/status") && method.equals("GET")) {
                 JSONObject state = new JSONObject().put("ready", ScreenCaptureService.isRunning())
-                        .put("iceState", ScreenCaptureService.getIceState());
+                        .put("iceState", ScreenCaptureService.getIceState())
+                        .put("frames", ScreenCaptureService.framesSent())
+                        .put("lastFrameAgeMs", ScreenCaptureService.lastFrameAgeMs())
+                        .put("capture", ScreenCaptureService.captureDescription());
                 String setupError = ScreenCaptureService.getSetupError();
                 if (setupError != null) state.put("error", setupError);
                 String offerError = ScreenCaptureService.getLastOfferError();
@@ -347,8 +357,11 @@ final class MediaHttpServer {
             }
             if (path.equals("/api/screen/mjpeg") && method.equals("GET")) {
                 if (!ScreenCaptureService.isRunning()) {
-                    respond(output, 409, "application/json; charset=utf-8",
-                            "{\"error\":\"Start Share phone screen on the phone and approve Android's capture prompt first.\"}", null);
+                    String setupError = ScreenCaptureService.getSetupError();
+                    JSONObject refusal = new JSONObject().put("error", setupError == null || setupError.isEmpty()
+                            ? "Start Share phone screen on the phone and approve Android's capture prompt first."
+                            : setupError);
+                    respond(output, 409, "application/json; charset=utf-8", refusal.toString(), null);
                     return;
                 }
                 ScreenCaptureService.refreshForMjpeg();
@@ -497,6 +510,7 @@ final class MediaHttpServer {
                 }
                 return videoFrameThumbnail(item);
             }
+            if ("audio".equals(item.kind)) return audioArtwork(item);
             Bitmap bitmap = decodeImage(item, THUMB_TARGET, false);
             if (bitmap == null && android.os.Build.VERSION.SDK_INT >= 29) {
                 // Formats BitmapFactory cannot read (some HEIC or AVIF files) usually
@@ -511,6 +525,37 @@ final class MediaHttpServer {
             return compress(orient(item, bitmap, THUMB_TARGET, false), 82);
         } catch (Exception | OutOfMemoryError error) {
             return null;
+        }
+    }
+
+    /** Album art embedded in an audio file, so music shows a picture like videos do. */
+    private byte[] audioArtwork(MediaRepository.Item item) {
+        android.media.MediaMetadataRetriever retriever = new android.media.MediaMetadataRetriever();
+        try {
+            try { retriever.setDataSource(context, item.uri); }
+            catch (Exception uriFailed) {
+                try (ParcelFileDescriptor descriptor = context.getContentResolver().openFileDescriptor(item.uri, "r")) {
+                    if (descriptor == null) return null;
+                    retriever.setDataSource(descriptor.getFileDescriptor());
+                }
+            }
+            byte[] embedded = retriever.getEmbeddedPicture();
+            if (embedded == null || embedded.length == 0) return null;
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            BitmapFactory.decodeByteArray(embedded, 0, embedded.length, bounds);
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null;
+            int sample = 1;
+            while (Math.min(bounds.outWidth, bounds.outHeight) / (sample * 2) >= THUMB_TARGET) sample *= 2;
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inSampleSize = sample;
+            Bitmap art = BitmapFactory.decodeByteArray(embedded, 0, embedded.length, options);
+            if (art == null) return null;
+            return compress(orient(null, art, THUMB_TARGET, false), 82);
+        } catch (Exception | OutOfMemoryError error) {
+            return null;
+        } finally {
+            try { retriever.release(); } catch (Exception ignored) { }
         }
     }
 
@@ -786,7 +831,7 @@ final class MediaHttpServer {
     }
 
     private static void copyBytes(InputStream input, OutputStream output, long length) throws IOException {
-        byte[] buffer = new byte[256 * 1024];
+        byte[] buffer = new byte[512 * 1024];
         long remaining = length;
         while (remaining > 0) {
             int read = input.read(buffer, 0, (int) Math.min(buffer.length, remaining));

@@ -562,7 +562,139 @@ public final class MainActivity extends Activity {
 
         libraryList = new LinearLayout(this);
         libraryList.setOrientation(LinearLayout.VERTICAL);
-        addCard(parent, "ITEMS", libraryList);
+        addCard(parent, "ON THIS PHONE", libraryList);
+
+        // The same idea for the laptop: paste the helper link once, then search its
+        // files from here instead of opening a second window on the phone.
+        EditText laptopLink = new EditText(this);
+        laptopLink.setSingleLine(true);
+        laptopLink.setTextSize(14);
+        laptopLink.setHint("http://laptop-address:7070/?t=code");
+        addCard(parent, "ON THE LAPTOP", laptopLink);
+
+        EditText laptopSearchField = new EditText(this);
+        laptopSearchField.setSingleLine(true);
+        laptopSearchField.setTextSize(14);
+        laptopSearchField.setHint("Search laptop files");
+        addCard(parent, "SEARCH LAPTOP FILES", laptopSearchField);
+
+        TextView laptopStatusView = new TextView(this);
+        laptopStatusView.setText("Paste the Windows helper link, then load the files.");
+        laptopStatusView.setTextColor(COLOR_MUTED);
+        laptopStatusView.setTextSize(12);
+        laptopStatusView.setPadding(dp(4), 0, dp(4), dp(10));
+        parent.addView(laptopStatusView);
+
+        LinearLayout laptopRows = new LinearLayout(this);
+        laptopRows.setOrientation(LinearLayout.VERTICAL);
+        addCard(parent, "LAPTOP FILES", laptopRows);
+
+        Button loadLaptop = button("Load laptop files", COLOR_GREEN);
+        loadLaptop.setOnClickListener(v -> {
+            String link = laptopLink.getText().toString().trim();
+            if (link.isEmpty()) {
+                laptopStatusView.setText("Paste the helper link first.");
+                return;
+            }
+            laptopStatusView.setText("Reading the laptop folder…");
+            laptopRows.removeAllViews();
+            loadLaptop.setEnabled(false);
+            fetchLaptopFiles(link, laptopRows, laptopStatusView, laptopSearchField.getText().toString().trim(), () -> loadLaptop.setEnabled(true));
+        });
+        LinearLayout.LayoutParams loadGap = matchWrap();
+        loadGap.topMargin = dp(2);
+        parent.addView(loadLaptop, loadGap);
+        this.laptopFilter = laptopSearchField;
+        this.laptopRowHolder = laptopRows;
+        this.laptopStatus = laptopStatusView;
+        this.laptopLinkField = laptopLink;
+        laptopSearchField.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) { filterLaptopRows(); }
+            @Override public void afterTextChanged(android.text.Editable s) { }
+        });
+    }
+
+    private EditText laptopFilter;
+    private EditText laptopLinkField;
+    private LinearLayout laptopRowHolder;
+    private TextView laptopStatus;
+
+    /** Hides laptop rows that do not match the search box. */
+    private void filterLaptopRows() {
+        if (laptopRowHolder == null || laptopFilter == null) return;
+        String query = laptopFilter.getText().toString().trim().toLowerCase(java.util.Locale.ROOT);
+        int shown = 0;
+        for (int i = 0; i < laptopRowHolder.getChildCount(); i++) {
+            View row = laptopRowHolder.getChildAt(i);
+            String name = row.getTag() instanceof String ? (String) row.getTag() : "";
+            boolean matches = query.isEmpty() || name.toLowerCase(java.util.Locale.ROOT).contains(query);
+            row.setVisibility(matches ? View.VISIBLE : View.GONE);
+            if (matches) shown++;
+        }
+        if (laptopStatus != null && laptopRowHolder.getChildCount() > 0) {
+            laptopStatus.setText(query.isEmpty()
+                    ? shown + " laptop files. Tap one to open it."
+                    : shown + " of " + laptopRowHolder.getChildCount() + " laptop files match.");
+        }
+    }
+
+    /** Reads the helper's file list and fills the Library tab with it. */
+    private void fetchLaptopFiles(String link, LinearLayout rows, TextView status, String initialQuery, Runnable done) {
+        new Thread(() -> {
+            HttpURLConnection connection = null;
+            try {
+                android.net.Uri supplied = android.net.Uri.parse(link);
+                String token = supplied.getQueryParameter("t");
+                if (token == null || !"http".equalsIgnoreCase(supplied.getScheme())) throw new Exception("Use the full local http link printed by the Windows helper.");
+                android.net.Uri filesUri = supplied.buildUpon().path("/files").clearQuery().appendQueryParameter("t", token).build();
+                connection = (HttpURLConnection) new URL(filesUri.toString()).openConnection();
+                connection.setConnectTimeout(5000);
+                connection.setReadTimeout(10000);
+                if (connection.getResponseCode() != 200) throw new Exception("Laptop helper returned HTTP " + connection.getResponseCode());
+                java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+                byte[] buffer = new byte[8192];
+                int count;
+                try (java.io.InputStream stream = connection.getInputStream()) {
+                    while ((count = stream.read(buffer)) != -1) bytes.write(buffer, 0, count);
+                }
+                JSONObject data = new JSONObject(new String(bytes.toByteArray(), java.nio.charset.StandardCharsets.UTF_8));
+                JSONArray items = data.optJSONArray("files");
+                runOnUiThread(() -> {
+                    if (items == null || items.length() == 0) {
+                        status.setText("No files found in the helper's shared folder.");
+                    } else {
+                        for (int i = 0; i < items.length(); i++) {
+                            JSONObject item = items.optJSONObject(i);
+                            if (item == null) continue;
+                            String name = item.optString("name", "File");
+                            String relative = item.optString("url", "");
+                            android.net.Uri fileUri = supplied.buildUpon().path(relative).clearQuery().appendQueryParameter("t", token).build();
+                            Button row = button(name + "\n" + android.text.format.Formatter.formatShortFileSize(this, item.optLong("size")), Color.WHITE);
+                            row.setTextColor(COLOR_INK);
+                            row.setTextSize(13);
+                            row.setAllCaps(false);
+                            row.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+                            row.setTag(name);
+                            row.setOnClickListener(open -> startActivity(new Intent(Intent.ACTION_VIEW, fileUri)));
+                            LinearLayout.LayoutParams lp = matchWrap();
+                            lp.topMargin = dp(4);
+                            rows.addView(row, lp);
+                        }
+                        status.setText(items.length() + " laptop files. Tap one to open it.");
+                        filterLaptopRows();
+                    }
+                    done.run();
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    status.setText("Could not read the laptop folder: " + error.getMessage());
+                    done.run();
+                });
+            } finally {
+                if (connection != null) connection.disconnect();
+            }
+        }, "PocketBridge-library-laptop").start();
     }
 
     private void refreshLibrary() {

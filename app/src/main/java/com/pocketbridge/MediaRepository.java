@@ -62,7 +62,9 @@ final class MediaRepository {
                 // have to pull multi-megabyte originals over the hotspot. Video
                 // thumbnails work on every supported Android version because the
                 // server falls back to grabbing a frame from the file itself.
-                if ("image".equals(kind) || "video".equals(kind)) {
+                if ("image".equals(kind) || "video".equals(kind) || "audio".equals(kind)) {
+                    // Audio asks for album art; the server falls back to a blank when
+                    // the file carries none, and the page then shows its own icon.
                     result.put("thumb", "/api/thumb/" + Uri.encode(key));
                 }
                 // A larger JPEG for the viewer: loads fast over the hotspot and also
