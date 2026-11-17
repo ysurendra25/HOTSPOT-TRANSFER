@@ -82,6 +82,8 @@
   .tab.active{background:var(--ink);border-color:var(--ink);color:#fff}
 
   .grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px}
+  .load-more{display:flex;justify-content:center;padding:20px 0 4px}
+  .load-more[hidden]{display:none}
   .card{border:1px solid var(--line);background:var(--surface);border-radius:15px;overflow:hidden;
     box-shadow:0 4px 14px rgba(23,49,60,.025);min-width:0;display:flex;flex-direction:column}
   .thumb{width:100%;aspect-ratio:1.35;background:#e9eff0;display:grid;place-items:center;position:relative;
@@ -193,6 +195,7 @@
     </nav>
 
     <section class="grid" id="grid"><div class="loading">Finding media on your phone…</div></section>
+    <div class="load-more" id="loadMoreWrap" hidden><button class="btn btn-soft" id="loadMore" type="button">Load more</button></div>
     <footer class="foot">Shared directly over your own network · PocketBridge open source</footer>
   </div>
 </main>
@@ -224,10 +227,19 @@
   let files = [];
   let access = {};
   let peer = null;
+  let nextOffset = 0;
+  let hasMore = false;
+  let visibleLimit = 120;
+  let loadSequence = 0;
+  let searchTimer = null;
+  const PAGE_SIZE = 120;
+  const MAX_PAGE_SIZE = 5000;
 
   const gate = document.getElementById('gate');
   const app = document.getElementById('app');
   const grid = document.getElementById('grid');
+  const loadMoreWrap = document.getElementById('loadMoreWrap');
+  const loadMoreButton = document.getElementById('loadMore');
   const count = document.getElementById('count');
   const search = document.getElementById('search');
   const modal = document.getElementById('modal');
@@ -296,10 +308,21 @@
   });
 
   /* ---------- library ---------- */
-  async function loadFiles() {
-    grid.innerHTML = '<div class="loading">Loading your library…</div>';
+  async function loadFiles(reset = true) {
+    const sequence = ++loadSequence;
+    if (reset) {
+      files = [];
+      nextOffset = 0;
+      hasMore = false;
+      visibleLimit = PAGE_SIZE;
+      grid.innerHTML = '<div class="loading">Loading your library…</div>';
+    }
+    const limit = search.value.trim() ? MAX_PAGE_SIZE : PAGE_SIZE;
     try {
-      const response = await fetch(endpoint('/api/files?kind=' + encodeURIComponent(currentKind)), {cache:'no-store'});
+      const query = '/api/files?kind=' + encodeURIComponent(currentKind) +
+        '&offset=' + nextOffset + '&limit=' + limit;
+      const response = await fetch(endpoint(query), {cache:'no-store'});
+      if (sequence !== loadSequence) return;
       if (response.status === 403) {
         app.style.display = 'none';
         gate.style.display = 'block';
@@ -308,10 +331,15 @@
       }
       if (!response.ok) throw new Error('The share stopped. Check PocketBridge on the phone.');
       const data = await response.json();
-      files = data.files || [];
+      if (sequence !== loadSequence) return;
+      const incoming = data.files || [];
+      files = reset ? incoming : files.concat(incoming);
       access = data.access || {};
+      nextOffset = Number.isFinite(data.nextOffset) ? data.nextOffset : files.length;
+      hasMore = Boolean(data.hasMore);
       renderFiles();
     } catch (error) {
+      if (sequence !== loadSequence) return;
       count.textContent = '';
       grid.innerHTML = '<div class="empty"><strong>Could not load files</strong>' +
         safe(error.message || 'Check that your phone is still sharing.') + '</div>';
@@ -338,19 +366,24 @@
   function renderFiles() {
     const term = search.value.trim().toLowerCase();
     const shown = files.filter(file => (file.name || '').toLowerCase().includes(term));
-    count.textContent = shown.length + (shown.length === 1 ? ' item' : ' items');
+    count.textContent = files.length.toLocaleString() + (hasMore ? '+' : '') +
+      (files.length === 1 && !hasMore ? ' item' : ' items') +
+      (visibleLimit < shown.length ? ' · showing ' + Math.min(visibleLimit, shown.length) : '');
     if (!shown.length) {
       grid.innerHTML = missingAccessHint() ||
         '<div class="empty"><strong>Nothing here yet</strong>Try another tab or search term.</div>';
+      loadMoreWrap.hidden = true;
       return;
     }
-    grid.innerHTML = shown.map(file => {
+    const visible = shown.slice(0, visibleLimit);
+    grid.innerHTML = visible.map(file => {
       let visual = '<div class="file-icon">' + iconFor(file.kind) + '</div>';
-      if (file.kind === 'image') {
+      if (file.kind === 'image' || (file.kind === 'video' && file.thumb)) {
         visual = '<img loading="lazy" src="' + safe(endpoint(file.thumb || file.url)) + '" alt="' + safe(file.name) + '">';
       }
       if (file.kind === 'video') {
-        visual = '<div class="file-icon">▶</div><div class="play">▶</div>';
+        if (!file.thumb) visual = '<div class="file-icon">▶</div>';
+        visual += '<div class="play">▶</div>';
       }
       const playable = file.kind === 'video' || file.kind === 'audio';
       const previewable = playable || file.kind === 'image';
@@ -371,15 +404,25 @@
     grid.querySelectorAll('[data-preview]').forEach(node => {
       node.addEventListener('click', () => openFile(node.getAttribute('data-preview')));
     });
+    loadMoreWrap.hidden = visible.length >= shown.length && !hasMore;
+    loadMoreButton.textContent = visible.length < shown.length ? 'Show more' : 'Load more from phone';
   }
 
-  search.addEventListener('input', renderFiles);
+  search.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => loadFiles(true), 220);
+  });
+  loadMoreButton.addEventListener('click', () => {
+    const shownCount = files.filter(file => (file.name || '').toLowerCase().includes(search.value.trim().toLowerCase())).length;
+    if (visibleLimit < shownCount) { visibleLimit += PAGE_SIZE; renderFiles(); }
+    else loadFiles(false);
+  });
   document.querySelectorAll('.tab').forEach(tab => {
     tab.addEventListener('click', () => {
       document.querySelector('.tab.active').classList.remove('active');
       tab.classList.add('active');
       currentKind = tab.getAttribute('data-kind');
-      loadFiles();
+      loadFiles(true);
     });
   });
 
@@ -491,8 +534,8 @@
   /* ---------- screen share ---------- */
   async function waitForIce(pc) {
     if (pc.iceGatheringState === 'complete') return;
-    await new Promise(resolve => {
-      const timer = setTimeout(resolve, 9000);
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Local WebRTC setup timed out. Check that both devices are connected to the PocketBridge hotspot, then retry.')), 12000);
       pc.addEventListener('icegatheringstatechange', () => {
         if (pc.iceGatheringState === 'complete') { clearTimeout(timer); resolve(); }
       });
@@ -501,46 +544,57 @@
   async function watchScreen() {
     const screenView = document.getElementById('screenView');
     const state = document.getElementById('screenState');
+    const watchButton = document.getElementById('watchButton');
+    if (watchButton.disabled) return;
+    watchButton.disabled = true;
     screenView.classList.add('active');
     state.textContent = 'Connecting to the phone…';
+    let activePeer = null;
     try {
-      const statusResponse = await fetch(endpoint('/api/screen/status'));
+      const statusResponse = await fetch(endpoint('/api/screen/status'), {cache:'no-store'});
       const status = await statusResponse.json();
       if (!status.ready) {
         throw new Error(status.error ? 'Screen capture could not start: ' + status.error
           : 'First tap “Share phone screen” in PocketBridge and approve Android’s prompt.');
       }
-      peer = new RTCPeerConnection({iceServers: []});
-      peer.addTransceiver('video', {direction: 'recvonly'});
-      peer.ontrack = (event) => {
-        document.getElementById('screenVideo').srcObject = event.streams[0];
+      activePeer = new RTCPeerConnection({iceServers: []});
+      peer = activePeer;
+      activePeer.addTransceiver('video', {direction: 'recvonly'});
+      activePeer.ontrack = (event) => {
+        document.getElementById('screenVideo').srcObject = event.streams[0] || new MediaStream([event.track]);
         state.textContent = 'Live · phone screen is shared peer-to-peer';
         document.getElementById('screenHint').textContent = 'Your phone screen is streaming locally.';
       };
-      peer.onconnectionstatechange = () => {
-        if (peer && ['failed','disconnected','closed'].includes(peer.connectionState)) {
-          state.textContent = 'Connection ended. Try again.';
-        }
+      activePeer.oniceconnectionstatechange = () => {
+        if (peer !== activePeer) return;
+        const iceState = activePeer.iceConnectionState;
+        if (iceState === 'checking') state.textContent = 'Finding the local phone connection…';
+        if (iceState === 'failed' || iceState === 'disconnected') state.textContent = 'Local connection failed. Reconnect both devices to the same hotspot and try again.';
       };
-      const offer = await peer.createOffer();
-      await peer.setLocalDescription(offer);
-      await waitForIce(peer);
+      const offer = await activePeer.createOffer();
+      await activePeer.setLocalDescription(offer);
+      await waitForIce(activePeer);
       const response = await fetch(endpoint('/api/screen/offer'), {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({sdp: peer.localDescription.sdp})
+        body: JSON.stringify({sdp: activePeer.localDescription.sdp})
       });
-      const answer = await response.json();
+      const answer = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(answer.error || 'Could not connect to the phone.');
-      await peer.setRemoteDescription({type: answer.type, sdp: answer.sdp});
+      await activePeer.setRemoteDescription({type: answer.type, sdp: answer.sdp});
+      state.textContent = 'Connected · waiting for the first screen frame…';
     } catch (error) {
       state.textContent = error.message || 'Screen share failed.';
-      if (peer) { try { peer.close(); } catch (e) {} peer = null; }
+      if (activePeer) { try { activePeer.close(); } catch (e) {} }
+      if (peer === activePeer) peer = null;
+      watchButton.disabled = false;
     }
   }
   function stopWatching() {
     if (peer) { try { peer.close(); } catch (e) {} peer = null; }
+    document.getElementById('watchButton').disabled = false;
     document.getElementById('screenVideo').srcObject = null;
     document.getElementById('screenView').classList.remove('active');
+    document.getElementById('screenState').textContent = 'Not connected';
     fetch(endpoint('/api/screen/stop'), {method: 'POST'}).catch(() => {});
     document.getElementById('screenHint').textContent = 'Tap “Share phone screen” in PocketBridge on the phone to begin.';
   }

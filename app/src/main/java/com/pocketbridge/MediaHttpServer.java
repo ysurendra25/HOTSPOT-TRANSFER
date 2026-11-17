@@ -5,6 +5,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Matrix;
 import android.net.Uri;
+import android.os.ParcelFileDescriptor;
 import android.util.LruCache;
 
 import org.json.JSONObject;
@@ -12,8 +13,11 @@ import org.json.JSONObject;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.FileInputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.channels.FileChannel;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -150,8 +154,13 @@ final class MediaHttpServer {
             if (path.equals("/api/files") && method.equals("GET")) {
                 String kind = target.getQueryParameter("kind");
                 if (kind == null) kind = "all";
+                int offset = queryInt(target, "offset", 0, 0, 20_000);
+                int limit = queryInt(target, "limit", 120, 1, 5_000);
+                MediaRepository.Page page = media.listPage(kind, offset, limit);
                 JSONObject response = new JSONObject()
-                        .put("files", media.listJson(kind))
+                        .put("files", media.listJson(page))
+                        .put("nextOffset", page.nextOffset)
+                        .put("hasMore", page.hasMore)
                         .put("access", media.accessJson());
                 respond(output, 200, "application/json; charset=utf-8", response.toString(), null);
                 return;
@@ -162,7 +171,8 @@ final class MediaHttpServer {
                 if (item == null) { respond(output, 404, "text/plain", "Media not found or permission is missing", null); return; }
                 byte[] preview = thumbnail(item);
                 if (preview == null) { respond(output, 404, "text/plain", "No preview available", null); return; }
-                writeHead(output, 200, "image/jpeg", preview.length, null, null);
+                writeHead(output, 200, "image/jpeg", preview.length,
+                        "Cache-Control: private, max-age=3600\r\n", null);
                 output.write(preview);
                 output.flush();
                 return;
@@ -171,11 +181,12 @@ final class MediaHttpServer {
                 String key = Uri.decode(path.substring("/api/media/".length()));
                 MediaRepository.Item item = media.find(key);
                 if (item == null) { respond(output, 404, "text/plain", "Media not found or permission is missing", null); return; }
-                streamMedia(output, input, method, headers, item);
+                streamMedia(output, method, headers, item);
                 return;
             }
             if (path.equals("/api/screen/status") && method.equals("GET")) {
-                JSONObject state = new JSONObject().put("ready", ScreenCaptureService.isRunning());
+                JSONObject state = new JSONObject().put("ready", ScreenCaptureService.isRunning())
+                        .put("iceState", ScreenCaptureService.getIceState());
                 String setupError = ScreenCaptureService.getSetupError();
                 if (setupError != null) state.put("error", setupError);
                 respond(output, 200, "application/json; charset=utf-8", state.toString(), null);
@@ -315,50 +326,114 @@ final class MediaHttpServer {
         }
     }
 
-    private void streamMedia(OutputStream output, InputStream input, String method, Map<String, String> headers, MediaRepository.Item item) throws Exception {
+    private void streamMedia(OutputStream output, String method, Map<String, String> headers, MediaRepository.Item item) throws Exception {
         long total = Math.max(0, item.size);
-        long start = 0;
-        long end = Math.max(0, total - 1);
-        boolean partial = false;
-        String range = headers.get("range");
-        if (range != null && range.startsWith("bytes=") && total > 0) {
-            String[] bounds = range.substring(6).split("-", 2);
-            try {
-                start = Long.parseLong(bounds[0]);
-                if (bounds.length > 1 && !bounds[1].isEmpty()) end = Math.min(end, Long.parseLong(bounds[1]));
-                if (start < 0 || start >= total || end < start) { writeHead(output, 416, "text/plain", 0, "Content-Range: bytes */" + total + "\r\n", null); return; }
-                partial = true;
-            } catch (Exception invalidRange) { start = 0; end = Math.max(0, total - 1); }
+        ByteRange range = ByteRange.parse(headers.get("range"), total);
+        if (range.unsatisfiable) {
+            writeHead(output, 416, "text/plain", 0, "Content-Range: bytes */" + total + "\r\n", null);
+            return;
         }
+        long start = range.start;
+        long end = range.end;
+        boolean partial = range.partial;
         long length = total == 0 ? 0 : end - start + 1;
         String safeName = item.name.replace("\"", "_").replace("\r", "_").replace("\n", "_");
         String encodedName = URLEncoder.encode(item.name, "UTF-8").replace("+", "%20");
-        String extra = "Accept-Ranges: bytes\r\nContent-Disposition: inline; filename=\"" + safeName + "\"; filename*=UTF-8''" + encodedName + "\r\n";
+        String extra = "Accept-Ranges: bytes\r\nCache-Control: private, max-age=300\r\nContent-Disposition: inline; filename=\"" + safeName + "\"; filename*=UTF-8''" + encodedName + "\r\n";
         if (partial) extra += "Content-Range: bytes " + start + "-" + end + "/" + total + "\r\n";
         writeHead(output, partial ? 206 : 200, item.mime, length, extra, null);
         output.flush();
         if (method.equals("HEAD") || length == 0) return;
-        try (InputStream mediaStream = context.getContentResolver().openInputStream(item.uri)) {
-            if (mediaStream == null) return;
-            skipFully(mediaStream, start);
-            byte[] buffer = new byte[64 * 1024];
-            long remaining = length;
-            while (remaining > 0) {
-                int read = mediaStream.read(buffer, 0, (int) Math.min(buffer.length, remaining));
-                if (read < 0) break;
-                output.write(buffer, 0, read);
-                remaining -= read;
+        copyMediaRange(output, item, start, length);
+    }
+
+    private void copyMediaRange(OutputStream output, MediaRepository.Item item, long start, long length) throws Exception {
+        ParcelFileDescriptor descriptor = null;
+        FileInputStream file = null;
+        try {
+            try { descriptor = context.getContentResolver().openFileDescriptor(item.uri, "r"); }
+            catch (IOException unavailableDescriptor) { /* fall back to the stream API */ }
+            if (descriptor != null) {
+                file = new FileInputStream(descriptor.getFileDescriptor());
+                FileChannel channel = file.getChannel();
+                boolean seekable = false;
+                try { channel.position(start); seekable = true; }
+                catch (IOException notSeekable) { /* provider returned a pipe */ }
+                if (seekable) {
+                    copyBytes(file, output, length);
+                    return;
+                }
             }
+        } finally {
+            try { if (file != null) file.close(); } catch (Exception ignored) { }
+            try { if (descriptor != null) descriptor.close(); } catch (Exception ignored) { }
+        }
+        try (InputStream fallback = context.getContentResolver().openInputStream(item.uri)) {
+            if (fallback == null) return;
+            skipFully(fallback, start);
+            copyBytes(fallback, output, length);
+        }
+    }
+
+    private static void copyBytes(InputStream input, OutputStream output, long length) throws IOException {
+        byte[] buffer = new byte[256 * 1024];
+        long remaining = length;
+        while (remaining > 0) {
+            int read = input.read(buffer, 0, (int) Math.min(buffer.length, remaining));
+            if (read < 0) break;
+            output.write(buffer, 0, read);
+            remaining -= read;
         }
         output.flush();
     }
 
-    private static void skipFully(InputStream input, long count) throws Exception {
+    private static void skipFully(InputStream input, long count) throws IOException {
         long remaining = count;
         while (remaining > 0) {
             long skipped = input.skip(remaining);
             if (skipped <= 0) { if (input.read() < 0) break; skipped = 1; }
             remaining -= skipped;
+        }
+    }
+
+    private static int queryInt(Uri target, String name, int fallback, int min, int max) {
+        try { return Math.max(min, Math.min(max, Integer.parseInt(target.getQueryParameter(name)))); }
+        catch (Exception ignored) { return fallback; }
+    }
+
+    private static final class ByteRange {
+        final long start;
+        final long end;
+        final boolean partial;
+        final boolean unsatisfiable;
+
+        private ByteRange(long start, long end, boolean partial, boolean unsatisfiable) {
+            this.start = start; this.end = end; this.partial = partial; this.unsatisfiable = unsatisfiable;
+        }
+
+        static ByteRange parse(String header, long total) {
+            if (header == null || !header.startsWith("bytes=") || total <= 0 || header.indexOf(',') >= 0) {
+                return new ByteRange(0, Math.max(0, total - 1), false, false);
+            }
+            String[] bounds = header.substring(6).trim().split("-", 2);
+            if (bounds.length != 2) return new ByteRange(0, Math.max(0, total - 1), false, false);
+            try {
+                long start;
+                long end;
+                if (bounds[0].isEmpty()) {
+                    long suffix = Long.parseLong(bounds[1]);
+                    if (suffix <= 0) return new ByteRange(0, 0, false, true);
+                    start = Math.max(0, total - suffix);
+                    end = total - 1;
+                } else {
+                    start = Long.parseLong(bounds[0]);
+                    end = bounds[1].isEmpty() ? total - 1 : Math.min(total - 1, Long.parseLong(bounds[1]));
+                }
+                if (start < 0 || start >= total || end < start) return new ByteRange(0, 0, false, true);
+                return new ByteRange(start, end, true, false);
+            } catch (NumberFormatException malformed) {
+                return new ByteRange(0, Math.max(0, total - 1), false, false);
+            }
         }
     }
 
@@ -382,7 +457,7 @@ final class MediaHttpServer {
         String headers = "HTTP/1.1 " + status + " " + reason + "\r\n" +
                 "Content-Type: " + type + "\r\n" +
                 "Content-Length: " + length + "\r\n" +
-                "Cache-Control: no-store\r\n" +
+                ((extra != null && extra.toLowerCase(java.util.Locale.ROOT).contains("cache-control:")) ? "" : "Cache-Control: no-store\r\n") +
                 "Connection: close\r\n" +
                 "X-Content-Type-Options: nosniff\r\n" +
                 (extra == null ? "" : extra) + "\r\n";

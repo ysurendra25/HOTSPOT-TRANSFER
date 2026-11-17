@@ -42,15 +42,16 @@ public final class ScreenCaptureService extends Service {
     private static final int NOTIFICATION_ID = 1202;
     private static volatile ScreenCaptureService instance;
     private static volatile String lastSetupError;
+    private static volatile String lastIceState = "new";
 
     private EglBase eglBase;
-    private PeerConnectionFactory factory;
+    private volatile PeerConnectionFactory factory;
     private ScreenCapturerAndroid capturer;
     private SurfaceTextureHelper surfaceTextureHelper;
     private VideoSource videoSource;
-    private VideoTrack videoTrack;
-    private PeerConnection peer;
-    private RtpSender sender;
+    private volatile VideoTrack videoTrack;
+    private volatile PeerConnection peer;
+    private volatile RtpSender sender;
     private volatile String pendingAnswer;
     private volatile CountDownLatch answerLatch;
     private volatile boolean iceGatheringComplete;
@@ -58,6 +59,8 @@ public final class ScreenCaptureService extends Service {
     public static boolean isRunning() { return instance != null && instance.videoTrack != null; }
 
     public static String getSetupError() { return lastSetupError; }
+
+    public static String getIceState() { return lastIceState; }
 
     public static String answerOffer(String sdp) {
         ScreenCaptureService service = instance;
@@ -135,6 +138,7 @@ public final class ScreenCaptureService extends Service {
         closePeer();
         pendingAnswer = null;
         iceGatheringComplete = false;
+        lastIceState = "new";
         CountDownLatch latch = new CountDownLatch(1);
         answerLatch = latch;
         ArrayList<PeerConnection.IceServer> iceServers = new ArrayList<>();
@@ -142,7 +146,9 @@ public final class ScreenCaptureService extends Service {
         configuration.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN;
         PeerConnection activePeer = factory.createPeerConnection(configuration, new PeerConnection.Observer() {
             @Override public void onSignalingChange(PeerConnection.SignalingState state) { }
-            @Override public void onIceConnectionChange(PeerConnection.IceConnectionState state) { }
+            @Override public void onIceConnectionChange(PeerConnection.IceConnectionState state) {
+                lastIceState = state == null ? "unknown" : state.toString().toLowerCase(java.util.Locale.ROOT);
+            }
             @Override public void onIceConnectionReceivingChange(boolean receiving) { }
             @Override public void onIceGatheringChange(PeerConnection.IceGatheringState state) {
                 if (state == PeerConnection.IceGatheringState.COMPLETE) {

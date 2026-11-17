@@ -2,11 +2,13 @@ package com.pocketbridge;
 
 import android.Manifest;
 import android.content.ContentUris;
+import android.content.ContentResolver;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Bundle;
 import android.provider.MediaStore;
 
 import org.json.JSONArray;
@@ -18,6 +20,18 @@ import java.util.List;
 import java.util.Locale;
 
 final class MediaRepository {
+    static final class Page {
+        final List<Item> items;
+        final int nextOffset;
+        final boolean hasMore;
+
+        Page(List<Item> items, int nextOffset, boolean hasMore) {
+            this.items = items;
+            this.nextOffset = nextOffset;
+            this.hasMore = hasMore;
+        }
+    }
+
     static final class Item {
         final String key;
         final String name;
@@ -44,7 +58,7 @@ final class MediaRepository {
                 result.put("url", "/api/media/" + Uri.encode(key));
                 // Images and videos get a small preview so the browser grid does not
                 // have to pull multi-megabyte originals over the hotspot.
-                if ("image".equals(kind) || "video".equals(kind)) {
+                if ("image".equals(kind) || ("video".equals(kind) && Build.VERSION.SDK_INT >= 29)) {
                     result.put("thumb", "/api/thumb/" + Uri.encode(key));
                 }
             } catch (Exception ignored) { }
@@ -55,14 +69,19 @@ final class MediaRepository {
     private final Context context;
     MediaRepository(Context context) { this.context = context.getApplicationContext(); }
 
-    List<Item> list(String kind) {
+    Page listPage(String kind, int offset, int requestedLimit) {
+        int safeOffset = Math.max(0, Math.min(20_000, offset));
+        int limit = Math.max(1, Math.min(5_000, requestedLimit));
+        int queryLimit = Math.min(5_000, safeOffset + limit + 1);
         List<Item> output = new ArrayList<>();
-        if ("all".equals(kind) || "images".equals(kind)) collect(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image", "images", output);
-        if ("all".equals(kind) || "videos".equals(kind)) collect(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, "video", "videos", output);
-        if ("all".equals(kind) || "audio".equals(kind)) collect(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, "audio", "audio", output);
-        if ("all".equals(kind) || "files".equals(kind)) collectDocuments(output);
+        if ("all".equals(kind) || "images".equals(kind)) collect(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image", "images", queryLimit, output);
+        if ("all".equals(kind) || "videos".equals(kind)) collect(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, "video", "videos", queryLimit, output);
+        if ("all".equals(kind) || "audio".equals(kind)) collect(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, "audio", "audio", queryLimit, output);
+        if ("all".equals(kind) || "files".equals(kind)) collectDocuments(queryLimit, output);
         Collections.sort(output, (a, b) -> Long.compare(b.modified, a.modified));
-        return output;
+        int from = Math.min(safeOffset, output.size());
+        int to = Math.min(from + limit, output.size());
+        return new Page(new ArrayList<>(output.subList(from, to)), to, output.size() > to);
     }
 
     /** True when the app may read this media kind. Used to explain an empty library. */
@@ -132,18 +151,18 @@ final class MediaRepository {
         } catch (SecurityException error) { return null; }
     }
 
-    JSONArray listJson(String kind) {
+    JSONArray listJson(Page page) {
         JSONArray array = new JSONArray();
-        for (Item item : list(kind)) array.put(item.toJson());
+        for (Item item : page.items) array.put(item.toJson());
         return array;
     }
 
-    private void collect(Uri collection, String prefix, String kind, List<Item> output) {
+    private void collect(Uri collection, String prefix, String kind, int maxRows, List<Item> output) {
         String[] projection = {MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME,
                 MediaStore.MediaColumns.MIME_TYPE, MediaStore.MediaColumns.SIZE, MediaStore.MediaColumns.DATE_MODIFIED};
-        try (Cursor cursor = context.getContentResolver().query(collection, projection, null, null, MediaStore.MediaColumns.DATE_MODIFIED + " DESC")) {
+        try (Cursor cursor = queryPage(collection, projection, null, null, maxRows)) {
             if (cursor == null) return;
-            int limit = 5000;
+            int limit = maxRows;
             while (cursor.moveToNext() && limit-- > 0) {
                 long id = number(cursor, 0);
                 Uri itemUri = ContentUris.withAppendedId(collection, id);
@@ -155,16 +174,15 @@ final class MediaRepository {
     }
 
     /** Non-media files the media store knows about (documents, archives, and so on). */
-    private void collectDocuments(List<Item> output) {
+    private void collectDocuments(int maxRows, List<Item> output) {
         Uri collection = MediaStore.Files.getContentUri("external");
         String[] projection = {MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME,
                 MediaStore.MediaColumns.MIME_TYPE, MediaStore.MediaColumns.SIZE, MediaStore.MediaColumns.DATE_MODIFIED};
         String selection = MediaStore.Files.FileColumns.MEDIA_TYPE + " IS NULL OR "
                 + MediaStore.Files.FileColumns.MEDIA_TYPE + " = 0";
-        try (Cursor cursor = context.getContentResolver().query(collection, projection, selection, null,
-                MediaStore.MediaColumns.DATE_MODIFIED + " DESC")) {
+        try (Cursor cursor = queryPage(collection, projection, selection, null, maxRows)) {
             if (cursor == null) return;
-            int limit = 2000;
+            int limit = maxRows;
             while (cursor.moveToNext() && limit-- > 0) {
                 long id = number(cursor, 0);
                 String mime = value(cursor, 2, "application/octet-stream").toLowerCase(Locale.ROOT);
@@ -174,6 +192,25 @@ final class MediaRepository {
                         number(cursor, 3), number(cursor, 4), ContentUris.withAppendedId(collection, id)));
             }
         } catch (SecurityException ignored) { }
+    }
+
+    private Cursor queryPage(Uri collection, String[] projection, String selection,
+                             String[] selectionArgs, int limit) {
+        Bundle args = new Bundle();
+        args.putInt(ContentResolver.QUERY_ARG_LIMIT, limit);
+        args.putStringArray(ContentResolver.QUERY_ARG_SORT_COLUMNS,
+                new String[]{MediaStore.MediaColumns.DATE_MODIFIED, MediaStore.MediaColumns._ID});
+        args.putInt(ContentResolver.QUERY_ARG_SORT_DIRECTION, ContentResolver.QUERY_SORT_DIRECTION_DESCENDING);
+        if (selection != null) args.putString(ContentResolver.QUERY_ARG_SQL_SELECTION, selection);
+        if (selectionArgs != null) args.putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, selectionArgs);
+        try {
+            return context.getContentResolver().query(collection, projection, args, null);
+        } catch (IllegalArgumentException unsupportedArgs) {
+            // Some vendor media providers ignore query bundles; retain the older
+            // query path and stop after `limit` rows in collect().
+            return context.getContentResolver().query(collection, projection, selection, selectionArgs,
+                    MediaStore.MediaColumns.DATE_MODIFIED + " DESC");
+        }
     }
 
     private static String value(Cursor cursor, int index, String fallback) {
