@@ -8,6 +8,7 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.net.wifi.WifiConfiguration;
+import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.net.ConnectivityManager;
 import android.net.Network;
@@ -19,11 +20,15 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.content.pm.ServiceInfo;
 
+import java.net.HttpURLConnection;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
+import java.net.URL;
 import java.security.SecureRandom;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 
@@ -44,9 +49,7 @@ public final class ShareSessionService extends Service {
     private static final int NOTIFICATION_ID = 1201;
     private static final String MODE_WIFI = "Wi-Fi network";
     private static final String MODE_HOTSPOT = "Phone hotspot";
-    private static final String WIFI_SSID_HINT = "Join the same Wi-Fi as this phone";
-    private static final String WIFI_PASSWORD_HINT = "That network's usual password";
-    private static final String HOTSPOT_SSID_HINT = "Use the hotspot already on this phone";
+    private static final String WIFI_PASSWORD_HINT = "Not needed — the laptop just joins the same Wi-Fi";
     private static final String HOTSPOT_PASSWORD_HINT = "Keep the laptop on that same Wi-Fi";
     private final Handler handler = new Handler(Looper.getMainLooper());
     private WifiManager.LocalOnlyHotspotReservation reservation;
@@ -56,7 +59,6 @@ public final class ShareSessionService extends Service {
     private String currentUrl;
     private String currentCode;
     private String currentMode;
-    private String currentToken;
     private boolean starting;
     /** True when we serve without owning a local-only hotspot. */
     private boolean usingFallback;
@@ -81,7 +83,9 @@ public final class ShareSessionService extends Service {
                     ? "Sharing over " + (currentMode == null ? "the local network" : currentMode.toLowerCase(Locale.ROOT))
                     : starting ? "Starting…" : "No share is active. Pick a mode to begin.";
             publish(status, currentSsid, currentPassword, currentUrl, currentCode, currentMode);
-            if (!sessionActive() && !starting) stopSelf();
+            // stopSelf(startId) only stops if no newer command arrived, so a status
+            // query can never kill a share that started a moment later.
+            if (!sessionActive() && !starting) stopSelf(startId);
             return START_NOT_STICKY;
         }
         if (ACTION_START_WIFI.equals(action)) {
@@ -104,15 +108,14 @@ public final class ShareSessionService extends Service {
         startForegroundCompat("Starting Wi-Fi sharing…");
         publish("Looking for this phone's Wi-Fi address…", null, null, null, null, MODE_WIFI);
         String address = findWifiClientAddress();
+        starting = false;
         if (address == null) {
-            starting = false;
-            publish("This phone is not on a Wi-Fi network. Connect the phone and the laptop to the same Wi-Fi, or use Hotspot mode.", null, null, null, null, MODE_WIFI);
+            publish("No Wi-Fi address found. Connect this phone to Wi-Fi (not mobile data), then try again — or use Hotspot mode.", null, null, null, null, MODE_WIFI);
             stopForegroundCompat();
             stopSelf();
             return;
         }
-        starting = false;
-        beginServer(address, MODE_WIFI, WIFI_SSID_HINT, WIFI_PASSWORD_HINT,
+        beginServer(address, MODE_WIFI, describeWifiNetwork(), WIFI_PASSWORD_HINT,
                 "Ready. Keep the laptop on the same Wi-Fi as this phone, then open the link and enter the code.");
     }
 
@@ -131,9 +134,12 @@ public final class ShareSessionService extends Service {
                     reservation = value;
                     starting = false;
                     WifiConfiguration config = value.getWifiConfiguration();
-                    String ssid = config == null ? "PocketBridge" : config.SSID;
-                    String password = config == null ? "See Android Wi-Fi settings" : config.preSharedKey;
-                    publish("Hotspot ready. Looking up the browser link…", ssid, password, null, null, MODE_HOTSPOT);
+                    String ssid = config == null ? null : config.SSID;
+                    String password = config == null ? null : config.preSharedKey;
+                    publish("Hotspot ready. Looking up the browser link…",
+                            ssid == null || ssid.isEmpty() ? "PocketBridge" : ssid,
+                            password == null || password.isEmpty() ? "See Android Wi-Fi settings" : password,
+                            null, null, MODE_HOTSPOT);
                     findAddressAndStartServer(0);
                 }
 
@@ -173,14 +179,14 @@ public final class ShareSessionService extends Service {
     private boolean startServerOnFallback() {
         String accessPoint = findAccessPointAddress();
         if (accessPoint != null) {
-            beginServer(accessPoint, MODE_HOTSPOT, HOTSPOT_SSID_HINT, HOTSPOT_PASSWORD_HINT,
+            beginServer(accessPoint, MODE_HOTSPOT, "Hotspot already on this phone", HOTSPOT_PASSWORD_HINT,
                     "Your phone's hotspot is already on, so PocketBridge is sharing over it. Connect the laptop to that hotspot, then open the link and enter the code.");
             return true;
         }
         String wifiAddress = findWifiClientAddress();
         if (wifiAddress != null) {
-            beginServer(wifiAddress, MODE_WIFI, WIFI_SSID_HINT, WIFI_PASSWORD_HINT,
-                    "No hotspot could be created, so PocketBridge is sharing over the Wi-Fi network this phone is on. Keep the laptop on that network, then open the link and enter the code.");
+            beginServer(wifiAddress, MODE_WIFI, describeWifiNetwork(), WIFI_PASSWORD_HINT,
+                    "No hotspot could be created, so PocketBridge is sharing over the Wi-Fi this phone is on. Keep the laptop on that network, then open the link and enter the code.");
             return true;
         }
         return false;
@@ -194,15 +200,15 @@ public final class ShareSessionService extends Service {
             server = new MediaHttpServer(this, code, token);
             server.start();
             usingFallback = true;
-            currentToken = token;
             currentCode = code;
             currentMode = mode;
             currentSsid = ssidHint;
             currentPassword = passwordHint;
             // Short link: no long token to type. The code is entered on the page.
-            currentUrl = "http://" + address + ":43117";
+            currentUrl = "http://" + address + ":" + MediaHttpServer.PORT;
             publish(message, currentSsid, currentPassword, currentUrl, currentCode, currentMode);
-            updateNotification("Link " + address + ":43117 · code " + code);
+            updateNotification("Link " + address + ":" + MediaHttpServer.PORT + " · code " + code);
+            verifyServer();
         } catch (Exception error) {
             closeServer();
             usingFallback = false;
@@ -232,12 +238,12 @@ public final class ShareSessionService extends Service {
             server = new MediaHttpServer(this, code, token);
             server.start();
             usingFallback = false;
-            currentToken = token;
             currentCode = code;
             currentMode = MODE_HOTSPOT;
-            currentUrl = "http://" + address + ":43117";
+            currentUrl = "http://" + address + ":" + MediaHttpServer.PORT;
             publish("Ready. Connect the laptop to this hotspot, open the link, then enter the code.", currentSsid, currentPassword, currentUrl, currentCode, currentMode);
-            updateNotification("Link " + address + ":43117 · code " + code);
+            updateNotification("Link " + address + ":" + MediaHttpServer.PORT + " · code " + code);
+            verifyServer();
         } catch (Exception error) {
             closeServer();
             currentCode = null;
@@ -246,9 +252,65 @@ public final class ShareSessionService extends Service {
         }
     }
 
+    /**
+     * Confirms the HTTP server really answers on this phone. When it does, any
+     * remaining failure is on the laptop's side (wrong network, VPN, router
+     * isolation), which saves a lot of guessing.
+     */
+    private void verifyServer() {
+        final String url = currentUrl;
+        final String code = currentCode;
+        final String mode = currentMode;
+        final String ssid = currentSsid;
+        final String password = currentPassword;
+        new Thread(() -> {
+            boolean healthy = false;
+            HttpURLConnection connection = null;
+            try {
+                connection = (HttpURLConnection) new URL("http://127.0.0.1:" + MediaHttpServer.PORT + "/health").openConnection();
+                connection.setConnectTimeout(2500);
+                connection.setReadTimeout(2500);
+                healthy = connection.getResponseCode() == 200;
+            } catch (Exception ignored) {
+            } finally {
+                if (connection != null) connection.disconnect();
+            }
+            final boolean ok = healthy;
+            handler.post(() -> {
+                if (!sessionActive() || currentUrl == null || !currentUrl.equals(url)) return;
+                String prefix = ok
+                        ? "Server is running on this phone. "
+                        : "The phone's own server did not answer — stop and start the share again. ";
+                String hint = ok
+                        ? (MODE_WIFI.equals(mode)
+                            ? "If the laptop still cannot open it, the router may block device-to-device traffic (AP isolation) — use Hotspot mode instead."
+                            : "Open the link on the laptop now and enter the code.")
+                        : "";
+                publish(prefix + hint, ssid, password, url, code, mode);
+            });
+        }, "PocketBridge-selftest").start();
+    }
+
     private static String newCode() {
         SecureRandom random = new SecureRandom();
         return String.format(Locale.ROOT, "%06d", random.nextInt(1_000_000));
+    }
+
+    /** Real Wi-Fi name when Android allows reading it, else a clear description. */
+    private String describeWifiNetwork() {
+        try {
+            WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            WifiInfo info = wifi == null ? null : wifi.getConnectionInfo();
+            String ssid = info == null ? null : info.getSSID();
+            if (ssid != null) {
+                ssid = ssid.trim();
+                if (ssid.length() > 1 && ssid.startsWith("\"") && ssid.endsWith("\"")) {
+                    ssid = ssid.substring(1, ssid.length() - 1);
+                }
+                if (!ssid.isEmpty() && !ssid.toLowerCase(Locale.ROOT).contains("unknown") && !"0x".equals(ssid)) return ssid;
+            }
+        } catch (Exception ignored) { }
+        return "Your current Wi-Fi network";
     }
 
     private String findHotspotAddress() {
@@ -276,43 +338,74 @@ public final class ShareSessionService extends Service {
     }
 
     /**
-     * Finds the phone's own access-point address. Hotspot interfaces end in .1
-     * (for example 192.168.43.1), while a Wi-Fi client address does not, so the
-     * .1 rule avoids handing the laptop the phone's home-network address.
+     * The phone's access-point address. Hotspot interfaces end in .1 (for example
+     * 192.168.43.1), while a Wi-Fi client address does not, so the .1 rule avoids
+     * handing the laptop the phone's home-network address.
      */
     private String findAccessPointAddress() {
-        String accessPointCandidate = null;
-        try {
-            for (NetworkInterface network : Collections.list(NetworkInterface.getNetworkInterfaces())) {
-                if (!network.isUp() || network.isLoopback()) continue;
-                String name = network.getName() == null ? "" : network.getName().toLowerCase(Locale.ROOT);
-                boolean accessPointLike = isAccessPointInterface(name);
-                for (InetAddress address : Collections.list(network.getInetAddresses())) {
-                    if (!(address instanceof Inet4Address) || !address.isSiteLocalAddress() || address.isLoopbackAddress()) continue;
-                    String ip = address.getHostAddress();
-                    if (ip.endsWith(".1")) return ip;
-                    if (accessPointLike && accessPointCandidate == null) accessPointCandidate = ip;
-                }
+        String byName = null;
+        String bySuffix = null;
+        for (String ip : localAddresses()) {
+            String name = interfaceNameFor(ip);
+            if (ip.endsWith(".1")) {
+                if (isAccessPointInterface(name)) return ip;
+                if (bySuffix == null) bySuffix = ip;
             }
-        } catch (Exception ignored) { }
-        return accessPointCandidate;
+            if (isAccessPointInterface(name) && byName == null) byName = ip;
+        }
+        return byName != null ? byName : bySuffix;
     }
 
-    /** The phone's own Wi-Fi address, used when both devices share one Wi-Fi network. */
+    /**
+     * The phone's own Wi-Fi address. Interface names vary between vendors, so if no
+     * wlan* interface is found this falls back to any non-cellular, non-VPN local
+     * address instead of giving up.
+     */
     private String findWifiClientAddress() {
+        String byName = null;
+        String anyLocal = null;
+        for (String ip : localAddresses()) {
+            String name = interfaceNameFor(ip);
+            if (isCellularInterface(name) || isVpnInterface(name)) continue;
+            if (isAccessPointInterface(name)) continue;
+            if (name.startsWith("wlan") || name.startsWith("wifi")) {
+                if (byName == null) byName = ip;
+            } else if (anyLocal == null) {
+                anyLocal = ip;
+            }
+        }
+        return byName != null ? byName : anyLocal;
+    }
+
+    /** Every site-local IPv4 address on an interface that is up. */
+    private List<String> localAddresses() {
+        List<String> addresses = new ArrayList<>();
         try {
             for (NetworkInterface network : Collections.list(NetworkInterface.getNetworkInterfaces())) {
                 if (!network.isUp() || network.isLoopback()) continue;
-                String name = network.getName() == null ? "" : network.getName().toLowerCase(Locale.ROOT);
-                if (!name.startsWith("wlan") || isAccessPointInterface(name)) continue;
                 for (InetAddress address : Collections.list(network.getInetAddresses())) {
                     if (address instanceof Inet4Address && address.isSiteLocalAddress() && !address.isLoopbackAddress()) {
-                        return address.getHostAddress();
+                        addresses.add(address.getHostAddress());
                     }
                 }
             }
         } catch (Exception ignored) { }
-        return null;
+        return addresses;
+    }
+
+    private String interfaceNameFor(String ip) {
+        try {
+            for (NetworkInterface network : Collections.list(NetworkInterface.getNetworkInterfaces())) {
+                if (!network.isUp() || network.isLoopback()) continue;
+                for (InetAddress address : Collections.list(network.getInetAddresses())) {
+                    if (address instanceof Inet4Address && ip.equals(address.getHostAddress())) {
+                        String name = network.getName();
+                        return name == null ? "" : name.toLowerCase(Locale.ROOT);
+                    }
+                }
+            }
+        } catch (Exception ignored) { }
+        return "";
     }
 
     private static boolean isAccessPointInterface(String name) {
@@ -322,6 +415,16 @@ public final class ShareSessionService extends Service {
             try { return Integer.parseInt(name.substring(4)) > 0; } catch (NumberFormatException ignored) { return false; }
         }
         return name.startsWith("eth") || name.startsWith("rndis");
+    }
+
+    private static boolean isCellularInterface(String name) {
+        return name.startsWith("rmnet") || name.startsWith("ccmni") || name.startsWith("pdp")
+                || name.startsWith("clat") || name.startsWith("seth") || name.startsWith("v4-");
+    }
+
+    private static boolean isVpnInterface(String name) {
+        return name.startsWith("tun") || name.startsWith("ppp") || name.startsWith("ipsec")
+                || name.startsWith("wg") || name.startsWith("utun");
     }
 
     private void publish(String status, String ssid, String password, String url, String code, String mode) {
@@ -348,7 +451,6 @@ public final class ShareSessionService extends Service {
         currentUrl = null;
         currentCode = null;
         currentMode = null;
-        currentToken = null;
         starting = false;
         publish("Share stopped. Your files are no longer available.", null, null, null, null, null);
         stopForegroundCompat();

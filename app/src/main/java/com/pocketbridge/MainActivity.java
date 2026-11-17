@@ -55,8 +55,11 @@ public final class MainActivity extends Activity {
             String code = intent.getStringExtra(ShareSessionService.EXTRA_CODE);
             String mode = intent.getStringExtra(ShareSessionService.EXTRA_MODE);
             if (status != null) statusText.setText(status);
+            String address = addressFrom(url);
             networkText.setText(ssid != null || password != null
-                    ? "Wi-Fi name  " + valueOr(ssid, "…") + "\nPassword  " + valueOr(password, "…")
+                    ? "Network  " + valueOr(ssid, "…")
+                      + "\nPassword  " + valueOr(password, "…")
+                      + (address.isEmpty() ? "" : "\nPhone address  " + address)
                     : "Pick a mode below to see what the laptop should join.");
             linkText.setText(url == null || url.isEmpty() ? "The link appears here when sharing starts." : url);
             codeText.setText(code == null || code.isEmpty() ? "— — — — — —" : code);
@@ -334,6 +337,14 @@ public final class MainActivity extends Activity {
                 || ShareSessionService.ACTION_START_HOTSPOT.equals(action);
         if (Build.VERSION.SDK_INT >= 26 && foregroundStart) startForegroundService(service);
         else startService(service);
+    }
+
+    /** Pulls just the host out of http://host:port so the address is easy to read. */
+    private String addressFrom(String url) {
+        if (url == null || !url.startsWith("http://")) return "";
+        String rest = url.substring("http://".length());
+        int colon = rest.indexOf(':');
+        return colon > 0 ? rest.substring(0, colon) : rest;
     }
 
     private String valueOr(String value, String fallback) { return value == null || value.isEmpty() ? fallback : value; }

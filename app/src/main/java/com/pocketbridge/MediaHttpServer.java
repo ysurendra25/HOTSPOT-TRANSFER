@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 final class MediaHttpServer {
-    private static final int PORT = 43117;
+    static final int PORT = 43117;
     private static final int THUMB_TARGET = 384;
     private static final int THUMB_CACHE_BYTES = 24 * 1024 * 1024;
     // A six digit code is short enough to type on a laptop, so it is rate limited.
