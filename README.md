@@ -2,11 +2,12 @@
 
 PocketBridge is an open-source Android app for sharing phone media and the phone screen to a laptop browser over a local-only Wi-Fi hotspot. An optional portable open-source Windows helper also lets the phone view and control the laptop. Both workflows work without mobile data or internet access.
 
-## Version 0.5.1
+## Version 0.5.2
 
 - Two ways to connect, chosen on the phone: **Wi-Fi mode** (laptop joins the same Wi-Fi as the phone) and **Hotspot mode** (the phone creates its own private Wi-Fi, or reuses the hotspot you already switched on).
 - Open a short link like `http://192.168.43.1:43117` and enter a 6-digit code shown on the phone, instead of typing a long token.
-- The phone checks its own server after starting and tells you whether the server is running, so a failure is easy to place.
+- The file server starts before any network work, and the link is worked out from three independent sources, so a share always produces a link or a precise reason why not.
+- The phone shows a Diagnostics card (server state, chosen address, every address it found) and an "Also try these links" card.
 - Browse photos, videos, audio **and files**, play video and audio in the browser with 10-second skip controls, or download the originals.
 - Show the network name, password, and one-time browser link.
 - Stream the phone screen to the browser using WebRTC with hardware H.264 where available.
@@ -36,7 +37,7 @@ See [INSTALL.md](INSTALL.md) for simple phone and laptop setup steps.
 3. Join the network named on the phone screen (in Wi-Fi mode there is nothing to join).
 4. Open the short link in the laptop browser and enter the 6-digit code shown on the phone.
 5. For screen sharing, tap **Share phone screen** in the app and approve Android's capture prompt. Then choose **Watch screen** in the browser.
-6. For PC control, download and extract `PocketBridge-Windows-Control-v0.5.1.zip` on the laptop, then double-click `Start-Control.bat`. Keep the helper running, and open the printed link on your phone while it is connected to the PocketBridge hotspot. If Windows Firewall asks, allow it on private networks only.
+6. For PC control, download and extract `PocketBridge-Windows-Control-v0.5.2.zip` on the laptop, then double-click `Start-Control.bat`. Keep the helper running, and open the printed link on your phone while it is connected to the PocketBridge hotspot. If Windows Firewall asks, allow it on private networks only.
 
 Android 8.0 (API 26) and newer are supported by the project. Android 14 and 15 may ask for access to selected photos and videos; grant access to the items you want to share.
 

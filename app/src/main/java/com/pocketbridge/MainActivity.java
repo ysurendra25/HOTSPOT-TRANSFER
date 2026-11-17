@@ -39,6 +39,8 @@ public final class MainActivity extends Activity {
     private TextView linkText;
     private TextView codeText;
     private TextView modeText;
+    private TextView altText;
+    private TextView diagText;
     private Button wifiButton;
     private Button hotspotButton;
     private Button stopButton;
@@ -54,7 +56,16 @@ public final class MainActivity extends Activity {
             String url = intent.getStringExtra(ShareSessionService.EXTRA_URL);
             String code = intent.getStringExtra(ShareSessionService.EXTRA_CODE);
             String mode = intent.getStringExtra(ShareSessionService.EXTRA_MODE);
+            String alternates = intent.getStringExtra(ShareSessionService.EXTRA_ALT);
+            String diagnostics = intent.getStringExtra(ShareSessionService.EXTRA_DIAG);
             if (status != null) statusText.setText(status);
+            if (altText != null) {
+                altText.setText(alternates == null || alternates.isEmpty()
+                        ? "Only one address was found." : alternates);
+            }
+            if (diagText != null) {
+                diagText.setText(diagnostics == null || diagnostics.isEmpty() ? "—" : diagnostics);
+            }
             String address = addressFrom(url);
             networkText.setText(ssid != null || password != null
                     ? "Network  " + valueOr(ssid, "…")
@@ -65,9 +76,10 @@ public final class MainActivity extends Activity {
             codeText.setText(code == null || code.isEmpty() ? "— — — — — —" : code);
             modeText.setText(mode == null || mode.isEmpty() ? "Not sharing" : mode);
             sharing = url != null && !url.isEmpty();
-            boolean busy = status != null && (status.startsWith("Starting") || status.startsWith("Looking") || status.startsWith("Hotspot ready"));
-            wifiButton.setEnabled(!sharing && !busy);
-            hotspotButton.setEnabled(!sharing && !busy);
+            // Only the sharing state disables the mode buttons. A status message
+            // must never be able to leave them stuck disabled.
+            wifiButton.setEnabled(!sharing);
+            hotspotButton.setEnabled(!sharing);
             stopButton.setEnabled(sharing);
             copyButton.setEnabled(sharing);
         }
@@ -193,6 +205,21 @@ public final class MainActivity extends Activity {
         codeText.setLetterSpacing(0.18f);
         addCard(content, "2 · THEN ENTER THIS CODE", codeText);
 
+        altText = new TextView(this);
+        altText.setText("Only one address was found.");
+        altText.setTextColor(COLOR_GREEN);
+        altText.setTextSize(15);
+        altText.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        altText.setLineSpacing(dp(5), 1f);
+        addCard(content, "ALSO TRY THESE LINKS", altText);
+
+        diagText = new TextView(this);
+        diagText.setText("—");
+        diagText.setTextColor(COLOR_MUTED);
+        diagText.setTextSize(12);
+        diagText.setLineSpacing(dp(3), 1f);
+        addCard(content, "DIAGNOSTICS", diagText);
+
         copyButton = button("Copy link and code", COLOR_SOFT);
         copyButton.setTextColor(COLOR_GREEN);
         copyButton.setEnabled(false);
@@ -272,6 +299,9 @@ public final class MainActivity extends Activity {
 
     private void ensurePermissionsAndStart(String action) {
         List<String> required = new ArrayList<>();
+        // Location is needed to read the current Wi-Fi name on every Android
+        // version, and for the hotspot on Android 12 and older.
+        addIfMissing(required, Manifest.permission.ACCESS_FINE_LOCATION);
         if (Build.VERSION.SDK_INT >= 33) {
             if (ShareSessionService.ACTION_START_HOTSPOT.equals(action)) {
                 addIfMissing(required, Manifest.permission.NEARBY_WIFI_DEVICES);
@@ -288,9 +318,6 @@ public final class MainActivity extends Activity {
             addIfMissing(required, Manifest.permission.READ_MEDIA_AUDIO);
             addIfMissing(required, Manifest.permission.POST_NOTIFICATIONS);
         } else {
-            if (ShareSessionService.ACTION_START_HOTSPOT.equals(action)) {
-                addIfMissing(required, Manifest.permission.ACCESS_FINE_LOCATION);
-            }
             addIfMissing(required, Manifest.permission.READ_EXTERNAL_STORAGE);
         }
         pendingAction = action;
