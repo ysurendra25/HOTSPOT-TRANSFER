@@ -23,20 +23,32 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.zip.Deflater;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 final class MediaHttpServer {
     static final int PORT = 43117;
-    private static final int THUMB_TARGET = 384;
+    private static final int THUMB_TARGET = 480;
     private static final int THUMB_CACHE_BYTES = 24 * 1024 * 1024;
+    private static final int PREVIEW_TARGET = 1920;
+    private static final int PREVIEW_CACHE_BYTES = 32 * 1024 * 1024;
+    // Keeps the request line of a multi-file ZIP download well under the 8 KB header limit.
+    static final int MAX_ZIP_FILES = 300;
     // A six digit code is short enough to type on a laptop, so it is rate limited.
     private static final int MAX_BAD_CODES_PER_WINDOW = 20;
     private static final long BAD_CODE_WINDOW_MS = 60_000L;
@@ -47,16 +59,11 @@ final class MediaHttpServer {
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicInteger badCodes = new AtomicInteger(0);
     private volatile long badCodeWindowStart = 0L;
-    private final ExecutorService clients = new ThreadPoolExecutor(
-            4, 24, 60L, TimeUnit.SECONDS,
-            new LinkedBlockingQueue<>(64),
-            runnable -> {
-                Thread thread = new Thread(runnable, "PocketBridge-http-client");
-                thread.setDaemon(true);
-                return thread;
-            },
-            new ThreadPoolExecutor.CallerRunsPolicy());
+    private final ExecutorService clients = newClientPool();
     private final LruCache<String, byte[]> thumbCache = new LruCache<String, byte[]>(THUMB_CACHE_BYTES) {
+        @Override protected int sizeOf(String key, byte[] value) { return value == null ? 0 : value.length; }
+    };
+    private final LruCache<String, byte[]> previewCache = new LruCache<String, byte[]>(PREVIEW_CACHE_BYTES) {
         @Override protected int sizeOf(String key, byte[] value) { return value == null ? 0 : value.length; }
     };
     private ServerSocket serverSocket;
@@ -67,6 +74,23 @@ final class MediaHttpServer {
         this.code = code;
         this.token = token;
         this.media = new MediaRepository(context);
+    }
+
+    /**
+     * A fixed set of worker threads. The previous pool only grew once its queue was
+     * full and then ran the overflow on the accept thread, so a busy gallery or a
+     * playing video could stop new connections from being accepted at all.
+     */
+    private static ExecutorService newClientPool() {
+        ThreadPoolExecutor pool = new ThreadPoolExecutor(16, 16, 30L, TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(512),
+                runnable -> {
+                    Thread thread = new Thread(runnable, "PocketBridge-http-client");
+                    thread.setDaemon(true);
+                    return thread;
+                });
+        pool.allowCoreThreadTimeOut(true);
+        return pool;
     }
 
     void start() throws Exception {
@@ -83,7 +107,11 @@ final class MediaHttpServer {
                     socket.setSoTimeout(40000);
                     socket.setTcpNoDelay(true);
                     socket.setSendBufferSize(512 * 1024);
-                    clients.execute(() -> handle(socket));
+                    try {
+                        clients.execute(() -> handle(socket));
+                    } catch (RejectedExecutionException rejected) {
+                        try { socket.close(); } catch (IOException ignoredClose) { }
+                    }
                 } catch (Exception error) {
                     if (running.get()) android.util.Log.e("PocketBridge", "HTTP accept failed", error);
                 }
@@ -97,6 +125,7 @@ final class MediaHttpServer {
         try { if (serverSocket != null) serverSocket.close(); } catch (Exception ignored) { }
         clients.shutdownNow();
         thumbCache.evictAll();
+        previewCache.evictAll();
     }
 
     private void handle(Socket socket) {
@@ -176,6 +205,22 @@ final class MediaHttpServer {
                         "Cache-Control: private, max-age=3600\r\n", null);
                 output.write(preview);
                 output.flush();
+                return;
+            }
+            if (path.startsWith("/api/preview/") && method.equals("GET")) {
+                String key = Uri.decode(path.substring("/api/preview/".length()));
+                MediaRepository.Item item = media.find(key);
+                if (item == null) { respond(output, 404, "text/plain", "Media not found or permission is missing", null); return; }
+                byte[] picture = preview(item);
+                if (picture == null) { respond(output, 404, "text/plain", "No preview available", null); return; }
+                writeHead(output, 200, "image/jpeg", picture.length,
+                        "Cache-Control: private, max-age=3600\r\n", null);
+                output.write(picture);
+                output.flush();
+                return;
+            }
+            if (path.equals("/api/zip") && method.equals("GET")) {
+                streamZip(output, target);
                 return;
             }
             if (path.startsWith("/api/media/") && (method.equals("GET") || method.equals("HEAD"))) {
@@ -271,48 +316,112 @@ final class MediaHttpServer {
         return built;
     }
 
+    /** Larger JPEG for the photo viewer, cached separately from the grid thumbnails. */
+    private byte[] preview(MediaRepository.Item item) {
+        byte[] cached = previewCache.get(item.key);
+        if (cached != null) return cached;
+        byte[] built = buildPreview(item);
+        if (built != null) previewCache.put(item.key, built);
+        return built;
+    }
+
     private byte[] buildThumbnail(MediaRepository.Item item) {
         try {
             if ("video".equals(item.kind)) {
                 if (android.os.Build.VERSION.SDK_INT >= 29) {
                     try {
                         Bitmap frame = context.getContentResolver().loadThumbnail(item.uri,
-                                new android.util.Size(THUMB_TARGET, THUMB_TARGET), null);
-                        if (frame != null) return compress(frame);
+                                new android.util.Size(THUMB_TARGET * 2, THUMB_TARGET * 2), null);
+                        if (frame != null) return compress(orient(null, frame, THUMB_TARGET, false), 82);
                     } catch (Exception ignored) { /* vendor providers can omit MediaStore previews */ }
                 }
                 return videoFrameThumbnail(item);
             }
-            BitmapFactory.Options bounds = new BitmapFactory.Options();
-            bounds.inJustDecodeBounds = true;
-            try (InputStream probe = context.getContentResolver().openInputStream(item.uri)) {
-                if (probe == null) return null;
-                BitmapFactory.decodeStream(probe, null, bounds);
-            }
-            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null;
-            int sample = 1;
-            while (bounds.outWidth / (sample * 2) >= THUMB_TARGET && bounds.outHeight / (sample * 2) >= THUMB_TARGET) sample *= 2;
-            BitmapFactory.Options options = new BitmapFactory.Options();
-            options.inSampleSize = sample;
-            options.inPreferredConfig = Bitmap.Config.RGB_565;
-            Bitmap bitmap;
-            try (InputStream stream = context.getContentResolver().openInputStream(item.uri)) {
-                if (stream == null) return null;
-                bitmap = BitmapFactory.decodeStream(stream, null, options);
+            Bitmap bitmap = decodeImage(item, THUMB_TARGET, false);
+            if (bitmap == null && android.os.Build.VERSION.SDK_INT >= 29) {
+                // Formats BitmapFactory cannot read (some HEIC or AVIF files) usually
+                // still have a thumbnail in the media store.
+                try {
+                    bitmap = context.getContentResolver().loadThumbnail(item.uri,
+                            new android.util.Size(THUMB_TARGET * 2, THUMB_TARGET * 2), null);
+                } catch (Exception ignored) { }
+                if (bitmap != null) return compress(orient(null, bitmap, THUMB_TARGET, false), 82);
             }
             if (bitmap == null) return null;
-            int rotation = readRotation(item);
-            if (rotation != 0) {
-                Matrix matrix = new Matrix();
-                matrix.postRotate(rotation);
-                Bitmap rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
-                if (rotated != bitmap) bitmap.recycle();
-                bitmap = rotated;
-            }
-            return compress(bitmap);
+            return compress(orient(item, bitmap, THUMB_TARGET, false), 82);
         } catch (Exception | OutOfMemoryError error) {
             return null;
         }
+    }
+
+    private byte[] buildPreview(MediaRepository.Item item) {
+        try {
+            Bitmap bitmap = decodeImage(item, PREVIEW_TARGET, true);
+            if (bitmap == null && android.os.Build.VERSION.SDK_INT >= 29) {
+                try {
+                    bitmap = context.getContentResolver().loadThumbnail(item.uri,
+                            new android.util.Size(PREVIEW_TARGET, PREVIEW_TARGET), null);
+                } catch (Exception ignored) { }
+                if (bitmap != null) return compress(orient(null, bitmap, PREVIEW_TARGET, true), 86);
+            }
+            if (bitmap == null) return null;
+            return compress(orient(item, bitmap, PREVIEW_TARGET, true), 86);
+        } catch (Exception | OutOfMemoryError error) {
+            return null;
+        }
+    }
+
+    /**
+     * Decodes an image that is still at least {@code target} pixels on the chosen
+     * side: the shorter side for grid thumbnails, the longer side for the viewer.
+     */
+    private Bitmap decodeImage(MediaRepository.Item item, int target, boolean longSide) throws IOException {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        try (InputStream probe = context.getContentResolver().openInputStream(item.uri)) {
+            if (probe == null) return null;
+            BitmapFactory.decodeStream(probe, null, bounds);
+        }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null;
+        int sample = 1;
+        while (true) {
+            int w = bounds.outWidth / (sample * 2);
+            int h = bounds.outHeight / (sample * 2);
+            int side = longSide ? Math.max(w, h) : Math.min(w, h);
+            if (side < target) break;
+            sample *= 2;
+        }
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inSampleSize = sample;
+        options.inPreferredConfig = Bitmap.Config.ARGB_8888;
+        try (InputStream stream = context.getContentResolver().openInputStream(item.uri)) {
+            if (stream == null) return null;
+            return BitmapFactory.decodeStream(stream, null, options);
+        }
+    }
+
+    /**
+     * Applies the EXIF rotation (when an item is given) and shrinks the bitmap so
+     * the chosen side equals {@code target}. Bitmaps already smaller are kept.
+     */
+    private Bitmap orient(MediaRepository.Item item, Bitmap source, int target, boolean longSide) {
+        if (source.getConfig() == Bitmap.Config.HARDWARE) {
+            // Hardware bitmaps cannot be resized or rotated on the CPU; make a software copy first.
+            Bitmap software = source.copy(Bitmap.Config.ARGB_8888, false);
+            if (software == null) return source;
+            source.recycle();
+            source = software;
+        }
+        int rotation = item == null ? 0 : readRotation(item);
+        int side = longSide ? Math.max(source.getWidth(), source.getHeight()) : Math.min(source.getWidth(), source.getHeight());
+        float scale = side > target ? (float) target / side : 1f;
+        if (rotation == 0 && scale == 1f) return source;
+        Matrix matrix = new Matrix();
+        if (rotation != 0) matrix.postRotate(rotation);
+        if (scale != 1f) matrix.postScale(scale, scale);
+        Bitmap result = Bitmap.createBitmap(source, 0, 0, source.getWidth(), source.getHeight(), matrix, true);
+        if (result != source) source.recycle();
+        return result;
     }
 
     /** Uses a frame from the original video when the device's thumbnail provider fails. */
@@ -321,18 +430,17 @@ final class MediaHttpServer {
         try (ParcelFileDescriptor descriptor = context.getContentResolver().openFileDescriptor(item.uri, "r")) {
             if (descriptor == null) return null;
             retriever.setDataSource(descriptor.getFileDescriptor());
-            Bitmap frame = retriever.getFrameAtTime(0, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+            // A frame a little way in avoids the black or fading-in first frame
+            // that many videos start with.
+            long timeUs = 0;
+            try {
+                long durationMs = Long.parseLong(retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION));
+                timeUs = durationMs > 2000 ? 1_000_000L : durationMs * 500L;
+            } catch (Exception ignoredDuration) { }
+            Bitmap frame = retriever.getFrameAtTime(timeUs, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+            if (frame == null && timeUs != 0) frame = retriever.getFrameAtTime(0, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
             if (frame == null) return null;
-            int width = frame.getWidth();
-            int height = frame.getHeight();
-            float scale = Math.min(1f, (float) THUMB_TARGET / Math.max(width, height));
-            if (scale < 1f) {
-                Bitmap scaled = Bitmap.createScaledBitmap(frame, Math.max(1, Math.round(width * scale)),
-                        Math.max(1, Math.round(height * scale)), true);
-                if (scaled != frame) frame.recycle();
-                frame = scaled;
-            }
-            return compress(frame);
+            return compress(orient(null, frame, THUMB_TARGET, false), 82);
         } catch (Exception | OutOfMemoryError error) {
             return null;
         } finally {
@@ -354,10 +462,10 @@ final class MediaHttpServer {
         }
     }
 
-    private static byte[] compress(Bitmap bitmap) {
+    private static byte[] compress(Bitmap bitmap, int quality) {
         if (bitmap == null) return null;
         try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 82, out);
+            bitmap.compress(Bitmap.CompressFormat.JPEG, quality, out);
             return out.toByteArray();
         } catch (Exception error) {
             return null;
@@ -385,6 +493,53 @@ final class MediaHttpServer {
         output.flush();
         if (method.equals("HEAD") || length == 0) return;
         copyMediaRange(output, item, start, length);
+    }
+
+    /**
+     * Streams the chosen files as one ZIP so a whole selection downloads in a
+     * single click. Photos and videos are already compressed, so entries are
+     * written without recompression, which keeps the phone fast.
+     */
+    private void streamZip(OutputStream output, Uri target) throws Exception {
+        String ids = target.getQueryParameter("ids");
+        List<MediaRepository.Item> items = new ArrayList<>();
+        if (ids != null) {
+            for (String id : ids.split(",")) {
+                if (items.size() >= MAX_ZIP_FILES) break;
+                MediaRepository.Item item = media.find(id.trim());
+                if (item != null) items.add(item);
+            }
+        }
+        if (items.isEmpty()) {
+            respond(output, 404, "application/json; charset=utf-8", "{\"error\":\"None of the selected files are available.\"}", null);
+            return;
+        }
+        // The size is not known up front, so the body runs until the connection closes.
+        writeHead(output, 200, "application/zip", -1,
+                "Content-Disposition: attachment; filename=\"PocketBridge-files.zip\"\r\n", null);
+        output.flush();
+        ZipOutputStream zip = new ZipOutputStream(output);
+        zip.setLevel(Deflater.NO_COMPRESSION);
+        Set<String> used = new HashSet<>();
+        for (MediaRepository.Item item : items) {
+            zip.putNextEntry(new ZipEntry(uniqueEntryName(item.name, used)));
+            copyMediaRange(zip, item, 0, Long.MAX_VALUE);
+            zip.closeEntry();
+        }
+        zip.finish();
+        output.flush();
+    }
+
+    private static String uniqueEntryName(String name, Set<String> used) {
+        String clean = name == null ? "file" : name.replace('/', '_').replace('\\', '_').trim();
+        if (clean.isEmpty() || clean.equals(".") || clean.equals("..")) clean = "file";
+        String candidate = clean;
+        int dot = clean.lastIndexOf('.');
+        String base = dot > 0 ? clean.substring(0, dot) : clean;
+        String extension = dot > 0 ? clean.substring(dot) : "";
+        int counter = 2;
+        while (!used.add(candidate)) candidate = base + " (" + counter++ + ")" + extension;
+        return candidate;
     }
 
     private void copyMediaRange(OutputStream output, MediaRepository.Item item, long start, long length) throws Exception {
@@ -496,7 +651,7 @@ final class MediaHttpServer {
                 : "Bad Request";
         String headers = "HTTP/1.1 " + status + " " + reason + "\r\n" +
                 "Content-Type: " + type + "\r\n" +
-                "Content-Length: " + length + "\r\n" +
+                (length >= 0 ? "Content-Length: " + length + "\r\n" : "") +
                 ((extra != null && extra.toLowerCase(java.util.Locale.ROOT).contains("cache-control:")) ? "" : "Cache-Control: no-store\r\n") +
                 "Connection: close\r\n" +
                 "X-Content-Type-Options: nosniff\r\n" +

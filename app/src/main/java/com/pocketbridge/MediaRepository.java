@@ -57,9 +57,16 @@ final class MediaRepository {
                 result.put("modified", modified);
                 result.put("url", "/api/media/" + Uri.encode(key));
                 // Images and videos get a small preview so the browser grid does not
-                // have to pull multi-megabyte originals over the hotspot.
-                if ("image".equals(kind) || ("video".equals(kind) && Build.VERSION.SDK_INT >= 29)) {
+                // have to pull multi-megabyte originals over the hotspot. Video
+                // thumbnails work on every supported Android version because the
+                // server falls back to grabbing a frame from the file itself.
+                if ("image".equals(kind) || "video".equals(kind)) {
                     result.put("thumb", "/api/thumb/" + Uri.encode(key));
+                }
+                // A larger JPEG for the viewer: loads fast over the hotspot and also
+                // shows formats a browser cannot display directly (HEIC, AVIF, ...).
+                if ("image".equals(kind)) {
+                    result.put("preview", "/api/preview/" + Uri.encode(key));
                 }
             } catch (Exception ignored) { }
             return result;

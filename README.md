@@ -2,7 +2,19 @@
 
 PocketBridge is an open-source Android app for sharing phone media and the phone screen to a laptop browser over a local-only Wi-Fi hotspot. An optional portable open-source Windows helper also lets the phone view and control the laptop. Both workflows work without mobile data or internet access.
 
-## Version 0.5.4
+## Version 0.5.5
+
+What's new:
+
+- **Screen sharing fixes.** The phone now marks the stream as a screencast (sharper text, and the last picture is repeated while the screen is still), forces a fresh first frame when the browser connects so a still screen no longer shows "No screen frame yet", follows phone rotation, and the browser retries a dropped connection twice before giving up.
+- **Stop screen share** from the phone (the button changes to "Stop screen share" while sharing). Stopping the share also stops screen capture.
+- **Video thumbnails on every supported Android version** (they were missing on Android 8 and 9). A frame from about one second in is used instead of a possibly black first frame.
+- **Sharper thumbnails**, lazy-loaded so the first page appears faster, grouped by day (Today, Yesterday, dates).
+- **Fast photo viewer** that loads a phone-made JPEG preview (works for HEIC and AVIF too), with Previous/Next, arrow keys, swipe, and an Original download. Escape now closes the photo viewer.
+- **Select several files and download them as one ZIP** (up to 300 at a time).
+- A sturdier phone web server: a fixed worker pool so a busy gallery or a playing video cannot block new connections.
+
+Everything from earlier versions:
 
 - Two ways to connect, chosen on the phone: **Wi-Fi mode** (laptop joins the same Wi-Fi as the phone) and **Hotspot mode** (the phone creates its own private Wi-Fi, or reuses the hotspot you already switched on).
 - Open a short link like `http://192.168.43.1:43117` and enter a 6-digit code shown on the phone, instead of typing a long token.
@@ -43,7 +55,7 @@ See [INSTALL.md](INSTALL.md) for simple phone and laptop setup steps.
 3. Join the network named on the phone screen (in Wi-Fi mode there is nothing to join).
 4. Open the short link in the laptop browser and enter the 6-digit code shown on the phone.
 5. For screen sharing, tap **Share phone screen** in the app and approve Android's capture prompt. Then choose **Watch screen** in the browser.
-6. For PC control, download and extract `PocketBridge-Windows-Control-v0.5.4.zip` on the laptop, then double-click `Start-Control.bat`. Keep the helper running, and open the printed link on your phone while it is connected to the PocketBridge hotspot. If Windows Firewall asks, allow it on private networks only.
+6. For PC control, download and extract `PocketBridge-Windows-Control-v0.5.5.zip` on the laptop, then double-click `Start-Control.bat`. Keep the helper running, and open the printed link on your phone while it is connected to the PocketBridge hotspot. If Windows Firewall asks, allow it on private networks only.
 
 Android 8.0 (API 26) and newer are supported by the project. Android 14 and 15 may ask for access to selected photos and videos; grant access to the items you want to share.
 

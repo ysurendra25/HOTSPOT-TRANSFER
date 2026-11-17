@@ -7,10 +7,14 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.hardware.display.DisplayManager;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.util.DisplayMetrics;
+import android.view.Display;
 import android.view.WindowManager;
 import android.content.pm.ServiceInfo;
 
@@ -56,6 +60,10 @@ public final class ScreenCaptureService extends Service {
     private volatile String pendingAnswer;
     private volatile CountDownLatch answerLatch;
     private volatile boolean iceGatheringComplete;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private DisplayManager.DisplayListener displayListener;
+    private int captureWidth;
+    private int captureHeight;
 
     public static boolean isRunning() { return instance != null && instance.videoTrack != null; }
 
@@ -95,11 +103,13 @@ public final class ScreenCaptureService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
-        if (isRunning()) return START_NOT_STICKY;
         try {
             lastSetupError = null;
+            // Always answer startForegroundService() promptly, even when a capture is
+            // already running, or Android can stop the app for not calling it in time.
             if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
             else startForeground(NOTIFICATION_ID, buildNotification());
+            if (isRunning()) return START_NOT_STICKY;
             Intent permissionData = intent.getParcelableExtra(EXTRA_RESULT_DATA);
             if (permissionData == null) throw new IllegalArgumentException("Android did not return screen-capture permission data.");
             initialize(permissionData);
@@ -121,7 +131,9 @@ public final class ScreenCaptureService extends Service {
                 .setVideoEncoderFactory(new DefaultVideoEncoderFactory(eglBase.getEglBaseContext(), true, true))
                 .setVideoDecoderFactory(new DefaultVideoDecoderFactory(eglBase.getEglBaseContext()))
                 .createPeerConnectionFactory();
-        videoSource = factory.createVideoSource(false);
+        // Marking the source as a screencast keeps text sharp (resolution is kept,
+        // frame rate drops first) and repeats the last frame while the screen is still.
+        videoSource = factory.createVideoSource(true);
         surfaceTextureHelper = SurfaceTextureHelper.create("PocketBridge-screen", eglBase.getEglBaseContext());
         capturer = new ScreenCapturerAndroid(permissionData, new android.media.projection.MediaProjection.Callback() {
             @Override public void onStop() {
@@ -131,6 +143,17 @@ public final class ScreenCaptureService extends Service {
         });
         capturer.initialize(surfaceTextureHelper, getApplicationContext(), videoSource.getCapturerObserver());
 
+        int[] size = captureSize();
+        capturer.startCapture(size[0], size[1], 30);
+        captureWidth = size[0];
+        captureHeight = size[1];
+        videoTrack = factory.createVideoTrack("pocketbridge-screen", videoSource);
+        videoTrack.setEnabled(true);
+        registerDisplayListener();
+    }
+
+    /** Capture size for the current screen orientation, at most 1920 pixels on the long side. */
+    private int[] captureSize() {
         WindowManager windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         DisplayMetrics metrics = new DisplayMetrics();
         windowManager.getDefaultDisplay().getRealMetrics(metrics);
@@ -139,9 +162,44 @@ public final class ScreenCaptureService extends Service {
         float scale = Math.min(1f, 1920f / Math.max(width, height));
         width = Math.max(2, Math.round(width * scale / 2f) * 2);
         height = Math.max(2, Math.round(height * scale / 2f) * 2);
-        capturer.startCapture(width, height, 30);
-        videoTrack = factory.createVideoTrack("pocketbridge-screen", videoSource);
-        videoTrack.setEnabled(true);
+        return new int[]{width, height};
+    }
+
+    /** Follows phone rotation. A fixed capture size would otherwise show a squashed picture. */
+    private void registerDisplayListener() {
+        DisplayManager manager = (DisplayManager) getSystemService(DISPLAY_SERVICE);
+        if (manager == null) return;
+        displayListener = new DisplayManager.DisplayListener() {
+            @Override public void onDisplayAdded(int displayId) { }
+            @Override public void onDisplayRemoved(int displayId) { }
+            @Override public void onDisplayChanged(int displayId) {
+                if (displayId == Display.DEFAULT_DISPLAY) applyDisplaySize();
+            }
+        };
+        manager.registerDisplayListener(displayListener, mainHandler);
+    }
+
+    private void applyDisplaySize() {
+        ScreenCapturerAndroid active = capturer;
+        if (active == null) return;
+        int[] size = captureSize();
+        if (size[0] == captureWidth && size[1] == captureHeight) return;
+        captureWidth = size[0];
+        captureHeight = size[1];
+        try { active.changeCaptureFormat(size[0], size[1], 30); }
+        catch (Exception error) { android.util.Log.w("PocketBridge", "Could not resize screen capture", error); }
+    }
+
+    /**
+     * Android only delivers a screen frame when something on screen changes, so a
+     * browser that connects to a still screen would wait for a frame that never
+     * comes. Recreating the capture surface produces a fresh frame straight away.
+     */
+    private void refreshCapture() {
+        ScreenCapturerAndroid active = capturer;
+        if (active == null || captureWidth == 0 || captureHeight == 0) return;
+        try { active.changeCaptureFormat(captureWidth, captureHeight, 30); }
+        catch (Exception error) { android.util.Log.w("PocketBridge", "Could not refresh screen capture", error); }
     }
 
     private String acceptOffer(String offerSdp) {
@@ -159,6 +217,11 @@ public final class ScreenCaptureService extends Service {
             @Override public void onSignalingChange(PeerConnection.SignalingState state) { }
             @Override public void onIceConnectionChange(PeerConnection.IceConnectionState state) {
                 lastIceState = state == null ? "unknown" : state.toString().toLowerCase(java.util.Locale.ROOT);
+                if (state == PeerConnection.IceConnectionState.CONNECTED || state == PeerConnection.IceConnectionState.COMPLETED) {
+                    // Once now, and once more after the encoder and DTLS are surely ready.
+                    mainHandler.post(ScreenCaptureService.this::refreshCapture);
+                    mainHandler.postDelayed(ScreenCaptureService.this::refreshCapture, 1200);
+                }
             }
             @Override public void onIceConnectionReceivingChange(boolean receiving) { }
             @Override public void onIceGatheringChange(PeerConnection.IceGatheringState state) {
@@ -249,6 +312,11 @@ public final class ScreenCaptureService extends Service {
     }
 
     @Override public void onDestroy() {
+        mainHandler.removeCallbacksAndMessages(null);
+        try {
+            DisplayManager manager = (DisplayManager) getSystemService(DISPLAY_SERVICE);
+            if (manager != null && displayListener != null) manager.unregisterDisplayListener(displayListener);
+        } catch (Exception ignored) { }
         closePeer();
         try { if (capturer != null) { capturer.stopCapture(); capturer.dispose(); } } catch (Exception ignored) { }
         try { if (videoTrack != null) videoTrack.dispose(); } catch (Exception ignored) { }

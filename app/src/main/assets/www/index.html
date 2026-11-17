@@ -124,6 +124,27 @@
   .seek{flex:1;min-width:140px;accent-color:#25a57f;height:4px}
   .time{font-size:12px;color:#a9c3bd;font-variant-numeric:tabular-nums;white-space:nowrap}
 
+  /* date groups, selection, viewer navigation */
+  .card{position:relative}
+  .group{grid-column:1/-1;margin:12px 2px 0;font-size:13px;font-weight:800;color:var(--muted)}
+  .group:first-child{margin-top:0}
+  .pick{position:absolute;top:8px;left:8px;width:28px;height:28px;border-radius:9px;border:2px solid #fff;padding:0;
+    background:rgba(18,37,46,.42);color:#fff;font-size:15px;line-height:1;display:grid;place-items:center;z-index:2;
+    opacity:0;transition:opacity .12s}
+  .card:hover .pick,.card.selected .pick,.selecting .pick{opacity:1}
+  .card.selected{outline:3px solid var(--teal);outline-offset:-3px}
+  .card.selected .pick{background:var(--teal)}
+  @media(hover:none){.pick{opacity:1}}
+  .selbar{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:var(--ink);color:#fff;border-radius:14px;
+    padding:10px 12px;display:none;align-items:center;gap:10px;box-shadow:0 14px 40px rgba(20,38,47,.35);z-index:8;
+    max-width:calc(100vw - 24px);flex-wrap:wrap;justify-content:center}
+  .selbar.show{display:flex}
+  .selbar .btn{padding:8px 12px;font-size:13px}
+  .selbar span{font-size:13px;font-weight:700}
+  .modal-actions{display:flex;gap:8px;flex-shrink:0;align-items:center}
+  .modal-actions .btn{padding:8px 12px;font-size:13px}
+  .stage .note{color:#cfe0dc;padding:40px 20px;text-align:center}
+
   @media(max-width:900px){.grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
   @media(max-width:640px){
     .shell{padding:0 14px 40px}.topbar{height:62px}.hero{padding:22px 0 16px}h1{font-size:26px}
@@ -178,7 +199,7 @@
         <span id="screenState">Connecting to phone…</span>
         <button class="btn btn-outline" id="stopWatch" type="button">Stop viewing</button>
       </div>
-      <video id="screenVideo" autoplay playsinline controls></video>
+      <video id="screenVideo" autoplay playsinline controls muted></video>
     </section>
 
     <section class="library-head">
@@ -200,12 +221,24 @@
   </div>
 </main>
 
+<div class="selbar" id="selbar">
+  <span id="selCount">0 selected</span>
+  <button class="btn btn-white" id="selZip" type="button">Download ZIP</button>
+  <button class="btn btn-ghost" id="selAll" type="button">Select all shown</button>
+  <button class="btn btn-ghost" id="selClear" type="button">Clear</button>
+</div>
+
 <!-- player -->
 <div class="modal" id="modal" role="dialog" aria-modal="true">
   <div class="modal-box">
     <div class="modal-top">
       <strong id="modalName"></strong>
-      <button class="btn" id="closeModal" type="button">Close</button>
+      <div class="modal-actions">
+        <button class="btn" id="prevItem" type="button" title="Previous (Page Up)">‹ Prev</button>
+        <button class="btn" id="nextItem" type="button" title="Next (Page Down)">Next ›</button>
+        <a class="btn" id="origLink" href="#" download>Original</a>
+        <button class="btn" id="closeModal" type="button">Close</button>
+      </div>
     </div>
     <div class="stage" id="stage"></div>
     <div class="controls" id="controls">
@@ -235,6 +268,12 @@
   let searchTimer = null;
   const PAGE_SIZE = 120;
   const MAX_PAGE_SIZE = 5000;
+  const MAX_ZIP = 300;
+  let selected = new Set();
+  let viewList = [];
+  let viewIndex = -1;
+  let screenWanted = false;
+  let screenRetries = 0;
 
   const gate = document.getElementById('gate');
   const app = document.getElementById('app');
@@ -377,10 +416,15 @@
       return;
     }
     const visible = shown.slice(0, visibleLimit);
+    viewList = visible.filter(file => file.kind === 'image' || file.kind === 'video' || file.kind === 'audio');
+    let lastGroup = '';
     grid.innerHTML = visible.map(file => {
+      const groupLabel = dayLabel(file.modified);
+      const heading = groupLabel !== lastGroup ? '<div class="group">' + safe(groupLabel) + '</div>' : '';
+      lastGroup = groupLabel;
       let visual = '<div class="file-icon">' + iconFor(file.kind) + '</div>';
       if (file.kind === 'image' || (file.kind === 'video' && file.thumb)) {
-        visual = '<img loading="eager" decoding="async" data-thumb-id="' + safe(file.id) + '" src="' + safe(endpoint(file.thumb || file.url)) + '" alt="' + safe(file.name) + '">';
+        visual = '<img loading="lazy" decoding="async" data-thumb-id="' + safe(file.id) + '" src="' + safe(endpoint(file.thumb || file.url)) + '" alt="' + safe(file.name) + '">';
       }
       if (file.kind === 'video') {
         if (!file.thumb) visual = '<div class="file-icon">▶</div>';
@@ -392,8 +436,10 @@
         ? '<button class="btn btn-soft" data-preview="' + safe(file.id) + '" type="button">' +
           (playable ? 'Play' : 'View') + '</button>'
         : '';
-      return '<article class="card">' +
-        '<button class="thumb" type="button" data-preview="' + safe(file.id) + '">' + visual + '</button>' +
+      const isSelected = selected.has(file.id);
+      return heading + '<article class="card' + (isSelected ? ' selected' : '') + '" data-card="' + safe(file.id) + '">' +
+        '<button class="pick" type="button" data-pick="' + safe(file.id) + '" aria-label="Select ' + safe(file.name) + '">' + (isSelected ? '✓' : '') + '</button>' +
+        '<button class="thumb" type="button" data-thumb-open="' + safe(file.id) + '">' + visual + '</button>' +
         '<div class="meta">' +
           '<div class="name" title="' + safe(file.name) + '">' + safe(file.name) + '</div>' +
           '<div class="submeta">' + formatSize(file.size) + ' · ' + safe(file.kind) + '</div>' +
@@ -404,6 +450,16 @@
     }).join('');
     grid.querySelectorAll('[data-preview]').forEach(node => {
       node.addEventListener('click', () => openFile(node.getAttribute('data-preview')));
+    });
+    // While files are selected, tapping a picture selects it instead of opening it.
+    grid.querySelectorAll('[data-thumb-open]').forEach(node => {
+      node.addEventListener('click', () => {
+        const id = node.getAttribute('data-thumb-open');
+        if (selected.size > 0) toggleSelect(id); else openFile(id);
+      });
+    });
+    grid.querySelectorAll('[data-pick]').forEach(node => {
+      node.addEventListener('click', (event) => { event.stopPropagation(); toggleSelect(node.getAttribute('data-pick')); });
     });
     grid.querySelectorAll('img[data-thumb-id]').forEach(image => {
       image.addEventListener('error', () => recoverThumbnail(image), {once:true});
@@ -419,8 +475,15 @@
     // providers. Showing the original still gives the user a useful preview.
     if (file.kind === 'image' && image.dataset.retried !== 'yes') {
       image.dataset.retried = 'yes';
-      image.src = endpoint(file.url);
-      image.addEventListener('error', () => image.replaceWith(filePlaceholder(file.kind)), {once:true});
+      // Try the phone-made JPEG preview first; only a small, browser-friendly
+      // original is worth loading as a last resort.
+      image.addEventListener('error', () => {
+        if (/^image\/(jpeg|png|gif|webp)$/i.test(file.mime || '') && file.size < 15 * 1024 * 1024) {
+          image.addEventListener('error', () => image.replaceWith(filePlaceholder('image')), {once:true});
+          image.src = endpoint(file.url);
+        } else image.replaceWith(filePlaceholder('image'));
+      }, {once:true});
+      image.src = endpoint(file.preview || file.url);
       return;
     }
     // Some phone MediaStore providers do not generate video thumbnails. Ask
@@ -433,15 +496,15 @@
       preview.preload = 'metadata';
       preview.src = endpoint(file.url);
       preview.addEventListener('loadedmetadata', () => {
-        try { preview.currentTime = Number.isFinite(preview.duration) ? Math.min(0.25, Math.max(0, preview.duration / 2)) : 0; }
+        try { preview.currentTime = Number.isFinite(preview.duration) ? Math.min(1, Math.max(0, preview.duration / 2)) : 0; }
         catch (error) { image.replaceWith(filePlaceholder('video')); }
       }, {once:true});
       preview.addEventListener('seeked', () => {
         try {
           if (!preview.videoWidth || !preview.videoHeight) throw new Error('Video frame is not available');
           const canvas = document.createElement('canvas');
-          canvas.width = 384;
-          canvas.height = Math.max(1, Math.round(384 * preview.videoHeight / preview.videoWidth));
+          canvas.width = 480;
+          canvas.height = Math.max(1, Math.round(480 * preview.videoHeight / preview.videoWidth));
           canvas.getContext('2d').drawImage(preview, 0, 0, canvas.width, canvas.height);
           image.src = canvas.toDataURL('image/jpeg', 0.78);
         } catch (error) { image.replaceWith(filePlaceholder('video')); }
@@ -460,6 +523,68 @@
     placeholder.textContent = kind === 'video' ? '▶' : kind === 'image' ? '🖼' : '📄';
     return placeholder;
   }
+
+  function dayLabel(stamp) {
+    if (!stamp) return 'Earlier';
+    const date = new Date(stamp > 1e11 ? stamp : stamp * 1000);
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const day = new Date(date); day.setHours(0, 0, 0, 0);
+    const diff = Math.round((today - day) / 86400000);
+    if (diff === 0) return 'Today';
+    if (diff === 1) return 'Yesterday';
+    return date.toLocaleDateString(undefined, {weekday: 'short', day: 'numeric', month: 'short',
+      year: date.getFullYear() === today.getFullYear() ? undefined : 'numeric'});
+  }
+
+  /* ---------- selection and ZIP download ---------- */
+  const selbar = document.getElementById('selbar');
+  const selCount = document.getElementById('selCount');
+  function updateSelection() {
+    selbar.classList.toggle('show', selected.size > 0);
+    grid.classList.toggle('selecting', selected.size > 0);
+    selCount.textContent = selected.size + ' selected';
+  }
+  function toggleSelect(id) {
+    if (selected.has(id)) selected.delete(id);
+    else {
+      if (selected.size >= MAX_ZIP) {
+        selCount.textContent = 'Limit: ' + MAX_ZIP + ' files per ZIP';
+        setTimeout(updateSelection, 2200);
+        return;
+      }
+      selected.add(id);
+    }
+    const card = grid.querySelector('[data-card="' + id + '"]');
+    if (card) {
+      card.classList.toggle('selected', selected.has(id));
+      const pick = card.querySelector('.pick');
+      if (pick) pick.textContent = selected.has(id) ? '✓' : '';
+    }
+    updateSelection();
+  }
+  document.getElementById('selAll').addEventListener('click', () => {
+    const term = search.value.trim().toLowerCase();
+    files.filter(file => (file.name || '').toLowerCase().includes(term)).slice(0, visibleLimit).forEach(file => {
+      if (selected.size < MAX_ZIP) selected.add(file.id);
+    });
+    renderFiles();
+    updateSelection();
+  });
+  document.getElementById('selClear').addEventListener('click', () => {
+    selected.clear();
+    renderFiles();
+    updateSelection();
+  });
+  document.getElementById('selZip').addEventListener('click', () => {
+    if (!selected.size) return;
+    const ids = Array.from(selected).slice(0, MAX_ZIP);
+    const link = document.createElement('a');
+    link.href = endpoint('/api/zip?ids=' + encodeURIComponent(ids.join(',')));
+    link.download = 'PocketBridge-files.zip';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  });
 
   search.addEventListener('input', () => {
     clearTimeout(searchTimer);
@@ -493,13 +618,42 @@
     return mins + ':' + String(secs).padStart(2, '0');
   }
 
-  function openFile(id) {
-    const file = files.find(item => item.id === id);
-    if (!file) return;
-    document.getElementById('modalName').textContent = file.name;
-    const url = endpoint(file.url);
+  function releaseMedia() {
+    if (media) { try { media.pause(); } catch (e) {} media.src = ''; media = null; }
     stage.innerHTML = '';
-    media = null;
+  }
+
+  function openFile(id) {
+    viewIndex = viewList.findIndex(item => item.id === id);
+    if (viewIndex < 0) {
+      const only = files.find(item => item.id === id);
+      if (!only) return;
+      viewList = [only];
+      viewIndex = 0;
+    }
+    showCurrent();
+    modal.classList.add('open');
+  }
+
+  function stepViewer(delta) {
+    if (viewList.length < 2) return;
+    viewIndex = (viewIndex + delta + viewList.length) % viewList.length;
+    showCurrent();
+  }
+
+  function showCurrent() {
+    const file = viewList[viewIndex];
+    if (!file) return;
+    releaseMedia();
+    document.getElementById('modalName').textContent = file.name +
+      (viewList.length > 1 ? '  (' + (viewIndex + 1) + '/' + viewList.length + ')' : '');
+    const url = endpoint(file.url);
+    const many = viewList.length > 1;
+    document.getElementById('prevItem').style.display = many ? 'inline-flex' : 'none';
+    document.getElementById('nextItem').style.display = many ? 'inline-flex' : 'none';
+    const original = document.getElementById('origLink');
+    original.href = url;
+    original.setAttribute('download', file.name);
 
     if (file.kind === 'video') {
       media = document.createElement('video');
@@ -513,15 +667,25 @@
       media.preload = 'metadata';
       stage.appendChild(media);
     } else {
+      // The phone-made JPEG preview opens fast over the hotspot and also works for
+      // formats a browser cannot show (HEIC, AVIF). Original is one click away.
       const image = document.createElement('img');
-      image.src = url;
       image.alt = file.name;
+      let triedOriginal = false;
+      image.addEventListener('error', () => {
+        if (!triedOriginal) { triedOriginal = true; image.src = url; return; }
+        stage.innerHTML = '<div class="note">This photo cannot be shown in the browser. Use Original to download it.</div>';
+      });
+      image.src = file.preview ? endpoint(file.preview) : url;
       stage.appendChild(image);
+      [1, -1].forEach(step => {
+        const neighbour = viewList[(viewIndex + step + viewList.length) % viewList.length];
+        if (neighbour && neighbour.kind === 'image' && neighbour.preview) new Image().src = endpoint(neighbour.preview);
+      });
     }
 
     controls.style.display = media ? 'flex' : 'none';
     if (media) wirePlayer(media, file.kind);
-    modal.classList.add('open');
   }
 
   function wirePlayer(element, kind) {
@@ -582,19 +746,39 @@
   }
 
   function closeModal() {
-    if (media) { try { media.pause(); } catch (e) {} media.src = ''; media = null; }
-    stage.innerHTML = '';
+    releaseMedia();
     modal.classList.remove('open');
   }
   document.getElementById('closeModal').addEventListener('click', closeModal);
+  document.getElementById('prevItem').addEventListener('click', () => stepViewer(-1));
+  document.getElementById('nextItem').addEventListener('click', () => stepViewer(1));
   modal.addEventListener('click', (event) => { if (event.target === modal) closeModal(); });
   document.addEventListener('keydown', (event) => {
-    if (!modal.classList.contains('open') || !media) return;
-    if (event.key === 'Escape') closeModal();
+    if (!modal.classList.contains('open')) return;
+    if (event.key === 'Escape') { closeModal(); return; }
+    if (event.key === 'PageDown') { stepViewer(1); return; }
+    if (event.key === 'PageUp') { stepViewer(-1); return; }
+    if (!media) {
+      // Photos: the arrow keys move between pictures.
+      if (event.key === 'ArrowRight') stepViewer(1);
+      if (event.key === 'ArrowLeft') stepViewer(-1);
+      return;
+    }
+    // Video and audio: the arrow keys skip 10 seconds.
     if (event.key === 'ArrowRight') { document.getElementById('fwd10').click(); }
     if (event.key === 'ArrowLeft') { document.getElementById('back10').click(); }
     if (event.key === ' ') { event.preventDefault(); playPause.click(); }
   });
+  let touchStartX = null;
+  stage.addEventListener('touchstart', (event) => {
+    touchStartX = event.touches.length === 1 ? event.touches[0].clientX : null;
+  }, {passive: true});
+  stage.addEventListener('touchend', (event) => {
+    if (touchStartX === null || media) return;
+    const delta = event.changedTouches[0].clientX - touchStartX;
+    touchStartX = null;
+    if (Math.abs(delta) > 60) stepViewer(delta < 0 ? 1 : -1);
+  }, {passive: true});
 
   /* ---------- screen share ---------- */
   async function waitForIce(pc) {
@@ -621,6 +805,7 @@
     if (watchButton.disabled) return;
     if (peer) { try { peer.close(); } catch (e) {} peer = null; }
     clearTimeout(screenFrameTimer);
+    screenWanted = true;
     watchButton.disabled = true;
     screenView.classList.add('active');
     state.textContent = 'Connecting to the phone…';
@@ -649,8 +834,22 @@
         if (peer !== activePeer) return;
         const iceState = activePeer.iceConnectionState;
         if (iceState === 'checking') state.textContent = 'Finding the local phone connection…';
-        if (iceState === 'failed') state.textContent = 'Could not connect the screen stream. Reconnect both devices to the same PocketBridge Wi-Fi and retry.';
-        if (iceState === 'connected' || iceState === 'completed') state.textContent = 'Connected · waiting for the first screen frame…';
+        if (iceState === 'disconnected') state.textContent = 'Connection interrupted · waiting for the phone…';
+        if (iceState === 'failed') {
+          // A second or third attempt often succeeds after a brief Wi-Fi hiccup.
+          if (screenWanted && screenRetries < 2) {
+            screenRetries++;
+            state.textContent = 'Connection dropped · reconnecting (' + screenRetries + '/2)…';
+            setTimeout(() => {
+              if (peer !== activePeer || !screenWanted) return;
+              watchButton.disabled = false;
+              watchScreen();
+            }, 1500);
+          } else {
+            state.textContent = 'Could not connect the screen stream. Reconnect both devices to the same PocketBridge Wi-Fi and retry.';
+          }
+        }
+        if (iceState === 'connected' || iceState === 'completed') { screenRetries = 0; state.textContent = 'Connected · waiting for the first screen frame…'; }
       };
       const offer = await activePeer.createOffer();
       await activePeer.setLocalDescription(offer);
@@ -666,7 +865,7 @@
       screenFrameTimer = setTimeout(() => {
         const video = document.getElementById('screenVideo');
         if (!activePeer || peer !== activePeer || video.videoWidth > 0) return;
-        state.textContent = 'No screen frame yet. Keep PocketBridge open, stop screen share on the phone, start it again, then tap Watch screen.';
+        state.textContent = 'No screen frame yet. On the phone tap “Stop screen share”, then “Share phone screen” again, approve Android’s prompt, and tap Watch screen.';
         watchButton.disabled = false;
       }, 15000);
     } catch (error) {
@@ -678,6 +877,8 @@
     }
   }
   function stopWatching() {
+    screenWanted = false;
+    screenRetries = 0;
     clearTimeout(screenFrameTimer);
     if (peer) { try { peer.close(); } catch (e) {} peer = null; }
     document.getElementById('watchButton').disabled = false;

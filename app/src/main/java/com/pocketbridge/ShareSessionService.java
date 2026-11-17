@@ -420,7 +420,11 @@ public final class ShareSessionService extends Service {
                 if (byName == null) byName = address.ip;
             }
         }
-        return byName != null ? byName : pickAny(addresses);
+        if (byName != null) return byName;
+        // No Wi-Fi client address: the phone's own hotspot may already be on, so the
+        // laptop reaches this phone through the hotspot address instead.
+        String accessPoint = pickAccessPoint(addresses);
+        return accessPoint != null ? accessPoint : pickAny(addresses);
     }
 
     private String pickAny(List<Addr> addresses) {
@@ -486,6 +490,9 @@ public final class ShareSessionService extends Service {
     }
 
     private void stopSession() {
+        // Screen capture belongs to the share: do not leave the screen streaming
+        // (and the capture notification showing) after the share has stopped.
+        stopService(new Intent(this, ScreenCaptureService.class));
         closeServer();
         if (reservation != null) {
             try { reservation.close(); } catch (Exception ignored) { }

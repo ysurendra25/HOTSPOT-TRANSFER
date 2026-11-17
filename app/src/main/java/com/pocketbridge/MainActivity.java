@@ -45,6 +45,7 @@ public final class MainActivity extends Activity {
     private Button hotspotButton;
     private Button stopButton;
     private Button copyButton;
+    private Button screenButton;
     private boolean receiverRegistered;
     private boolean sharing;
 
@@ -98,6 +99,18 @@ public final class MainActivity extends Activity {
         else registerReceiver(statusReceiver, filter);
         receiverRegistered = true;
         sendServiceCommand(ShareSessionService.ACTION_QUERY);
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        refreshScreenButton();
+    }
+
+    /** The screen button doubles as the way to stop screen sharing while it runs. */
+    private void refreshScreenButton() {
+        if (screenButton != null) {
+            screenButton.setText(ScreenCaptureService.isRunning() ? "Stop screen share" : "Share phone screen");
+        }
     }
 
     @Override protected void onStop() {
@@ -242,8 +255,14 @@ public final class MainActivity extends Activity {
         stopGap.topMargin = dp(18);
         content.addView(stopButton, stopGap);
 
-        Button screenButton = button("Share phone screen", Color.rgb(31, 53, 66));
+        screenButton = button("Share phone screen", Color.rgb(31, 53, 66));
         screenButton.setOnClickListener(v -> {
+            if (ScreenCaptureService.isRunning()) {
+                stopService(new Intent(this, ScreenCaptureService.class));
+                statusText.setText("Screen sharing stopped. Files are still shared.");
+                screenButton.setText("Share phone screen");
+                return;
+            }
             if (!sharing) {
                 Toast.makeText(this, "Start a share first, then approve screen capture.", Toast.LENGTH_LONG).show();
                 return;
@@ -354,6 +373,7 @@ public final class MainActivity extends Activity {
                 service.putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, data);
                 if (Build.VERSION.SDK_INT >= 26) startForegroundService(service); else startService(service);
                 statusText.setText("Screen capture approved. Starting screen encoder…");
+                screenButton.postDelayed(this::refreshScreenButton, 1500);
                 Toast.makeText(this, "Keep PocketBridge open. Choose Watch screen on the laptop.", Toast.LENGTH_LONG).show();
             } else Toast.makeText(this, "Screen sharing was cancelled", Toast.LENGTH_SHORT).show();
         }
