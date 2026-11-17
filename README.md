@@ -2,6 +2,12 @@
 
 PocketBridge is an open-source Android app for sharing phone media and the phone screen to a laptop browser over a local-only Wi-Fi hotspot. An optional portable open-source Windows helper also lets the phone view and control the laptop. Both workflows work without mobile data or internet access.
 
+## Version 0.5.9.3
+
+- **The laptop tabs now actually switch sections.** 0.5.9.2 added the bar but each section's own CSS kept it visible, so every tab showed everything. A single rule makes hiding win.
+- **The redundant "Library · Screen · Transfer" jump links are gone** — the bottom bar replaces them.
+- **The media-type chips (All, Photos, Videos, Audio, Files) belong to the Files tab** and no longer appear under Screen or Chat.
+
 ## Version 0.5.9.2
 
 What's new:

@@ -46,6 +46,9 @@
   .tabbar .tab .tabicon{font-size:16px;line-height:1}
   .tabbar .tab.active{background:var(--teal);color:#fff}
   body{padding-bottom:86px}
+  /* The tab bar hides sections with the hidden attribute, but a section with its
+     own display rule would still show. This makes hiding win. */
+  [hidden]{display:none !important}
 
   /* hero */
   .hero{padding:30px 0 22px;display:flex;justify-content:space-between;gap:24px;align-items:end;flex-wrap:wrap}
@@ -211,10 +214,6 @@
       <button class="btn btn-ghost" id="lockBtn" type="button">Change code</button>
     </section>
 
-    <nav class="quicknav" aria-label="PocketBridge sections">
-      <a href="#librarySection">Library</a><a href="#screenSection">Screen</a><a href="#transferSection">Transfer</a>
-    </nav>
-
     <section class="screen-card" id="screenSection">
       <div class="screen-copy">
         <div class="screen-icon">▣</div>
@@ -259,7 +258,7 @@
       <input class="search" id="search" placeholder="Search files" autocomplete="off">
     </section>
 
-    <nav class="tabs" id="tabs" aria-label="Media type">
+    <nav class="tabs" id="kindTabs" aria-label="Media type">
       <button class="tab active" data-kind="all">All</button>
       <button class="tab" data-kind="images">Photos</button>
       <button class="tab" data-kind="videos">Videos</button>
@@ -1042,7 +1041,7 @@
   const TAB_GROUPS = {
     connect: ['heroSection', 'transferSection'],
     screen: ['screenSection', 'screenView'],
-    files: ['inboxSection', 'inboxGrid', 'librarySection', 'grid', 'transferSection'],
+    files: ['inboxSection', 'inboxGrid', 'librarySection', 'kindTabs', 'grid', 'transferSection'],
     chat: ['chatSection', 'chatCard']
   };
   function showTab(name) {

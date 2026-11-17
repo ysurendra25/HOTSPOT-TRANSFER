@@ -2,7 +2,7 @@
 
 ## Install the APK on Android 15
 
-1. Download `PocketBridge-v0.5.9.2.apk` for 64-bit ARM phones. For other Android architectures, download `PocketBridge-v0.5.9.2-universal.apk.zip`, extract it, and use the APK inside.
+1. Download `PocketBridge-v0.5.9.3.apk` for 64-bit ARM phones. For other Android architectures, download `PocketBridge-v0.5.9.3-universal.apk.zip`, extract it, and use the APK inside.
 2. Open the APK from the phone's Downloads app or Files app. If you downloaded the universal ZIP, extract it first.
 3. If Android asks, allow the app you used to open the APK to install unknown apps, then return and tap **Install**.
 4. Open PocketBridge and allow nearby Wi-Fi and access to the media you want to share.
@@ -64,7 +64,7 @@ Download the APK before going offline. After installation, PocketBridge creates 
 ## Control the laptop from the phone
 
 1. Start the PocketBridge hotspot and connect the laptop to it.
-2. Download and extract `PocketBridge-Windows-Control-v0.5.9.2.zip` on Windows.
+2. Download and extract `PocketBridge-Windows-Control-v0.5.9.3.zip` on Windows.
 3. Double-click `Start-Control.bat`. If Windows Firewall asks, allow private network access only.
 4. The helper prints a link in its window. Open that link on the phone while the phone is still connected to the laptop's PocketBridge hotspot.
 5. Use the touch screen for mouse movement and clicks, and the keyboard controls on the page to type. Leave the helper running while connected. Press a key in its console when done to stop it.
