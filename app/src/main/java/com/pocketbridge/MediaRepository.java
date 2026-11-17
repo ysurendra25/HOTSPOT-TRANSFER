@@ -82,20 +82,35 @@ final class MediaRepository {
         int safeOffset = Math.max(0, Math.min(20_000, offset));
         int limit = Math.max(1, Math.min(5_000, requestedLimit));
         int queryLimit = Math.min(5_000, safeOffset + limit + 1);
+        // Accept both "image" and "images" (and friends) so the phone UI, the web
+        // page and older callers all land on the same branch.
+        String filter = normalizeKind(kind);
         List<Item> output = new ArrayList<>();
-        if ("all".equals(kind) || "images".equals(kind)) collect(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image", "images", queryLimit, output);
-        if ("all".equals(kind) || "videos".equals(kind)) collect(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, "video", "videos", queryLimit, output);
-        if ("all".equals(kind) || "audio".equals(kind)) collect(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, "audio", "audio", queryLimit, output);
-        if ("all".equals(kind) || "files".equals(kind) || "images".equals(kind)
-                || "videos".equals(kind) || "audio".equals(kind)) collectDocuments(queryLimit, output);
-        if ("images".equals(kind)) output.removeIf(item -> !"image".equals(item.kind));
-        else if ("videos".equals(kind)) output.removeIf(item -> !"video".equals(item.kind));
-        else if ("audio".equals(kind)) output.removeIf(item -> !"audio".equals(item.kind));
-        else if ("files".equals(kind)) output.removeIf(item -> !"file".equals(item.kind));
+        if ("all".equals(filter) || "images".equals(filter)) collect(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image", "image", queryLimit, output);
+        if ("all".equals(filter) || "videos".equals(filter)) collect(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, "video", "video", queryLimit, output);
+        if ("all".equals(filter) || "audio".equals(filter)) collect(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, "audio", "audio", queryLimit, output);
+        if ("all".equals(filter) || "files".equals(filter) || "images".equals(filter)
+                || "videos".equals(filter) || "audio".equals(filter)) collectDocuments(queryLimit, output);
+        if ("images".equals(filter)) output.removeIf(item -> !"image".equals(item.kind));
+        else if ("videos".equals(filter)) output.removeIf(item -> !"video".equals(item.kind));
+        else if ("audio".equals(filter)) output.removeIf(item -> !"audio".equals(item.kind));
+        else if ("files".equals(filter)) output.removeIf(item -> !"file".equals(item.kind));
         Collections.sort(output, (a, b) -> Long.compare(b.modified, a.modified));
         int from = Math.min(safeOffset, output.size());
         int to = Math.min(from + limit, output.size());
         return new Page(new ArrayList<>(output.subList(from, to)), to, output.size() > to);
+    }
+
+    /** Maps singular and plural kind names onto the plural form listPage uses. */
+    static String normalizeKind(String kind) {
+        if (kind == null) return "all";
+        String value = kind.trim().toLowerCase(Locale.ROOT);
+        if (value.isEmpty() || "all".equals(value)) return "all";
+        if ("image".equals(value) || "images".equals(value) || "photo".equals(value) || "photos".equals(value)) return "images";
+        if ("video".equals(value) || "videos".equals(value)) return "videos";
+        if ("audio".equals(value) || "audios".equals(value) || "music".equals(value)) return "audio";
+        if ("file".equals(value) || "files".equals(value) || "document".equals(value) || "documents".equals(value)) return "files";
+        return "all";
     }
 
     /** True when the app may read this media kind. Used to explain an empty library. */

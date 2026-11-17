@@ -43,22 +43,42 @@ final class ChatStore {
         }
     }
 
+    /** Trimmed message text, or null when there is nothing worth storing. */
+    static String sanitise(String text) {
+        if (text == null) return null;
+        String clean = text.trim();
+        if (clean.isEmpty()) return null;
+        return clean.length() > 2000 ? clean.substring(0, 2000) : clean;
+    }
+
+    /** "phone" or "laptop"; anything else is treated as a laptop message. */
+    static String normalizeSender(String from) {
+        return "phone".equals(from) ? "phone" : "laptop";
+    }
+
+    /** Keeps only the newest {@code max} messages, oldest first. */
+    static JSONArray trimmed(JSONArray messages, int max) {
+        JSONArray kept = new JSONArray();
+        if (messages == null) return kept;
+        for (int i = Math.max(0, messages.length() - max); i < messages.length(); i++) {
+            JSONObject item = messages.optJSONObject(i);
+            if (item != null) kept.put(item);
+        }
+        return kept;
+    }
+
     /** Adds one message. {@code from} is "phone" or "laptop". */
     static void append(Context context, String text, String from) {
-        if (text == null) return;
-        String clean = text.trim();
-        if (clean.isEmpty()) return;
-        if (clean.length() > 2000) clean = clean.substring(0, 2000);
+        String clean = sanitise(text);
+        if (clean == null) return;
         synchronized (LOCK) {
             JSONArray messages = read(context);
             try {
                 messages.put(new JSONObject()
                         .put("text", clean)
                         .put("time", System.currentTimeMillis())
-                        .put("from", from == null ? "laptop" : from));
-                JSONArray trimmed = new JSONArray();
-                for (int i = Math.max(0, messages.length() - MAX_MESSAGES); i < messages.length(); i++) trimmed.put(messages.get(i));
-                writeFile(context, new JSONObject().put("messages", trimmed).toString());
+                        .put("from", normalizeSender(from)));
+                writeFile(context, new JSONObject().put("messages", trimmed(messages, MAX_MESSAGES)).toString());
             } catch (Exception ignored) { }
         }
     }

@@ -50,6 +50,14 @@ final class MediaHttpServer {
     private static final int PREVIEW_CACHE_BYTES = 32 * 1024 * 1024;
     // Keeps the request line of a multi-file ZIP download well under the 8 KB header limit.
     static final int MAX_ZIP_FILES = 300;
+    /** Largest request body the server will read: the upload limit plus headroom. */
+    static final int MAX_BODY_BYTES = 16 * 1024 * 1024;
+
+    /** True when a POST body of this declared size may be accepted. */
+    static boolean uploadAllowed(long declaredLength) {
+        return declaredLength > 0 && declaredLength <= MAX_BODY_BYTES;
+    }
+
     // A six digit code is short enough to type on a laptop, so it is rate limited.
     private static final int MAX_BAD_CODES_PER_WINDOW = 20;
     private static final long BAD_CODE_WINDOW_MS = 60_000L;
@@ -147,8 +155,12 @@ final class MediaHttpServer {
             String path = Uri.decode(target.getEncodedPath());
             Map<String, String> headers = readHeaders(input);
             String lengthText = headers.get("content-length");
-            int contentLength = 0;
-            try { if (lengthText != null) contentLength = Math.min(Integer.parseInt(lengthText), 16 * 1024 * 1024); } catch (Exception ignoredLength) { }
+            // Keep the declared size for validation; clamp only what is read into
+            // memory. Clamping first used to hide an oversized upload, which was then
+            // silently truncated and reported as a success.
+            long declaredLength = 0L;
+            try { if (lengthText != null) declaredLength = Long.parseLong(lengthText.trim()); } catch (Exception ignoredLength) { }
+            int contentLength = (int) Math.max(0, Math.min(declaredLength, MAX_BODY_BYTES));
             byte[] body = method.equals("POST") ? readBytes(input, contentLength) : new byte[0];
 
             // The page itself carries no data, so it loads before the code is entered.
@@ -184,8 +196,13 @@ final class MediaHttpServer {
             resetBadCodes();
 
             if (path.equals("/api/upload") && method.equals("POST")) {
-                if (contentLength <= 0 || contentLength > 16 * 1024 * 1024) {
+                if (!uploadAllowed(declaredLength)) {
                     respond(output, 413, "application/json; charset=utf-8", "{\"error\":\"Choose a file smaller than 16 MB.\"}", null);
+                    return;
+                }
+                if (body.length != declaredLength) {
+                    // The client closed early, so the file on disk would be incomplete.
+                    respond(output, 400, "application/json; charset=utf-8", "{\"error\":\"The upload did not finish. Try sending the file again.\"}", null);
                     return;
                 }
                 String requested = target.getQueryParameter("name");
@@ -728,7 +745,7 @@ final class MediaHttpServer {
         output.flush();
     }
 
-    private static String uniqueEntryName(String name, Set<String> used) {
+    static String uniqueEntryName(String name, Set<String> used) {
         String clean = name == null ? "file" : name.replace('/', '_').replace('\\', '_').trim();
         if (clean.isEmpty() || clean.equals(".") || clean.equals("..")) clean = "file";
         String candidate = clean;
@@ -837,18 +854,29 @@ final class MediaHttpServer {
         output.flush();
     }
 
-    private static void writeHead(OutputStream output, int status, String type, long length, String extra, String unused) throws Exception {
-        String reason = status == 200 ? "OK"
-                : status == 204 ? "No Content"
-                : status == 206 ? "Partial Content"
-                : status == 403 ? "Forbidden"
-                : status == 404 ? "Not Found"
-                : status == 409 ? "Conflict"
-                : status == 416 ? "Range Not Satisfiable"
-                : status == 429 ? "Too Many Requests"
-                : status == 503 ? "Service Unavailable"
-                : status == 422 ? "Unprocessable Entity"
-                : "Bad Request";
+    static String reasonPhrase(int status) {
+        switch (status) {
+            case 200: return "OK";
+            case 201: return "Created";
+            case 204: return "No Content";
+            case 206: return "Partial Content";
+            case 400: return "Bad Request";
+            case 403: return "Forbidden";
+            case 404: return "Not Found";
+            case 405: return "Method Not Allowed";
+            case 409: return "Conflict";
+            case 413: return "Payload Too Large";
+            case 416: return "Range Not Satisfiable";
+            case 422: return "Unprocessable Entity";
+            case 429: return "Too Many Requests";
+            case 500: return "Internal Server Error";
+            case 503: return "Service Unavailable";
+            default: return status >= 500 ? "Server Error" : "Bad Request";
+        }
+    }
+
+    static void writeHead(OutputStream output, int status, String type, long length, String extra, String unused) throws Exception {
+        String reason = reasonPhrase(status);
         String headers = "HTTP/1.1 " + status + " " + reason + "\r\n" +
                 "Content-Type: " + type + "\r\n" +
                 (length >= 0 ? "Content-Length: " + length + "\r\n" : "") +
