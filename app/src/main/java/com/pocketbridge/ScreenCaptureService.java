@@ -344,7 +344,7 @@ public final class ScreenCaptureService extends Service {
     /** Encodes a modest, crisp browser stream without ICE or an internet relay. */
     private static final class JpegSink implements VideoSink {
         private static final int MAX_EDGE = 1280;
-        private static final long MIN_FRAME_NS = 83_000_000L;
+        private static final long MIN_FRAME_NS = 66_000_000L;
         private final Object frameLock = new Object();
         private volatile JpegFrame latest;
         private long sequence;
@@ -393,7 +393,7 @@ public final class ScreenCaptureService extends Service {
                 if (nv21 == null) return null;
                 ByteArrayOutputStream out = new ByteArrayOutputStream();
                 if (!new YuvImage(nv21, ImageFormat.NV21, width, height, null)
-                        .compressToJpeg(new Rect(0, 0, width, height), 88, out)) return null;
+                        .compressToJpeg(new Rect(0, 0, width, height), 78, out)) return null;
                 byte[] data = out.toByteArray();
                 if (frame.getRotation() == 0) return data;
                 Bitmap bitmap = BitmapFactory.decodeByteArray(data, 0, data.length);

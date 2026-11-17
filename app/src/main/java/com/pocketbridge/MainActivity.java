@@ -17,6 +17,7 @@ import android.os.Bundle;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -24,6 +25,10 @@ import android.widget.Toast;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 public final class MainActivity extends Activity {
     private static final int REQUEST_PERMISSIONS = 40;
@@ -273,6 +278,105 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams screenGap = matchWrap();
         screenGap.topMargin = dp(10);
         content.addView(screenButton, screenGap);
+
+        EditText laptopAddress = new EditText(this);
+        laptopAddress.setSingleLine(true);
+        laptopAddress.setHint("http://laptop-address:7070/?t=code");
+        laptopAddress.setTextSize(14);
+        addCard(content, "BROWSE LAPTOP FILES", laptopAddress);
+        TextView laptopStatus = new TextView(this);
+        laptopStatus.setText("Start the portable Windows helper, then paste its local link here.");
+        laptopStatus.setTextColor(COLOR_MUTED);
+        laptopStatus.setTextSize(13);
+        LinearLayout laptopResults = new LinearLayout(this);
+        laptopResults.setOrientation(LinearLayout.VERTICAL);
+        boolean[] showLaptopRecents = {false};
+        EditText laptopSearch = new EditText(this);
+        laptopSearch.setSingleLine(true);
+        laptopSearch.setHint("Search laptop files");
+        laptopSearch.setTextSize(14);
+        laptopSearch.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                String query = s.toString().trim().toLowerCase(java.util.Locale.ROOT);
+                for (int i = 0; i < laptopResults.getChildCount(); i++) {
+                    View row = laptopResults.getChildAt(i);
+                    Object tag = row.getTag();
+                    String name = tag instanceof String ? (String) tag : "";
+                    boolean recent = getPreferences(MODE_PRIVATE).getStringSet("laptop_recent", java.util.Collections.emptySet()).contains(name);
+                    row.setVisibility(name.toLowerCase(java.util.Locale.ROOT).contains(query) && (!showLaptopRecents[0] || recent) ? View.VISIBLE : View.GONE);
+                }
+            }
+            @Override public void afterTextChanged(android.text.Editable s) { }
+        });
+        addCard(content, "SEARCH LAPTOP FILES", laptopSearch);
+        Button browseLaptop = button("Load laptop files", COLOR_GREEN);
+        Button recentLaptop = button("Recent files", COLOR_SOFT);
+        recentLaptop.setTextColor(COLOR_INK);
+        recentLaptop.setOnClickListener(v -> {
+            showLaptopRecents[0] = !showLaptopRecents[0];
+            recentLaptop.setText(showLaptopRecents[0] ? "Show all laptop files" : "Recent files");
+            String query = laptopSearch.getText().toString().trim().toLowerCase(java.util.Locale.ROOT);
+            java.util.Set<String> recent = getPreferences(MODE_PRIVATE).getStringSet("laptop_recent", java.util.Collections.emptySet());
+            for (int i = 0; i < laptopResults.getChildCount(); i++) {
+                View row = laptopResults.getChildAt(i);
+                String name = row.getTag() instanceof String ? (String) row.getTag() : "";
+                row.setVisibility(name.toLowerCase(java.util.Locale.ROOT).contains(query) && (!showLaptopRecents[0] || recent.contains(name)) ? View.VISIBLE : View.GONE);
+            }
+        });
+        browseLaptop.setOnClickListener(v -> {
+            String text = laptopAddress.getText().toString().trim();
+            if (text.isEmpty()) { laptopStatus.setText("Paste the laptop helper link first."); return; }
+            browseLaptop.setEnabled(false);
+            laptopStatus.setText("Connecting over the local network…");
+            laptopResults.removeAllViews();
+            new Thread(() -> {
+                HttpURLConnection connection = null;
+                try {
+                    android.net.Uri supplied = android.net.Uri.parse(text);
+                    String token = supplied.getQueryParameter("t");
+                    if (token == null || !"http".equalsIgnoreCase(supplied.getScheme())) throw new Exception("Use the full local http link printed by the Windows helper.");
+                    android.net.Uri filesUri = supplied.buildUpon().path("/files").clearQuery().appendQueryParameter("t", token).build();
+                    connection = (HttpURLConnection) new URL(filesUri.toString()).openConnection();
+                    connection.setConnectTimeout(5000); connection.setReadTimeout(10000);
+                    if (connection.getResponseCode() != 200) throw new Exception("Laptop helper returned HTTP " + connection.getResponseCode());
+                    java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+                    byte[] buffer = new byte[8192]; int count;
+                    try (java.io.InputStream stream = connection.getInputStream()) { while ((count = stream.read(buffer)) != -1) bytes.write(buffer, 0, count); }
+                    JSONObject data = new JSONObject(new String(bytes.toByteArray(), java.nio.charset.StandardCharsets.UTF_8));
+                    JSONArray items = data.optJSONArray("files");
+                    runOnUiThread(() -> {
+                        if (items == null || items.length() == 0) laptopStatus.setText("No files found in the helper’s shared folder.");
+                        else {
+                            laptopStatus.setText(items.length() + " laptop files. Tap one to open/download.");
+                            for (int i = 0; i < items.length(); i++) {
+                                JSONObject item = items.optJSONObject(i);
+                                if (item == null) continue;
+                                String name = item.optString("name", "File");
+                                String relative = item.optString("url", "");
+                                android.net.Uri fileUri = supplied.buildUpon().path(relative).clearQuery().appendQueryParameter("t", token).build();
+                                Button row = button(name + " · " + android.text.format.Formatter.formatShortFileSize(this, item.optLong("size")), COLOR_SOFT);
+                                row.setTextColor(COLOR_INK);
+                                row.setTag(name);
+                                row.setOnClickListener(open -> {
+                                    java.util.Set<String> recent = new java.util.HashSet<>(getPreferences(MODE_PRIVATE).getStringSet("laptop_recent", java.util.Collections.emptySet()));
+                                    recent.add(name);
+                                    getPreferences(MODE_PRIVATE).edit().putStringSet("laptop_recent", recent).apply();
+                                    startActivity(new Intent(Intent.ACTION_VIEW, fileUri));
+                                });
+                                laptopResults.addView(row, matchWrap());
+                            }
+                        }
+                    });
+                } catch (Exception error) {
+                    runOnUiThread(() -> laptopStatus.setText("Could not connect: " + error.getMessage()));
+                } finally { if (connection != null) connection.disconnect(); runOnUiThread(() -> browseLaptop.setEnabled(true)); }
+            }, "PocketBridge-laptop-files").start();
+        });
+        content.addView(browseLaptop, matchWrap());
+        content.addView(recentLaptop, matchWrap());
+        content.addView(laptopStatus, matchWrap());
+        content.addView(laptopResults, matchWrap());
 
         TextView note = new TextView(this);
         note.setText("The code keeps the link private. Anyone who joins the network still needs it to see your files. Android asks for screen-capture approval each time.");

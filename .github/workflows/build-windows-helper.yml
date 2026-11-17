@@ -1,0 +1,30 @@
+name: Build PocketBridge Windows helper
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'tools/win-control/**'
+      - '.github/workflows/build-windows-helper.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+          cache-dependency-path: tools/win-control/upstream-v0.1.0/web-remote-desktop-0.1.0/go.sum
+      - name: Test and build
+        shell: pwsh
+        run: ./tools/win-control/build.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PocketBridge-Windows-Control
+          path: tools/win-control/dist/pc-remote.exe
+          if-no-files-found: error
+          retention-days: 30

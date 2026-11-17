@@ -65,10 +65,19 @@
   .screen-desc{font-size:13px;color:#cde3de;margin-top:2px}
   .screen-view{display:none;margin:0 0 22px;background:#0f1b22;border-radius:18px;overflow:hidden}
   .screen-view.active{display:block}
+  .screen-view.focused{position:fixed;inset:0;z-index:30;margin:0;border-radius:0;display:flex;flex-direction:column;background:#000}
   .screen-toolbar{padding:11px 15px;color:#fff;display:flex;justify-content:space-between;align-items:center;gap:10px}
   .screen-toolbar span{font-size:13px}
   .screen-view img{display:block;width:100%;max-height:72vh;min-height:220px;background:#000;object-fit:contain}
   .screen-view img[hidden]{display:none}
+  .screen-view.focused img{flex:1;min-height:0;max-height:none;width:100%;height:100%;object-fit:contain}
+  .modal:fullscreen{padding:0;background:#000}
+  .modal:fullscreen .modal-box{max-width:none;width:100vw;height:100vh;border-radius:0;display:flex;flex-direction:column}
+  .modal:fullscreen .stage{flex:1;min-height:0;max-height:none}
+  .modal:fullscreen .stage video{width:100%;height:100%;max-height:none;object-fit:contain}
+  .modal:fullscreen .controls{padding:7px 12px;gap:6px}
+  .modal:fullscreen .controls .ctrl{font-size:12px;padding:6px 9px}
+  .modal:fullscreen.player-controls-hidden .controls,.modal:fullscreen.player-controls-hidden .modal-top{opacity:0;pointer-events:none}
 
   /* library */
   .library-head{display:flex;justify-content:space-between;gap:16px;align-items:center;margin:20px 0 14px;flex-wrap:wrap}
@@ -78,6 +87,8 @@
     background:#fff;outline:none}
   .search:focus{border-color:#8ecab9;box-shadow:0 0 0 3px #e0f2ed}
   .tabs{display:flex;gap:8px;margin-bottom:16px;overflow-x:auto;padding-bottom:2px}
+  .quicknav{position:sticky;top:0;z-index:4;display:flex;gap:8px;padding:10px 0;background:rgba(247,250,250,.96);backdrop-filter:blur(8px);border-bottom:1px solid var(--line);margin-bottom:14px}
+  .quicknav a{color:var(--teal-dark);background:#fff;border:1px solid var(--line);border-radius:99px;padding:8px 13px;text-decoration:none;font-size:13px;font-weight:750;white-space:nowrap}
   .tab{border:1px solid var(--line);background:#fff;border-radius:99px;padding:9px 15px;color:var(--muted);
     font-weight:700;font-size:13px;white-space:nowrap}
   .tab.active{background:var(--ink);border-color:var(--ink);color:#fff}
@@ -184,7 +195,11 @@
       <button class="btn btn-ghost" id="lockBtn" type="button">Change code</button>
     </section>
 
-    <section class="screen-card">
+    <nav class="quicknav" aria-label="PocketBridge sections">
+      <a href="#librarySection">Library</a><a href="#screenSection">Screen</a><a href="#transferSection">Transfer</a>
+    </nav>
+
+    <section class="screen-card" id="screenSection">
       <div class="screen-copy">
         <div class="screen-icon">▣</div>
         <div>
@@ -195,15 +210,34 @@
       <button class="btn btn-white" id="watchButton" type="button">Watch screen</button>
     </section>
 
+    <section class="screen-card" id="transferSection" style="background:#fff;color:var(--ink);border:1px solid var(--line)">
+      <div class="screen-copy"><div class="screen-icon" style="background:var(--teal-soft);color:var(--teal-dark)">⇧</div><div>
+        <div class="screen-title">Send a file to this phone</div>
+        <div class="screen-desc" style="color:var(--muted)">Files are saved in PocketBridge’s private receive folder. Maximum 16 MB per file.</div>
+      </div></div>
+      <label class="btn btn-soft" for="sendFile">Choose file</label>
+      <input id="sendFile" type="file" hidden>
+      <span id="sendStatus" role="status" aria-live="polite"></span>
+    </section>
+    <section class="library-head"><div><span class="section-title">Received on phone</span><span class="count" id="inboxCount">—</span></div><button class="btn btn-soft" id="refreshInbox" type="button">Refresh inbox</button></section>
+    <section class="grid" id="inboxGrid"><div class="loading">Checking received files…</div></section>
+    <section class="library-head"><div><span class="section-title">Share chat</span><span class="count">Messages stay on this phone</span></div></section>
+    <section class="card" style="padding:14px;gap:10px">
+      <div id="chatMessages" aria-live="polite" style="max-height:220px;overflow:auto;white-space:pre-wrap">Loading messages…</div>
+      <textarea id="chatInput" maxlength="2000" rows="2" placeholder="Write a message for this share session" style="width:100%;box-sizing:border-box;padding:10px;border:1px solid var(--line);border-radius:10px;font:inherit"></textarea>
+      <button class="btn btn-dark" id="sendMessage" type="button">Send message</button>
+    </section>
+
     <section class="screen-view" id="screenView">
       <div class="screen-toolbar">
         <span id="screenState">Connecting to phone…</span>
+        <button class="btn btn-outline" id="screenFullscreen" type="button">Fullscreen</button>
         <button class="btn btn-outline" id="stopWatch" type="button">Stop viewing</button>
       </div>
       <img id="screenImage" alt="Live screen from the Android phone" hidden>
     </section>
 
-    <section class="library-head">
+    <section class="library-head" id="librarySection">
       <div><span class="section-title">Your library</span><span class="count" id="count">Loading…</span></div>
       <input class="search" id="search" placeholder="Search files" autocomplete="off">
     </section>
@@ -214,6 +248,7 @@
       <button class="tab" data-kind="videos">Videos</button>
       <button class="tab" data-kind="audio">Audio</button>
       <button class="tab" data-kind="files">Files</button>
+      <button class="tab" data-kind="recent">Recent</button>
     </nav>
 
     <section class="grid" id="grid"><div class="loading">Finding media on your phone…</div></section>
@@ -273,6 +308,8 @@
   let viewList = [];
   let viewIndex = -1;
   let screenWanted = false;
+  let playerHideTimer = 0;
+  const recentKey = 'pocketbridge_recent_v1';
 
   const gate = document.getElementById('gate');
   const app = document.getElementById('app');
@@ -356,9 +393,9 @@
       visibleLimit = PAGE_SIZE;
       grid.innerHTML = '<div class="loading">Loading your library…</div>';
     }
-    const limit = search.value.trim() ? MAX_PAGE_SIZE : PAGE_SIZE;
+    const limit = search.value.trim() || currentKind === 'recent' ? MAX_PAGE_SIZE : PAGE_SIZE;
     try {
-      const query = '/api/files?kind=' + encodeURIComponent(currentKind) +
+      const query = '/api/files?kind=' + encodeURIComponent(currentKind === 'recent' ? 'all' : currentKind) +
         '&offset=' + nextOffset + '&limit=' + limit;
       const response = await fetch(endpoint(query), {cache:'no-store'});
       if (sequence !== loadSequence) return;
@@ -408,7 +445,9 @@
 
   function renderFiles() {
     const term = search.value.trim().toLowerCase();
-    const shown = files.filter(file => (file.name || '').toLowerCase().includes(term));
+    let recentIds = [];
+    try { recentIds = JSON.parse(localStorage.getItem(recentKey) || '[]'); } catch (_) { }
+    const shown = files.filter(file => (currentKind !== 'recent' || recentIds.includes(file.id)) && (file.name || '').toLowerCase().includes(term));
     count.textContent = files.length.toLocaleString() + (hasMore ? '+' : '') +
       (files.length === 1 && !hasMore ? ' item' : ' items') +
       (visibleLimit < shown.length ? ' · showing ' + Math.min(visibleLimit, shown.length) : '');
@@ -647,6 +686,7 @@
   function showCurrent() {
     const file = viewList[viewIndex];
     if (!file) return;
+    try { const ids = JSON.parse(localStorage.getItem(recentKey) || '[]').filter(value => value !== file.id); localStorage.setItem(recentKey, JSON.stringify([file.id, ...ids].slice(0, 50))); } catch (_) { }
     releaseMedia();
     document.getElementById('modalName').textContent = file.name +
       (viewList.length > 1 ? '  (' + (viewIndex + 1) + '/' + viewList.length + ')' : '');
@@ -750,10 +790,19 @@
     const fsButton = document.getElementById('fullscreen');
     fsButton.style.display = kind === 'video' ? 'inline-flex' : 'none';
     fsButton.onclick = () => {
-      const box = element.closest('.modal-box') || element;
+      const box = element.closest('.modal') || element;
       if (document.fullscreenElement) { document.exitFullscreen().catch(() => {}); }
       else if (box.requestFullscreen) { box.requestFullscreen().catch(() => {}); }
     };
+    const fullModal = document.getElementById('modal');
+    const revealControls = () => {
+      fullModal.classList.remove('player-controls-hidden');
+      clearTimeout(playerHideTimer);
+      if (!element.paused) playerHideTimer = setTimeout(() => fullModal.classList.add('player-controls-hidden'), 3000);
+    };
+    ['pointermove','pointerdown','touchstart'].forEach(eventName => fullModal.addEventListener(eventName, revealControls, {passive:true}));
+    element.addEventListener('play', revealControls);
+    element.addEventListener('pause', () => { clearTimeout(playerHideTimer); fullModal.classList.remove('player-controls-hidden'); });
   }
 
   function closeModal() {
@@ -840,6 +889,61 @@
   }
   document.getElementById('watchButton').addEventListener('click', watchScreen);
   document.getElementById('stopWatch').addEventListener('click', stopWatching);
+  document.getElementById('screenFullscreen').addEventListener('click', () => {
+    const box = document.getElementById('screenView');
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else if (box.requestFullscreen) box.requestFullscreen().catch(() => {});
+  });
+  document.getElementById('sendFile').addEventListener('change', async event => {
+    const file = event.target.files && event.target.files[0];
+    if (!file) return;
+    const status = document.getElementById('sendStatus');
+    if (file.size > 16 * 1024 * 1024) { status.textContent = 'That file is over the 16 MB limit.'; event.target.value = ''; return; }
+    status.textContent = 'Sending ' + file.name + '…';
+    try {
+      const response = await fetch(endpoint('/api/upload?name=' + encodeURIComponent(file.name)), {method:'POST', headers:{'Content-Type':'application/octet-stream'}, body:file});
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Transfer failed');
+      status.textContent = 'Sent to phone: ' + result.name;
+      loadInbox();
+    } catch (error) { status.textContent = error.message || 'Transfer failed. Check the connection.'; }
+    event.target.value = '';
+  });
+  async function loadInbox() {
+    const grid = document.getElementById('inboxGrid');
+    try {
+      const response = await fetch(endpoint('/api/inbox'), {cache:'no-store'});
+      if (!response.ok) throw new Error('Could not load received files');
+      const data = await response.json();
+      document.getElementById('inboxCount').textContent = (data.files || []).length + ' items';
+      grid.innerHTML = data.files.length ? data.files.map(item => '<article class="card"><div class="meta"><div class="name" title="' + safe(item.name) + '">' + safe(item.name) + '</div><div class="submeta">' + formatBytes(item.size) + '</div><a class="btn btn-soft" href="' + endpoint('/api/inbox/' + encodeURIComponent(item.id)) + '" download="' + safe(item.name) + '">Download</a></div></article>').join('') : '<div class="empty"><strong>Inbox is empty</strong>Choose a file above to send it here.</div>';
+    } catch (_) { grid.innerHTML = '<div class="empty">Could not load received files.</div>'; }
+  }
+  document.getElementById('refreshInbox').addEventListener('click', loadInbox);
+  async function refreshMessages() {
+    try {
+      const response = await fetch(endpoint('/api/messages'), {cache:'no-store'});
+      if (!response.ok) return;
+      const data = await response.json();
+      const target = document.getElementById('chatMessages');
+      target.replaceChildren();
+      for (const item of data.messages || []) {
+        const row = document.createElement('p');
+        row.style.cssText = 'margin:4px 0;padding:8px 10px;background:#eef5f3;border-radius:10px';
+        row.textContent = new Date(item.time).toLocaleTimeString() + ' · ' + item.text;
+        target.appendChild(row);
+      }
+      if (!target.childElementCount) target.textContent = 'No messages yet.';
+      target.scrollTop = target.scrollHeight;
+    } catch (_) { }
+  }
+  document.getElementById('sendMessage').addEventListener('click', async () => {
+    const input = document.getElementById('chatInput');
+    const text = input.value.trim(); if (!text) return;
+    const response = await fetch(endpoint('/api/messages'), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
+    if (response.ok) { input.value = ''; refreshMessages(); }
+  });
+  setInterval(refreshMessages, 2500);
 
   /* ---------- boot ---------- */
   (async function boot() {

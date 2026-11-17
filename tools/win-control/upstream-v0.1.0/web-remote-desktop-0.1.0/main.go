@@ -38,6 +38,7 @@ type Config struct {
 	// "ac" (default) = only on mains power, "always", "never". The display may
 	// still turn off; a viewer connecting wakes it.
 	KeepAwake string `json:"keep_awake"`
+	ShareDir  string `json:"share_dir"` // one folder the authenticated file browser may read
 }
 
 func defaultConfig() Config {
@@ -49,6 +50,7 @@ func defaultConfig() Config {
 		Quality:   65,
 		MaxW:      1600,
 		KeepAwake: "ac",
+		ShareDir:  defaultShareDir(),
 	}
 }
 
@@ -77,6 +79,8 @@ func main() {
 	mux.Handle("/ws", auth(http.HandlerFunc(wsInputHandler)))
 	mux.Handle("/jpeg", auth(http.HandlerFunc(jpegStreamHandler)))
 	mux.Handle("/h264", auth(http.HandlerFunc(h264StreamHandler)))
+	mux.Handle("/files", auth(http.HandlerFunc(filesHandler)))
+	mux.Handle("/file/", auth(http.HandlerFunc(fileHandler)))
 
 	// Keep the tunnel alive for as long as the server runs.
 	go superviseTunnel(context.Background())

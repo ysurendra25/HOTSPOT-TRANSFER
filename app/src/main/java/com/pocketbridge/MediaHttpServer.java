@@ -109,7 +109,9 @@ final class MediaHttpServer {
                     Socket socket = serverSocket.accept();
                     socket.setSoTimeout(40000);
                     socket.setTcpNoDelay(true);
-                    socket.setSendBufferSize(512 * 1024);
+                    // Keep screen-stream latency bounded when a phone hotspot is slow.
+                    // A large TCP queue makes the viewer show frames several seconds late.
+                    socket.setSendBufferSize(128 * 1024);
                     try {
                         clients.execute(() -> handle(socket));
                     } catch (RejectedExecutionException rejected) {
@@ -145,7 +147,7 @@ final class MediaHttpServer {
             Map<String, String> headers = readHeaders(input);
             String lengthText = headers.get("content-length");
             int contentLength = 0;
-            try { if (lengthText != null) contentLength = Math.min(Integer.parseInt(lengthText), 2 * 1024 * 1024); } catch (Exception ignoredLength) { }
+            try { if (lengthText != null) contentLength = Math.min(Integer.parseInt(lengthText), 16 * 1024 * 1024); } catch (Exception ignoredLength) { }
             byte[] body = method.equals("POST") ? readBytes(input, contentLength) : new byte[0];
 
             // The page itself carries no data, so it loads before the code is entered.
@@ -179,6 +181,83 @@ final class MediaHttpServer {
                 return;
             }
             resetBadCodes();
+
+            if (path.equals("/api/upload") && method.equals("POST")) {
+                if (contentLength <= 0 || contentLength > 16 * 1024 * 1024) {
+                    respond(output, 413, "application/json; charset=utf-8", "{\"error\":\"Choose a file smaller than 16 MB.\"}", null);
+                    return;
+                }
+                String requested = target.getQueryParameter("name");
+                String safeName = requested == null ? "shared-file" : requested.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "_").trim();
+                if (safeName.isEmpty() || safeName.equals(".") || safeName.equals("..")) safeName = "shared-file";
+                File inbox = new File(context.getFilesDir(), "received");
+                if (!inbox.exists() && !inbox.mkdirs()) {
+                    respond(output, 500, "application/json; charset=utf-8", "{\"error\":\"Could not create the receive folder.\"}", null);
+                    return;
+                }
+                File destination = new File(inbox, System.currentTimeMillis() + "-" + safeName);
+                try (java.io.FileOutputStream file = new java.io.FileOutputStream(destination)) {
+                    file.write(body);
+                    file.getFD().sync();
+                }
+                respond(output, 201, "application/json; charset=utf-8",
+                        new JSONObject().put("ok", true).put("name", safeName).put("bytes", destination.length()).toString(), null);
+                return;
+            }
+            if (path.equals("/api/inbox") && method.equals("GET")) {
+                File inbox = new File(context.getFilesDir(), "received");
+                org.json.JSONArray received = new org.json.JSONArray();
+                File[] entries = inbox.listFiles(File::isFile);
+                if (entries != null) {
+                    java.util.Arrays.sort(entries, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
+                    for (File entry : entries) received.put(new JSONObject().put("name", entry.getName().replaceFirst("^[0-9]+-", ""))
+                            .put("id", entry.getName()).put("size", entry.length()).put("modified", entry.lastModified()));
+                }
+                respond(output, 200, "application/json; charset=utf-8", new JSONObject().put("files", received).toString(), null);
+                return;
+            }
+            if (path.equals("/api/messages") && method.equals("GET")) {
+                File messageFile = new File(context.getFilesDir(), "share-messages.json");
+                String json = "{\"messages\":[]}";
+                if (messageFile.isFile()) try (InputStream stream = new FileInputStream(messageFile)) {
+                    json = new String(readAll(stream), StandardCharsets.UTF_8);
+                }
+                respond(output, 200, "application/json; charset=utf-8", json, "Cache-Control: no-store\r\n");
+                return;
+            }
+            if (path.equals("/api/messages") && method.equals("POST")) {
+                JSONObject request = new JSONObject(new String(body, StandardCharsets.UTF_8));
+                String text = request.optString("text", "").trim();
+                if (text.isEmpty() || text.length() > 2000) {
+                    respond(output, 400, "application/json; charset=utf-8", "{\"error\":\"Message must be between 1 and 2000 characters.\"}", null);
+                    return;
+                }
+                File messageFile = new File(context.getFilesDir(), "share-messages.json");
+                org.json.JSONArray messages = new org.json.JSONArray();
+                if (messageFile.isFile()) try (InputStream stream = new FileInputStream(messageFile)) {
+                    messages = new JSONObject(new String(readAll(stream), StandardCharsets.UTF_8)).optJSONArray("messages");
+                    if (messages == null) messages = new org.json.JSONArray();
+                }
+                messages.put(new JSONObject().put("text", text).put("time", System.currentTimeMillis()));
+                org.json.JSONArray trimmed = new org.json.JSONArray();
+                for (int i = Math.max(0, messages.length() - 100); i < messages.length(); i++) trimmed.put(messages.get(i));
+                try (java.io.FileOutputStream stream = new java.io.FileOutputStream(messageFile)) {
+                    stream.write(new JSONObject().put("messages", trimmed).toString().getBytes(StandardCharsets.UTF_8));
+                    stream.getFD().sync();
+                }
+                respond(output, 201, "application/json; charset=utf-8", "{\"ok\":true}", null);
+                return;
+            }
+            if (path.startsWith("/api/inbox/") && method.equals("GET")) {
+                String id = Uri.decode(path.substring("/api/inbox/".length()));
+                if (id.contains("/") || id.contains("\\") || id.contains("..")) {
+                    respond(output, 400, "text/plain", "Invalid file name", null); return;
+                }
+                File received = new File(new File(context.getFilesDir(), "received"), id);
+                if (!received.isFile()) { respond(output, 404, "text/plain", "Received file not found", null); return; }
+                streamFile(output, method, headers, received, "application/octet-stream", id.replaceFirst("^[0-9]+-", ""));
+                return;
+            }
 
             if (path.startsWith("/api/video/compatible/") && (method.equals("GET") || method.equals("HEAD"))) {
                 String key = Uri.decode(path.substring("/api/video/compatible/".length()));
