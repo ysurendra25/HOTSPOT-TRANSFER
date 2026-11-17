@@ -176,7 +176,7 @@ public final class MainActivity extends Activity {
         addCard(content, "HOW TO CONNECT", modeRow);
 
         TextView modeHelp = new TextView(this);
-        modeHelp.setText("Wi-Fi mode: the laptop joins the same Wi-Fi this phone is on. Best when both are already on one network.\n\nHotspot mode: this phone creates its own private Wi-Fi. If your hotspot is already switched on in Android settings, PocketBridge reuses it.");
+        modeHelp.setText("Wi-Fi mode: the laptop joins the same Wi-Fi this phone is on. Best when both are already on one network.\n\nHotspot mode: this phone creates its own private Wi-Fi. If your phone already has a hotspot, PocketBridge can reuse it instead of making a new one.");
         modeHelp.setTextColor(COLOR_MUTED);
         modeHelp.setTextSize(13);
         modeHelp.setLineSpacing(dp(3), 1f);
