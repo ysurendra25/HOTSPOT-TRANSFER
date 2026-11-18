@@ -2,7 +2,7 @@ name: Release PocketBridge
 
 on:
   push:
-    tags: [ 'v0.5.9.6' ]
+    tags: [ 'v0.5.9.7' ]
 
 permissions:
   contents: read
@@ -23,13 +23,11 @@ jobs:
         run: |
           python3 tools/check-web-page.py
           bash gradlew testDebugUnitTest lintDebug --console=plain
-      - name: Build arm64 and universal APKs
+      - name: Build universal APK
         run: |
-          bash gradlew assembleDebug --console=plain
           mkdir -p release-assets
-          cp app/build/outputs/apk/debug/app-debug.apk release-assets/PocketBridge-${GITHUB_REF_NAME#v}.apk
           bash gradlew assembleDebug -PpocketbridgeUniversal=true --console=plain
-          zip -j release-assets/PocketBridge-${GITHUB_REF_NAME#v}-universal.apk.zip app/build/outputs/apk/debug/app-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk release-assets/PocketBridge-${GITHUB_REF_NAME#v}-universal.apk
       - uses: actions/upload-artifact@v7
         with:
           name: android-release
@@ -78,5 +76,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: PocketBridge ${{ github.ref_name }}
-          body_path: RELEASE_NOTES_v0.5.9.6.md
+          body_path: RELEASE_NOTES_v0.5.9.7.md
           files: release-assets/*

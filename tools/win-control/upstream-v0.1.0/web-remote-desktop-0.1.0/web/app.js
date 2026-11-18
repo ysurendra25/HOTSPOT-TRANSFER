@@ -684,10 +684,31 @@ document.querySelectorAll('#optQ .opt').forEach(b =>
 const PRESETS = {
   data:     { max_width: 854,  fps: 3,  quality: 35 },
   balanced: { max_width: 1280, fps: 10, quality: 60 },
-  sharp:    { max_width: 1920, fps: 15, quality: 85 },
+  sharp:    { max_width: 0, fps: 30, quality: 95 },
 };
 document.querySelectorAll('[data-preset]').forEach(b =>
   b.addEventListener('click', () => patchSettings(PRESETS[b.dataset.preset], true)));
+
+async function requestPowerAction(action) {
+  const labels = {
+    lock: 'Lock the laptop now?',
+    'wake-display': 'Ask Windows to wake the laptop display?',
+    sleep: 'Put the laptop to sleep? The hotspot connection will end until the laptop wakes.',
+    shutdown: 'Schedule laptop shutdown in 15 seconds? You can cancel during the delay.',
+    'cancel-shutdown': 'Cancel a pending shutdown?'
+  };
+  if (!window.confirm(labels[action] || 'Continue?')) return;
+  try {
+    const response = await fetch('power', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action, confirm: action === 'sleep' || action === 'shutdown'})
+    });
+    if (!response.ok) throw new Error((await response.text()).trim() || `HTTP ${response.status}`);
+    toast(action === 'shutdown' ? 'Shutdown scheduled · cancel within 15 seconds if needed' : 'Windows command sent');
+  } catch (error) { toast(error.message || 'Windows command failed'); }
+}
+document.querySelectorAll('[data-power]').forEach(button =>
+  button.addEventListener('click', () => requestPowerAction(button.dataset.power)));
 
 function setSheet(on) { document.body.classList.toggle('sheet-on', on); if (on) loadSettings(); }
 document.getElementById('gear').addEventListener('click', () => setSheet(true));

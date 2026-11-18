@@ -15,10 +15,7 @@ import android.os.Looper;
 import android.util.DisplayMetrics;
 import android.view.WindowManager;
 import android.content.pm.ServiceInfo;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.graphics.ImageFormat;
-import android.graphics.Matrix;
 import android.graphics.Rect;
 import android.graphics.YuvImage;
 
@@ -208,16 +205,15 @@ public final class ScreenCaptureService extends Service {
         videoTrack.setEnabled(true);
     }
 
-    /** Capture size for the current screen orientation, at most 1920 pixels on the long side. */
+    /** Capture the display at its reported pixel size; the encoder adapts to hotspot capacity. */
     private int[] captureSize() {
         WindowManager windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         DisplayMetrics metrics = new DisplayMetrics();
         windowManager.getDefaultDisplay().getRealMetrics(metrics);
         int width = metrics.widthPixels;
         int height = metrics.heightPixels;
-        float scale = Math.min(1f, 1920f / Math.max(width, height));
-        width = Math.max(2, Math.round(width * scale / 2f) * 2);
-        height = Math.max(2, Math.round(height * scale / 2f) * 2);
+        width = Math.max(2, width / 2 * 2);
+        height = Math.max(2, height / 2 * 2);
         return new int[]{width, height};
     }
 
@@ -236,9 +232,8 @@ public final class ScreenCaptureService extends Service {
     }
 
     private int[] boundedCaptureSize(int width, int height) {
-        float scale = Math.min(1f, 1920f / Math.max(width, height));
-        int boundedWidth = Math.max(2, Math.round(width * scale / 2f) * 2);
-        int boundedHeight = Math.max(2, Math.round(height * scale / 2f) * 2);
+        int boundedWidth = Math.max(2, width / 2 * 2);
+        int boundedHeight = Math.max(2, height / 2 * 2);
         return new int[]{boundedWidth, boundedHeight};
     }
 
@@ -303,12 +298,12 @@ public final class ScreenCaptureService extends Service {
         if (sender != null) {
             try {
                 RtpParameters parameters = sender.getParameters();
-                // Keep the hotspot stream crisp while leaving headroom for file
-                // transfers on the same link; a hard 8 Mbps ceiling caused queues
-                // to build on midrange phone hotspots.
+                // Default to source-sized capture and give the encoder enough
+                // headroom for crisp motion. The device/network encoder may still
+                // reduce the actual rate to avoid accumulating a multi-second queue.
                 for (RtpParameters.Encoding encoding : parameters.encodings) {
-                    encoding.maxBitrateBps = 5_000_000;
-                    encoding.maxFramerate = 24;
+                    encoding.maxBitrateBps = 16_000_000;
+                    encoding.maxFramerate = 30;
                 }
                 sender.setParameters(parameters);
             } catch (Exception ignored) { }
@@ -372,10 +367,10 @@ public final class ScreenCaptureService extends Service {
         sender = null;
     }
 
-    /** Encodes a modest, crisp browser stream without ICE or an internet relay. */
+    /** Encodes the local compatibility stream when direct WebRTC cannot be used. */
     private static final class JpegSink implements VideoSink {
-        private static final int MAX_EDGE = 1280;
-        private static final long MIN_FRAME_NS = 66_000_000L;
+        private static final int MAX_EDGE = 4096;
+        private static final long MIN_FRAME_NS = 50_000_000L;
         private final Object frameLock = new Object();
         private volatile JpegFrame latest;
         private long sequence;
@@ -424,21 +419,11 @@ public final class ScreenCaptureService extends Service {
                 if (i420 == null) return null;
                 byte[] nv21 = toNv21(i420, width, height);
                 if (nv21 == null) return null;
+                Nv21Rotation.Frame rotated = Nv21Rotation.rotate(nv21, width, height, frame.getRotation());
                 ByteArrayOutputStream out = new ByteArrayOutputStream();
-                if (!new YuvImage(nv21, ImageFormat.NV21, width, height, null)
-                        .compressToJpeg(new Rect(0, 0, width, height), 78, out)) return null;
-                byte[] data = out.toByteArray();
-                if (frame.getRotation() == 0) return data;
-                Bitmap bitmap = BitmapFactory.decodeByteArray(data, 0, data.length);
-                if (bitmap == null) return data;
-                Matrix matrix = new Matrix();
-                matrix.postRotate(frame.getRotation());
-                Bitmap rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
-                if (rotated != bitmap) bitmap.recycle();
-                ByteArrayOutputStream rotatedOut = new ByteArrayOutputStream();
-                rotated.compress(Bitmap.CompressFormat.JPEG, 88, rotatedOut);
-                rotated.recycle();
-                return rotatedOut.toByteArray();
+                if (!new YuvImage(rotated.data, ImageFormat.NV21, rotated.width, rotated.height, null)
+                        .compressToJpeg(new Rect(0, 0, rotated.width, rotated.height), 90, out)) return null;
+                return out.toByteArray();
             } catch (Exception | OutOfMemoryError error) {
                 android.util.Log.w("PocketBridge", "Could not encode a local screen frame", error);
                 return null;

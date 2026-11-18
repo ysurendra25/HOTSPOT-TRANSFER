@@ -961,6 +961,7 @@
   let screenFrames = 0;
   let latestScreenJpeg = null;
   let decodingScreenFrame = false;
+  let screenPathLabel = 'Compatibility JPEG';
 
   async function watchScreen() {
     const screenView = document.getElementById('screenView');
@@ -974,9 +975,14 @@
     screenRetries = 0;
     watchButton.disabled = true;
     screenView.classList.add('active');
-    state.textContent = 'Starting low-latency screen connection…';
-    video.hidden = false;
-    canvas.hidden = true;
+    state.textContent = 'Connecting · showing the first available frame…';
+    screenPathLabel = 'Compatibility JPEG';
+    video.hidden = true;
+    canvas.hidden = false;
+    // Start the local preview immediately. JPEG remains visible only until the
+    // direct WebRTC path is confirmed, so negotiation delays no longer look like
+    // a frozen screen at the start of sharing.
+    readScreenStream(state, watchButton, canvas, 0);
     try {
       await watchScreenWebRtc(video, state);
     } catch (error) {
@@ -986,8 +992,8 @@
       video.srcObject = null;
       video.hidden = true;
       canvas.hidden = false;
-      state.textContent = 'Using the compatible local stream…';
-      await readScreenStream(state, watchButton, canvas, 0);
+      screenPathLabel = 'Compatibility JPEG · direct link unavailable';
+      state.textContent = screenPathLabel + ' (' + (error.message || 'connection failed') + ')';
     }
   }
 
@@ -1003,19 +1009,24 @@
     };
     peer.oniceconnectionstatechange = () => {
       if (peer.iceConnectionState === 'connected' || peer.iceConnectionState === 'completed') {
-        state.textContent = 'Live · direct low-latency hotspot stream';
+        screenPathLabel = 'Direct WebRTC · source resolution';
+        state.textContent = screenPathLabel;
+        if (screenAbort) { try { screenAbort.abort(); } catch (e) {} screenAbort = null; }
+        if (screenReader) { try { screenReader.cancel(); } catch (e) {} screenReader = null; }
+        document.getElementById('screenCanvas').hidden = true;
+        video.hidden = false;
         document.getElementById('screenHint').textContent = 'Your phone screen is streaming directly over the local network.';
         document.getElementById('screenViewHint').textContent = 'Live screen from your phone.';
       }
     };
     const offer = await peer.createOffer();
     await peer.setLocalDescription(offer);
-    await waitForIceGathering(peer, 8000);
+    await waitForIceGathering(peer, 3000);
     if (peer.iceGatheringState !== 'complete') throw new Error('Local network candidates did not finish gathering');
 
     const controller = new AbortController();
     screenSignalAbort = controller;
-    const signalTimeout = setTimeout(() => controller.abort(), 14000);
+    const signalTimeout = setTimeout(() => controller.abort(), 8000);
     try {
       const response = await fetch(endpoint('/api/screen/offer'), {
         method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -1028,7 +1039,7 @@
       clearTimeout(signalTimeout);
       if (screenSignalAbort === controller) screenSignalAbort = null;
     }
-    await waitForIceConnection(peer, 9000);
+    await waitForIceConnection(peer, 5000);
     if (!video.srcObject) throw new Error('The phone connected without a video track');
     await video.play();
   }
@@ -1121,9 +1132,9 @@
         if (latest) { latestScreenJpeg = latest; drawLatestScreenFrame(canvas, context, state); }
       }
     } catch (error) {
-      if (!screenWanted) return;
+      if (!screenWanted || screenPathLabel.startsWith('Direct WebRTC')) return;
     }
-    if (!screenWanted) return;
+    if (!screenWanted || screenPathLabel.startsWith('Direct WebRTC')) return;
     // The stream ended or stalled: try again a couple of times before giving up.
     if (attempt < 2) {
       state.textContent = 'Stream interrupted · reconnecting (' + (attempt + 1) + '/2)…';
@@ -1155,7 +1166,7 @@
             document.getElementById('screenHint').textContent = 'Your phone screen is streaming over the local Wi-Fi connection.';
             document.getElementById('screenViewHint').textContent = 'Live screen from your phone.';
           }
-          state.textContent = 'Live · ' + screenFrames + ' frames shown';
+          state.textContent = screenPathLabel + ' · ' + screenFrames + ' frames shown';
         }
         if (bitmap.close) bitmap.close();
       }

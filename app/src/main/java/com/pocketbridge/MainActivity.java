@@ -385,6 +385,42 @@ public final class MainActivity extends Activity {
         addCard(content, "LAPTOP SCREEN ON THIS PHONE", liveRow);
         content.addView(laptopView, matchWrap());
 
+        LinearLayout powerControls = new LinearLayout(this);
+        powerControls.setOrientation(LinearLayout.VERTICAL);
+        String[][] powerActions = {
+                {"Lock laptop", "lock"}, {"Wake display", "wake-display"},
+                {"Sleep laptop", "sleep"}, {"Shut down in 15 seconds", "shutdown"},
+                {"Cancel shutdown", "cancel-shutdown"}
+        };
+        for (String[] powerAction : powerActions) {
+            Button actionButton = button(powerAction[0], "shutdown".equals(powerAction[1]) ? COLOR_SOFT : COLOR_GREEN);
+            if ("shutdown".equals(powerAction[1])) actionButton.setTextColor(COLOR_INK);
+            actionButton.setOnClickListener(v -> {
+                String action = powerAction[1];
+                if ("sleep".equals(action) || "shutdown".equals(action)) {
+                    String warning = "sleep".equals(action)
+                            ? "Put the laptop to sleep? The hotspot connection will stop until the laptop wakes."
+                            : "Schedule Windows shutdown in 15 seconds? You can cancel it from PocketBridge during that delay.";
+                    new android.app.AlertDialog.Builder(this).setTitle(powerAction[0]).setMessage(warning)
+                            .setNegativeButton("Cancel", null)
+                            .setPositiveButton("Continue", (dialog, which) -> postLaptopPowerAction(
+                                    screenHelperLink.getText().toString().trim(), action, true, laptopScreenStatus)).show();
+                } else {
+                    postLaptopPowerAction(screenHelperLink.getText().toString().trim(), action, false, laptopScreenStatus);
+                }
+            });
+            LinearLayout.LayoutParams actionLp = matchWrap();
+            actionLp.bottomMargin = dp(6);
+            powerControls.addView(actionButton, actionLp);
+        }
+        addCard(content, "LAPTOP CONTROLS", powerControls);
+        TextView powerNote = new TextView(this);
+        powerNote.setText("Windows still requires its normal PIN/password to unlock. Wake display only asks the monitor to turn on. Sleeping disconnects the hotspot; wake the laptop physically or use Wake-on-LAN configured on it.");
+        powerNote.setTextColor(COLOR_MUTED);
+        powerNote.setTextSize(12);
+        powerNote.setPadding(dp(4), 0, dp(4), dp(12));
+        content.addView(powerNote, matchWrap());
+
         TextView note = new TextView(this);
         note.setText("The code keeps the link private. Anyone who joins the network still needs it to see your files. Android asks for screen-capture approval each time.");
         note.setTextColor(COLOR_MUTED);
@@ -754,6 +790,10 @@ public final class MainActivity extends Activity {
                             row.setTag(new String[]{name, mime, relativePath});
                             final String openMime = mime;
                             row.setOnClickListener(open -> {
+                                if (openMime.startsWith("video/")) {
+                                    openVideoWithChoice(fileUri, openMime, 0);
+                                    return;
+                                }
                                 Intent view = new Intent(Intent.ACTION_VIEW);
                                 view.setDataAndType(fileUri, openMime);
                                 try { startActivity(view); }
@@ -777,6 +817,36 @@ public final class MainActivity extends Activity {
                 if (connection != null) connection.disconnect();
             }
         }, "PocketBridge-library-laptop").start();
+    }
+
+    private void postLaptopPowerAction(String link, String action, boolean confirmed, TextView status) {
+        new Thread(() -> {
+            HttpURLConnection connection = null;
+            try {
+                android.net.Uri supplied = android.net.Uri.parse(link);
+                String token = supplied.getQueryParameter("t");
+                if (token == null || !"http".equalsIgnoreCase(supplied.getScheme()))
+                    throw new Exception("Paste the running Windows helper link in the Screen tab first.");
+                android.net.Uri powerUri = supplied.buildUpon().path("/power").clearQuery()
+                        .appendQueryParameter("t", token).build();
+                connection = (HttpURLConnection) new URL(powerUri.toString()).openConnection();
+                connection.setRequestMethod("POST");
+                connection.setConnectTimeout(5000);
+                connection.setReadTimeout(7000);
+                connection.setDoOutput(true);
+                connection.setRequestProperty("Content-Type", "application/json");
+                byte[] payload = new JSONObject().put("action", action).put("confirm", confirmed).toString()
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                try (java.io.OutputStream output = connection.getOutputStream()) { output.write(payload); }
+                int response = connection.getResponseCode();
+                if (response < 200 || response >= 300) throw new Exception("Windows helper returned HTTP " + response + ". Check that it is running and the link is current.");
+                runOnUiThread(() -> status.setText("Windows command sent: " + action + "."));
+            } catch (Exception error) {
+                runOnUiThread(() -> status.setText("Laptop control failed: " + error.getMessage()));
+            } finally {
+                if (connection != null) connection.disconnect();
+            }
+        }, "PocketBridge-laptop-power").start();
     }
 
     private void refreshLibrary() {
@@ -818,6 +888,10 @@ public final class MainActivity extends Activity {
     }
 
     private void openMedia(MediaRepository.Item item) {
+        if (item.mime != null && item.mime.startsWith("video/")) {
+            openVideoWithChoice(item.uri, item.mime, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            return;
+        }
         try {
             Intent intent = new Intent(Intent.ACTION_VIEW);
             intent.setDataAndType(item.uri, item.mime == null || item.mime.isEmpty() ? "*/*" : item.mime);
@@ -912,35 +986,66 @@ public final class MainActivity extends Activity {
             JSONObject item = messages.optJSONObject(i);
             if (item == null) continue;
             boolean mine = "phone".equals(item.optString("from", "laptop"));
-            TextView row = new TextView(this);
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.VERTICAL);
             JSONObject attachment = item.optJSONObject("attachment");
-            String message = item.optString("text", "");
             String time = new java.text.SimpleDateFormat("h:mm a", java.util.Locale.getDefault())
                     .format(new java.util.Date(item.optLong("time", 0)));
-            message = (mine ? "YOU" : "LAPTOP") + " · " + time + "\n" + message;
+            TextView heading = new TextView(this);
+            heading.setText((mine ? "YOU" : "LAPTOP") + " · " + time);
+            heading.setTextSize(11);
+            heading.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            heading.setTextColor(COLOR_MUTED);
+            row.addView(heading);
+            String message = item.optString("text", "").trim();
+            if (!message.isEmpty()) {
+                TextView body = new TextView(this);
+                body.setText(message);
+                body.setTextSize(14);
+                body.setTextColor(COLOR_INK);
+                LinearLayout.LayoutParams bodyLp = matchWrap();
+                bodyLp.topMargin = dp(4);
+                row.addView(body, bodyLp);
+            }
             if (attachment != null) {
                 String name = attachment.optString("name", "Shared file");
                 String mime = attachment.optString("mime", "application/octet-stream");
                 String kind = mime.startsWith("image/") ? "PHOTO" : mime.startsWith("video/") ? "VIDEO"
                         : mime.startsWith("audio/") ? "AUDIO" : (name.toLowerCase(java.util.Locale.ROOT).endsWith(".pdf") ? "PDF" : "FILE");
-                message += "\n\n📎 " + kind + " · " + android.text.format.Formatter.formatFileSize(this, attachment.optLong("size", 0))
-                        + "\n" + name + "\nTap to open";
-                row.setOnClickListener(v -> new android.app.AlertDialog.Builder(this)
-                        .setTitle("Open shared file?")
-                        .setMessage("Open " + attachment.optString("name", "this file") + " from the shared inbox?")
-                        .setNegativeButton("Cancel", null)
-                        .setPositiveButton("Open", (dialog, which) -> {
-                            String id = attachment.optString("id", "");
-                            String code = codeText == null ? "" : codeText.getText().toString().replaceAll("\\s", "");
-                            String url = "http://127.0.0.1:" + MediaHttpServer.PORT + "/api/inbox/"
-                                    + android.net.Uri.encode(id) + "?code=" + android.net.Uri.encode(code);
-                            try { startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))); }
-                            catch (Exception ignored) { Toast.makeText(this, "Could not open the shared file.", Toast.LENGTH_SHORT).show(); }
-                        }).show());
+                LinearLayout fileCard = new LinearLayout(this);
+                fileCard.setOrientation(LinearLayout.VERTICAL);
+                fileCard.setPadding(dp(10), dp(9), dp(10), dp(9));
+                android.graphics.drawable.GradientDrawable fileBg = new android.graphics.drawable.GradientDrawable();
+                fileBg.setColor(Color.WHITE);
+                fileBg.setCornerRadius(dp(10));
+                fileBg.setStroke(dp(1), COLOR_SOFT);
+                fileCard.setBackground(fileBg);
+                TextView fileKind = new TextView(this);
+                fileKind.setText("▣  " + kind + "  ·  " + android.text.format.Formatter.formatFileSize(this, attachment.optLong("size", 0)));
+                fileKind.setTextSize(11);
+                fileKind.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                fileKind.setTextColor(COLOR_GREEN);
+                fileCard.addView(fileKind);
+                TextView fileName = new TextView(this);
+                fileName.setText(name);
+                fileName.setTextSize(14);
+                fileName.setTextColor(COLOR_INK);
+                fileName.setMaxLines(2);
+                LinearLayout.LayoutParams fileNameLp = matchWrap();
+                fileNameLp.topMargin = dp(3);
+                fileCard.addView(fileName, fileNameLp);
+                TextView action = new TextView(this);
+                action.setText("Tap to open  ›");
+                action.setTextSize(12);
+                action.setTextColor(COLOR_MUTED);
+                LinearLayout.LayoutParams actionLp = matchWrap();
+                actionLp.topMargin = dp(3);
+                fileCard.addView(action, actionLp);
+                LinearLayout.LayoutParams fileLp = matchWrap();
+                fileLp.topMargin = dp(7);
+                row.addView(fileCard, fileLp);
+                fileCard.setOnClickListener(v -> openChatAttachment(attachment));
             }
-            row.setText(message);
-            row.setTextSize(14);
-            row.setTextColor(COLOR_INK);
             row.setPadding(dp(12), dp(10), dp(12), dp(10));
             android.graphics.drawable.GradientDrawable bubble = new android.graphics.drawable.GradientDrawable();
             bubble.setCornerRadius(dp(12));
@@ -983,8 +1088,34 @@ public final class MainActivity extends Activity {
         String code = codeText == null ? "" : codeText.getText().toString().replaceAll("\\s", "");
         String url = "http://127.0.0.1:" + MediaHttpServer.PORT + "/api/inbox/"
                 + android.net.Uri.encode(id) + "?code=" + android.net.Uri.encode(code);
+        String mime = attachment.optString("mime", "application/octet-stream");
+        if (mime.startsWith("video/")) {
+            openVideoWithChoice(android.net.Uri.parse(url), mime, 0);
+            return;
+        }
         try { startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))); }
         catch (Exception ignored) { Toast.makeText(this, "Could not open the shared file.", Toast.LENGTH_SHORT).show(); }
+    }
+
+    /** Offer VLC explicitly while keeping Android's normal player chooser available. */
+    private void openVideoWithChoice(android.net.Uri uri, String mime, int grantFlags) {
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("Play video")
+                .setItems(new String[]{"Choose a player", "Play in VLC"}, (dialog, which) -> {
+                    Intent intent = new Intent(Intent.ACTION_VIEW);
+                    intent.setDataAndType(uri, mime);
+                    intent.addFlags(grantFlags | Intent.FLAG_ACTIVITY_NEW_TASK);
+                    if (which == 0) {
+                        try { startActivity(Intent.createChooser(intent, "Play video with")); }
+                        catch (Exception error) { Toast.makeText(this, "No video player is available.", Toast.LENGTH_SHORT).show(); }
+                        return;
+                    }
+                    intent.setPackage("org.videolan.vlc");
+                    try { startActivity(intent); }
+                    catch (Exception error) {
+                        Toast.makeText(this, "VLC is not installed. Install VLC or choose another player.", Toast.LENGTH_LONG).show();
+                    }
+                }).show();
     }
 
     private void addCard(LinearLayout parent, String label, View content) {

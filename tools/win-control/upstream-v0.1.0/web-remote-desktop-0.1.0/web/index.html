@@ -213,6 +213,7 @@
       <button class="opt" data-fps="10">10</button>
       <button class="opt" data-fps="15">15</button>
       <button class="opt" data-fps="24">24</button>
+      <button class="opt" data-fps="30">30</button>
     </div>
   </div>
   <div class="row">
@@ -222,6 +223,7 @@
       <button class="opt" data-q="55">Medium</button>
       <button class="opt" data-q="70">High</button>
       <button class="opt" data-q="88">Sharp</button>
+      <button class="opt" data-q="95">Original</button>
     </div>
   </div>
   <div class="row" style="margin-bottom:0">
@@ -231,6 +233,17 @@
       <button class="opt" data-preset="sharp">✨ Sharpest</button>
     </div>
     <div id="est"></div>
+  </div>
+  <div class="row">
+    <h4>Windows power</h4>
+    <div class="opts">
+      <button class="opt" data-power="lock">Lock PC</button>
+      <button class="opt" data-power="wake-display">Wake display</button>
+      <button class="opt" data-power="sleep">Sleep PC</button>
+      <button class="opt" data-power="shutdown">Shut down</button>
+      <button class="opt" data-power="cancel-shutdown">Cancel shutdown</button>
+    </div>
+    <div style="font-size:12px;color:#94a3b8;margin-top:6px">Windows still requires its normal PIN/password to unlock. Sleep disconnects the hotspot; wake the PC physically or use Wake-on-LAN configured on your laptop.</div>
   </div>
 </div>
 <script src="app.js"></script>

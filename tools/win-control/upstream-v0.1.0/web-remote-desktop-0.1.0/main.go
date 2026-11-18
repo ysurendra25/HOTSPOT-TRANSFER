@@ -46,9 +46,9 @@ func defaultConfig() Config {
 		Addr:      "127.0.0.1:7070",
 		Token:     randToken(),
 		Monitor:   0,
-		FPS:       10,
-		Quality:   60,
-		MaxW:      1280,
+		FPS:       30,
+		Quality:   95,
+		MaxW:      0,
 		KeepAwake: "ac",
 		ShareDir:  defaultShareDir(),
 	}
@@ -81,6 +81,7 @@ func main() {
 	mux.Handle("/h264", auth(http.HandlerFunc(h264StreamHandler)))
 	mux.Handle("/files", auth(http.HandlerFunc(filesHandler)))
 	mux.Handle("/file/", auth(http.HandlerFunc(fileHandler)))
+	mux.Handle("/power", auth(http.HandlerFunc(powerHandler)))
 
 	// Keep the tunnel alive for as long as the server runs.
 	go superviseTunnel(context.Background())
@@ -169,6 +170,13 @@ func loadConfig() {
 	// balanced profile. Explicit user presets continue to be preserved.
 	if cfg.FPS == 12 && cfg.Quality == 65 && cfg.MaxW == 1600 {
 		cfg.FPS, cfg.Quality, cfg.MaxW = 10, 60, 1280
+		if data, err := json.MarshalIndent(cfg, "", "  "); err == nil {
+			_ = os.WriteFile(p, data, 0600)
+		}
+	}
+	// Upgrade the former out-of-box hotspot profile to source-resolution capture.
+	if cfg.FPS == 10 && cfg.Quality == 60 && cfg.MaxW == 1280 {
+		cfg.FPS, cfg.Quality, cfg.MaxW = 30, 95, 0
 		if data, err := json.MarshalIndent(cfg, "", "  "); err == nil {
 			_ = os.WriteFile(p, data, 0600)
 		}
