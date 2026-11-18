@@ -2,8 +2,20 @@ package main
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
+	"time"
 )
+
+var powerActionRunner = runPowerAction
+
+var scheduleSleepAction = func() {
+	time.AfterFunc(700*time.Millisecond, func() {
+		if err := powerActionRunner("sleep"); err != nil {
+			log.Printf("[pc-remote] sleep failed: %v", err)
+		}
+	})
+}
 
 type powerRequest struct {
 	Action  string `json:"action"`
@@ -37,7 +49,14 @@ func powerHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "confirmation required", http.StatusBadRequest)
 		return
 	}
-	if err := runPowerAction(req.Action); err != nil {
+	if req.Action == "sleep" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "action": req.Action, "scheduled": true})
+		scheduleSleepAction()
+		return
+	}
+	if err := powerActionRunner(req.Action); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

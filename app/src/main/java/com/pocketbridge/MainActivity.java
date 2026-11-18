@@ -36,11 +36,13 @@ public final class MainActivity extends Activity {
     private static final int REQUEST_PERMISSIONS = 40;
     private static final int REQUEST_SCREEN_CAPTURE = 41;
     private static final int REQUEST_SEND_FILE = 42;
-    private static final int COLOR_INK = Color.rgb(26, 41, 54);
-    private static final int COLOR_MUTED = Color.rgb(98, 116, 129);
-    private static final int COLOR_GREEN = Color.rgb(14, 132, 105);
-    private static final int COLOR_BG = Color.rgb(245, 248, 249);
-    private static final int COLOR_SOFT = Color.rgb(226, 237, 235);
+    private static final int COLOR_INK = Color.rgb(232, 241, 244);
+    private static final int COLOR_MUTED = Color.rgb(157, 178, 187);
+    private static final int COLOR_GREEN = Color.rgb(40, 177, 140);
+    private static final int COLOR_BG = Color.rgb(10, 18, 23);
+    private static final int COLOR_SOFT = Color.rgb(24, 48, 54);
+    private static final int COLOR_SURFACE = Color.rgb(17, 31, 37);
+    private static final int COLOR_LINE = Color.rgb(43, 63, 71);
 
     private TextView statusText;
     private TextView networkText;
@@ -139,7 +141,7 @@ public final class MainActivity extends Activity {
     private void buildScreen() {
         getWindow().setStatusBarColor(COLOR_BG);
         getWindow().setNavigationBarColor(COLOR_BG);
-        getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
+        getWindow().getDecorView().setSystemUiVisibility(0);
 
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
@@ -148,7 +150,7 @@ public final class MainActivity extends Activity {
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.VERTICAL);
         header.setPadding(dp(24), dp(28), dp(24), dp(16));
-        header.setBackgroundColor(Color.WHITE);
+        header.setBackgroundColor(COLOR_SURFACE);
         TextView brand = new TextView(this);
         brand.setText("POCKETBRIDGE");
         brand.setTextColor(COLOR_GREEN);
@@ -304,17 +306,19 @@ public final class MainActivity extends Activity {
         LinearLayout powerControls = new LinearLayout(this);
         powerControls.setOrientation(LinearLayout.VERTICAL);
         String[][] powerActions = {{"Lock laptop", "lock"}, {"Wake display", "wake-display"},
-                {"Unlock / show sign-in", "unlock"}, {"Shut down laptop", "shutdown"}};
+                {"Unlock / show sign-in", "unlock"}, {"Put laptop to sleep", "sleep"}, {"Shut down laptop", "shutdown"}};
         for (String[] powerAction : powerActions) {
-            Button actionButton = button(powerAction[0], "shutdown".equals(powerAction[1]) ? COLOR_SOFT : COLOR_GREEN);
-            if ("shutdown".equals(powerAction[1])) actionButton.setTextColor(COLOR_INK);
+            Button actionButton = button(powerAction[0], ("shutdown".equals(powerAction[1]) || "sleep".equals(powerAction[1])) ? COLOR_SOFT : COLOR_GREEN);
+            if ("shutdown".equals(powerAction[1]) || "sleep".equals(powerAction[1])) actionButton.setTextColor(COLOR_INK);
             actionButton.setOnClickListener(v -> {
                 String action = powerAction[1];
-                if ("shutdown".equals(action)) {
-                    new android.app.AlertDialog.Builder(this).setTitle("Shut down laptop")
-                            .setMessage("Schedule Windows shutdown in 15 seconds? The hotspot connection will end.")
+                if ("shutdown".equals(action) || "sleep".equals(action)) {
+                    boolean shutdown = "shutdown".equals(action);
+                    new android.app.AlertDialog.Builder(this).setTitle(shutdown ? "Shut down laptop" : "Put laptop to sleep")
+                            .setMessage(shutdown ? "Schedule Windows shutdown in 15 seconds? The hotspot connection will end."
+                                    : "Put Windows to sleep now? The laptop will disconnect until it wakes.")
                             .setNegativeButton("Cancel", null)
-                            .setPositiveButton("Shut down", (dialog, which) -> postLaptopPowerAction(
+                            .setPositiveButton(shutdown ? "Shut down" : "Sleep", (dialog, which) -> postLaptopPowerAction(
                                     screenHelperLink.getText().toString().trim(), action, true, laptopScreenStatus)).show();
                 } else {
                     postLaptopPowerAction(screenHelperLink.getText().toString().trim(), action, false, laptopScreenStatus);
@@ -481,7 +485,7 @@ public final class MainActivity extends Activity {
     private View buildBottomBar() {
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setBackgroundColor(Color.WHITE);
+        bar.setBackgroundColor(COLOR_SURFACE);
         bar.setPadding(dp(4), dp(8), dp(4), dp(10));
         bar.setElevation(dp(8));
         int[] icons = {R.drawable.ic_tab_connect, R.drawable.ic_tab_screen, R.drawable.ic_tab_library, R.drawable.ic_tab_chat};
@@ -787,12 +791,12 @@ public final class MainActivity extends Activity {
                             }
                             String relativePath = item.optString("path", name);
                             android.net.Uri fileUri = supplied.buildUpon().encodedPath(relative).clearQuery().appendQueryParameter("t", token).build();
-                            String kindLabel = mime.startsWith("video/") ? "VIDEO · TAP TO PLAY"
+                            String kindLabel = mime.startsWith("video/") ? "VIDEO · CHOOSE PLAYER"
                                     : mime.startsWith("audio/") ? "AUDIO · TAP TO PLAY"
                                     : mime.startsWith("image/") ? "PHOTO · TAP TO VIEW"
                                     : "FILE · TAP TO OPEN";
                             Button row = button(kindLabel + "\n" + name + "\n" + relativePath + " · "
-                                    + android.text.format.Formatter.formatShortFileSize(this, item.optLong("size")), Color.WHITE);
+                                    + android.text.format.Formatter.formatShortFileSize(this, item.optLong("size")), COLOR_SURFACE);
                             row.setTextColor(COLOR_INK);
                             row.setTextSize(13);
                             row.setAllCaps(false);
@@ -882,7 +886,7 @@ public final class MainActivity extends Activity {
             runOnUiThread(() -> {
                 libraryStatus.setText(status);
                 for (MediaRepository.Item item : items) {
-                    Button row = button(item.name + "\n" + android.text.format.Formatter.formatShortFileSize(this, item.size), Color.WHITE);
+                    Button row = button(item.name + "\n" + android.text.format.Formatter.formatShortFileSize(this, item.size), COLOR_SURFACE);
                     row.setTextColor(COLOR_INK);
                     row.setTextSize(13);
                     row.setAllCaps(false);
@@ -1016,6 +1020,22 @@ public final class MainActivity extends Activity {
                 LinearLayout.LayoutParams bodyLp = matchWrap();
                 bodyLp.topMargin = dp(4);
                 row.addView(body, bodyLp);
+                Button copyMessage = button("Copy", COLOR_SOFT);
+                copyMessage.setTextColor(COLOR_INK);
+                copyMessage.setTextSize(12);
+                copyMessage.setMinHeight(dp(38));
+                copyMessage.setOnClickListener(v -> {
+                    ClipboardManager clipboard = getSystemService(ClipboardManager.class);
+                    if (clipboard != null) {
+                        clipboard.setPrimaryClip(ClipData.newPlainText("PocketBridge message", message));
+                        Toast.makeText(this, "Message copied", Toast.LENGTH_SHORT).show();
+                    } else {
+                        Toast.makeText(this, "Could not copy this message", Toast.LENGTH_SHORT).show();
+                    }
+                });
+                LinearLayout.LayoutParams copyLp = matchWrap();
+                copyLp.topMargin = dp(4);
+                row.addView(copyMessage, copyLp);
             }
             if (attachment != null) {
                 String name = attachment.optString("name", "Shared file");
@@ -1026,9 +1046,9 @@ public final class MainActivity extends Activity {
                 fileCard.setOrientation(LinearLayout.VERTICAL);
                 fileCard.setPadding(dp(10), dp(9), dp(10), dp(9));
                 android.graphics.drawable.GradientDrawable fileBg = new android.graphics.drawable.GradientDrawable();
-                fileBg.setColor(Color.WHITE);
+                fileBg.setColor(COLOR_SURFACE);
                 fileBg.setCornerRadius(dp(10));
-                fileBg.setStroke(dp(1), COLOR_SOFT);
+                fileBg.setStroke(dp(1), COLOR_LINE);
                 fileCard.setBackground(fileBg);
                 TextView fileKind = new TextView(this);
                 fileKind.setText("▣  " + kind + "  ·  " + android.text.format.Formatter.formatFileSize(this, attachment.optLong("size", 0)));
@@ -1045,7 +1065,7 @@ public final class MainActivity extends Activity {
                 fileNameLp.topMargin = dp(3);
                 fileCard.addView(fileName, fileNameLp);
                 TextView action = new TextView(this);
-                action.setText("Tap to open  ›");
+                action.setText(mime.startsWith("video/") ? "Tap to choose a player  ›" : "Tap to open  ›");
                 action.setTextSize(12);
                 action.setTextColor(COLOR_MUTED);
                 LinearLayout.LayoutParams actionLp = matchWrap();
@@ -1059,7 +1079,7 @@ public final class MainActivity extends Activity {
             row.setPadding(dp(12), dp(10), dp(12), dp(10));
             android.graphics.drawable.GradientDrawable bubble = new android.graphics.drawable.GradientDrawable();
             bubble.setCornerRadius(dp(12));
-            bubble.setColor(mine ? COLOR_SOFT : Color.WHITE);
+            bubble.setColor(mine ? COLOR_SOFT : COLOR_SURFACE);
             row.setBackground(bubble);
             LinearLayout.LayoutParams lp = matchWrap();
             lp.topMargin = dp(6);
@@ -1107,32 +1127,20 @@ public final class MainActivity extends Activity {
         catch (Exception ignored) { Toast.makeText(this, "Could not open the shared file.", Toast.LENGTH_SHORT).show(); }
     }
 
-    /** Offer VLC explicitly while keeping Android's normal player chooser available. */
+    /** Always show Android's resolver so the user can choose any compatible installed player. */
     private void openVideoWithChoice(android.net.Uri uri, String mime, int grantFlags) {
-        new android.app.AlertDialog.Builder(this)
-                .setTitle("Play video")
-                .setItems(new String[]{"Choose a player", "Play in VLC"}, (dialog, which) -> {
-                    Intent intent = new Intent(Intent.ACTION_VIEW);
-                    intent.setDataAndType(uri, mime);
-                    intent.addFlags(grantFlags | Intent.FLAG_ACTIVITY_NEW_TASK);
-                    if (which == 0) {
-                        try { startActivity(Intent.createChooser(intent, "Play video with")); }
-                        catch (Exception error) { Toast.makeText(this, "No video player is available.", Toast.LENGTH_SHORT).show(); }
-                        return;
-                    }
-                    intent.setPackage("org.videolan.vlc");
-                    try { startActivity(intent); }
-                    catch (Exception error) {
-                        Toast.makeText(this, "VLC is not installed. Install VLC or choose another player.", Toast.LENGTH_LONG).show();
-                    }
-                }).show();
+        Intent intent = new Intent(Intent.ACTION_VIEW);
+        intent.setDataAndType(uri, mime);
+        intent.addFlags(grantFlags);
+        try { startActivity(Intent.createChooser(intent, "Play with")); }
+        catch (Exception error) { Toast.makeText(this, "No compatible video player is installed.", Toast.LENGTH_SHORT).show(); }
     }
 
     private void addCard(LinearLayout parent, String label, View content) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(16), dp(14), dp(16), dp(16));
-        card.setBackgroundColor(Color.WHITE);
+        card.setBackgroundColor(COLOR_SURFACE);
         TextView heading = new TextView(this);
         heading.setText(label);
         heading.setTextColor(COLOR_MUTED);

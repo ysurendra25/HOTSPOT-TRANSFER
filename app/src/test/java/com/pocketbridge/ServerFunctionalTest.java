@@ -40,6 +40,7 @@ public class ServerFunctionalTest {
     private Context context;
 
     @Before public void startServer() throws Exception {
+        MediaHttpServer.setLaptopHelperLink("");
         context = RuntimeEnvironment.getApplication();
         deleteTree(new File(context.getFilesDir(), "received"));
         new File(context.getFilesDir(), "share-messages.json").delete();
@@ -50,6 +51,7 @@ public class ServerFunctionalTest {
 
     @After public void stopServer() {
         if (server != null) server.stop();
+        MediaHttpServer.setLaptopHelperLink("");
     }
 
     private static void deleteTree(File file) {
@@ -73,12 +75,14 @@ public class ServerFunctionalTest {
     private static final class Response {
         final int status;
         final String body;
-        Response(int status, String body) { this.status = status; this.body = body; }
+        final String location;
+        Response(int status, String body, String location) { this.status = status; this.body = body; this.location = location; }
     }
 
     private static Response send(String method, String path, String body, String range) throws Exception {
         HttpURLConnection connection = (HttpURLConnection) new URL(BASE + path).openConnection();
         connection.setRequestMethod(method);
+        connection.setInstanceFollowRedirects(false);
         connection.setConnectTimeout(4000);
         connection.setReadTimeout(8000);
         connection.setRequestProperty("Connection", "close");
@@ -90,10 +94,11 @@ public class ServerFunctionalTest {
             try (OutputStream out = connection.getOutputStream()) { out.write(payload); }
         }
         int status = connection.getResponseCode();
+        String location = connection.getHeaderField("Location");
         InputStream stream = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
         String text = stream == null ? "" : readAll(stream);
         connection.disconnect();
-        return new Response(status, text);
+        return new Response(status, text, location);
     }
 
     private static String readAll(InputStream stream) throws Exception {
@@ -253,6 +258,23 @@ public class ServerFunctionalTest {
         assertEquals(200, send("GET", "/health", null, null).status);
         assertEquals(204, send("GET", "/favicon.ico", null, null).status);
         assertEquals(200, send("GET", withCode("/api/session"), null, null).status);
+    }
+
+    @Test public void openingWithLaptopPlayerExplainsWhenTheHelperIsMissing() throws Exception {
+        String mediaUrl = java.net.URLEncoder.encode("http://192.168.0.4:43117/api/media/video%3A1?code=" + CODE, "UTF-8");
+        Response response = send("GET", withCode("/api/open-with?url=" + mediaUrl), null, null);
+        assertEquals(503, response.status);
+        assertTrue(response.body.contains("Start the Windows helper"));
+    }
+
+    @Test public void openingWithLaptopPlayerRedirectsToTheSavedHelperAndKeepsTheMediaUrl() throws Exception {
+        MediaHttpServer.setLaptopHelperLink("http://192.168.43.1:7070/?t=helper-token");
+        String originalMediaUrl = "http://192.168.43.2:43117/api/media/video%3A1?code=" + CODE;
+        String encodedMediaUrl = java.net.URLEncoder.encode(originalMediaUrl, "UTF-8");
+        Response response = send("GET", withCode("/api/open-with?url=" + encodedMediaUrl), null, null);
+        assertEquals(302, response.status);
+        assertTrue(response.location.startsWith("http://192.168.43.1:7070/open-with?t=helper-token&url="));
+        assertTrue(java.net.URLDecoder.decode(response.location, "UTF-8").contains(originalMediaUrl));
     }
 
     private static String extractInboxId(String json) {

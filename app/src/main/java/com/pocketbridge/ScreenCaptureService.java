@@ -302,7 +302,7 @@ public final class ScreenCaptureService extends Service {
                 // headroom for crisp motion. The device/network encoder may still
                 // reduce the actual rate to avoid accumulating a multi-second queue.
                 for (RtpParameters.Encoding encoding : parameters.encodings) {
-                    encoding.maxBitrateBps = 16_000_000;
+                    encoding.maxBitrateBps = 8_000_000;
                     encoding.maxFramerate = 30;
                 }
                 sender.setParameters(parameters);
@@ -324,7 +324,7 @@ public final class ScreenCaptureService extends Service {
             @Override public void onSetFailure(String error) { failAnswer("Could not read the browser's WebRTC offer: " + error); }
         }, offer);
         try {
-            if (!latch.await(32, TimeUnit.SECONDS)) {
+            if (!latch.await(20, TimeUnit.SECONDS)) {
                 lastOfferError = "Local screen connection setup timed out. Confirm both devices use the same PocketBridge Wi-Fi and retry.";
                 closePeer();
                 return null;
@@ -369,8 +369,11 @@ public final class ScreenCaptureService extends Service {
 
     /** Encodes the local compatibility stream when direct WebRTC cannot be used. */
     private static final class JpegSink implements VideoSink {
-        private static final int MAX_EDGE = 4096;
-        private static final long MIN_FRAME_NS = 50_000_000L;
+        // The WebRTC path keeps the source resolution. Compatibility JPEG is a
+        // last-resort path, so cap its CPU and hotspot bandwidth to prevent a
+        // growing encode/send queue from turning into seconds of stale video.
+        private static final int MAX_EDGE = 2560;
+        private static final long MIN_FRAME_NS = 83_333_333L;
         private final Object frameLock = new Object();
         private volatile JpegFrame latest;
         private long sequence;
@@ -422,7 +425,7 @@ public final class ScreenCaptureService extends Service {
                 Nv21Rotation.Frame rotated = Nv21Rotation.rotate(nv21, width, height, frame.getRotation());
                 ByteArrayOutputStream out = new ByteArrayOutputStream();
                 if (!new YuvImage(rotated.data, ImageFormat.NV21, rotated.width, rotated.height, null)
-                        .compressToJpeg(new Rect(0, 0, rotated.width, rotated.height), 90, out)) return null;
+                        .compressToJpeg(new Rect(0, 0, rotated.width, rotated.height), 80, out)) return null;
                 return out.toByteArray();
             } catch (Exception | OutOfMemoryError error) {
                 android.util.Log.w("PocketBridge", "Could not encode a local screen frame", error);

@@ -10,6 +10,8 @@ import (
 
 var powerUser32 = syscall.NewLazyDLL("user32.dll")
 var lockWorkstation = powerUser32.NewProc("LockWorkStation")
+var powerPowrProf = syscall.NewLazyDLL("powrprof.dll")
+var setSuspendState = powerPowrProf.NewProc("SetSuspendState")
 
 func runPowerAction(action string) error {
 	switch action {
@@ -28,7 +30,11 @@ func runPowerAction(action string) error {
 		wakeDisplayNow()
 		return nil
 	case "sleep":
-		return exec.Command("rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0").Run()
+		ok, _, err := setSuspendState.Call(0, 0, 0)
+		if ok == 0 {
+			return fmt.Errorf("Windows could not enter sleep: %v", err)
+		}
+		return nil
 	case "shutdown":
 		return exec.Command("shutdown.exe", "/s", "/t", "15", "/c", "PocketBridge remote shutdown (15 second delay; cancel with PocketBridge)").Run()
 	case "cancel-shutdown":

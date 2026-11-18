@@ -1,14 +1,22 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="color-scheme" content="light">
+<meta name="color-scheme" content="dark light">
 <title>PocketBridge · Local share</title>
 <style>
   :root{
+    color-scheme:dark;
+    --ink:#e7f0f2;--muted:#9aafb7;--teal:#24b68d;--teal-dark:#73dfbc;--teal-soft:#153a34;
+    --line:#293b42;--surface:#111f25;--surface-raised:#172930;--bg:#091318;--input:#102027;--hover:#1b3037;
+    --shadow:0 14px 40px rgba(0,0,0,.32);
+  }
+  :root[data-theme="light"]{
+    color-scheme:light;
     --ink:#14262f;--muted:#6b7c85;--teal:#0e8469;--teal-dark:#0a6a55;--teal-soft:#e8f3f0;
-    --line:#e3eaec;--surface:#fff;--bg:#f4f7f7;--shadow:0 14px 40px rgba(20,50,60,.07);
+    --line:#e3eaec;--surface:#fff;--surface-raised:#fff;--bg:#f4f7f7;--input:#fbfdfd;--hover:#f3f8f7;
+    --shadow:0 14px 40px rgba(20,50,60,.07);
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--ink);
@@ -20,10 +28,12 @@
   /* top bar */
   .topbar{height:76px;display:flex;align-items:center;justify-content:space-between;
     border-bottom:1px solid var(--line)}
+  .topbar-actions{display:flex;align-items:center;gap:9px}
+  .theme-toggle{padding:8px 11px;font-size:12px}
   .brand{display:flex;align-items:center;gap:11px;font-weight:750;letter-spacing:-.02em;font-size:18px}
   .mark{width:32px;height:32px;border-radius:11px;background:var(--teal);display:grid;place-items:center;
     color:#fff;font-size:16px;box-shadow:0 6px 16px rgba(14,132,105,.22)}
-  .pill{border:1px solid #cde7df;background:#f0faf6;color:var(--teal-dark);border-radius:99px;
+  .pill{border:1px solid var(--line);background:var(--surface-raised);color:var(--teal-dark);border-radius:99px;
     padding:7px 12px;font-size:12px;font-weight:700;display:flex;align-items:center;gap:7px}
   .dot{width:7px;height:7px;border-radius:50%;background:#25a57f;box-shadow:0 0 0 3px #d9f1e8}
 
@@ -33,15 +43,15 @@
   .gate h2{margin:0 0 6px;font-size:23px;letter-spacing:-.02em}
   .gate p{margin:0 0 20px;color:var(--muted);font-size:14px}
   .code-input{width:100%;padding:16px;border:1.5px solid var(--line);border-radius:14px;text-align:center;
-    font:700 30px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.34em;outline:none;background:#fbfdfd}
+    font:700 30px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.34em;outline:none;background:var(--input);color:var(--ink)}
   .code-input:focus{border-color:#8ecab9;box-shadow:0 0 0 4px #e0f2ed}
   .gate .btn{width:100%;margin-top:14px}
   .gate-error{margin-top:14px;color:#b03a3a;font-size:13px;min-height:18px}
 
   /* bottom tab bar, the same four sections as the phone */
   .tabbar{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);z-index:20;display:flex;gap:4px;
-    background:var(--ink);padding:6px;border-radius:16px;box-shadow:0 16px 40px rgba(20,38,47,.28)}
-  .tabbar .tab{background:transparent;border:0;color:#cfe0dc;font:inherit;font-size:12px;font-weight:700;
+    background:var(--surface-raised);border:1px solid var(--line);padding:6px;border-radius:16px;box-shadow:0 16px 40px rgba(0,0,0,.28)}
+  .tabbar .tab{background:transparent;border:0;color:var(--muted);font:inherit;font-size:12px;font-weight:700;
     padding:8px 14px;border-radius:12px;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer}
   .tabbar .tab .tabicon{font-size:16px;line-height:1}
   .tabbar .tab.active{background:var(--teal);color:#fff}
@@ -60,16 +70,18 @@
   .btn{border:0;border-radius:11px;padding:11px 16px;font-weight:700;transition:.15s;display:inline-flex;
     align-items:center;gap:8px;justify-content:center}
   .btn:hover{transform:translateY(-1px)}
-  .btn-white{background:#fff;color:var(--teal-dark)}
-  .btn-dark{background:var(--ink);color:#fff}
+  .btn-white{background:var(--surface-raised);color:var(--teal-dark)}
+  .btn-dark{background:#071015;color:#e7f0f2;border:1px solid var(--line)}
+  :root[data-theme="light"] .btn-dark{background:var(--ink);color:#fff;border:0}
   .btn-soft{background:var(--teal-soft);color:var(--teal-dark)}
-  .btn-outline{background:#fff;border:1px solid var(--line);color:var(--ink)}
-  .btn-ghost{background:#eef3f3;color:var(--ink)}
+  .btn-outline{background:var(--surface-raised);border:1px solid var(--line);color:var(--ink)}
+  .btn-ghost{background:var(--surface-raised);color:var(--ink)}
 
   /* screen card */
   .screen-card{background:linear-gradient(110deg,#153c43,#145a53 62%,#147765);border-radius:20px;color:#fff;
     padding:20px 22px;display:flex;justify-content:space-between;align-items:center;gap:18px;
     box-shadow:var(--shadow);margin-bottom:22px;flex-wrap:wrap}
+  .transfer-card{background:var(--surface);color:var(--ink);border:1px solid var(--line)}
   .screen-copy{display:flex;align-items:center;gap:14px}
   .screen-icon{width:44px;height:44px;border-radius:14px;background:rgba(255,255,255,.13);display:grid;
     place-items:center;font-size:20px}
@@ -85,7 +97,9 @@
   .screen-view.focused canvas,.screen-view:fullscreen canvas,.screen-view.focused video,.screen-view:fullscreen video{flex:1;min-width:0;min-height:0;max-height:none;width:100%;height:100%;object-fit:contain}
   .modal:fullscreen{padding:0;background:#000}
   .modal:fullscreen .modal-box{max-width:none;width:100vw;height:100vh;height:100dvh;max-height:none;min-height:0;border-radius:0;display:flex;flex-direction:column}
-  .modal:fullscreen .stage{flex:1;min-height:0;max-height:none;aspect-ratio:auto!important}
+  .modal:fullscreen .stage{min-height:0;max-height:none;aspect-ratio:auto!important}
+  .modal:fullscreen .stage.video-stage{flex:0 0 auto}
+  .modal:fullscreen .stage:not(.video-stage){flex:1}
   .modal:fullscreen .stage video{width:100%;height:100%;max-height:none;object-fit:contain}
   .modal:fullscreen .controls{padding:7px 12px;gap:6px}
   .modal:fullscreen .controls .ctrl{font-size:12px;padding:6px 9px}
@@ -96,25 +110,25 @@
   .section-title{font-size:20px;font-weight:800;letter-spacing:-.03em}
   .count{font-size:13px;color:var(--muted);margin-left:9px;font-weight:500}
   .search{width:min(300px,46vw);padding:10px 13px;border:1px solid var(--line);border-radius:11px;
-    background:#fff;outline:none}
+    background:var(--input);color:var(--ink);outline:none}
   .search:focus{border-color:#8ecab9;box-shadow:0 0 0 3px #e0f2ed}
   .tabs{display:flex;gap:8px;margin-bottom:16px;overflow-x:auto;padding-bottom:2px}
-  .quicknav{position:sticky;top:0;z-index:4;display:flex;gap:8px;padding:10px 0;background:rgba(247,250,250,.96);backdrop-filter:blur(8px);border-bottom:1px solid var(--line);margin-bottom:14px}
-  .quicknav a{color:var(--teal-dark);background:#fff;border:1px solid var(--line);border-radius:99px;padding:8px 13px;text-decoration:none;font-size:13px;font-weight:750;white-space:nowrap}
-  .tab{border:1px solid var(--line);background:#fff;border-radius:99px;padding:9px 15px;color:var(--muted);
+  .quicknav{position:sticky;top:0;z-index:4;display:flex;gap:8px;padding:10px 0;background:color-mix(in srgb,var(--bg) 96%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line);margin-bottom:14px}
+  .quicknav a{color:var(--teal-dark);background:var(--surface-raised);border:1px solid var(--line);border-radius:99px;padding:8px 13px;text-decoration:none;font-size:13px;font-weight:750;white-space:nowrap}
+  .tab{border:1px solid var(--line);background:var(--surface-raised);border-radius:99px;padding:9px 15px;color:var(--muted);
     font-weight:700;font-size:13px;white-space:nowrap}
-  .tab.active{background:var(--ink);border-color:var(--ink);color:#fff}
+  .tab.active{background:var(--teal);border-color:var(--teal);color:#fff}
 
   .grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px}
   .grid.list-view{display:flex;flex-direction:column;gap:6px}
   .grid.list-view .card{display:grid;grid-template-columns:72px 1fr;align-items:center}
   .grid.list-view .thumb{width:72px;aspect-ratio:1}
-  .toolbar-select{border:1px solid var(--line);border-radius:10px;background:#fff;padding:9px 10px;color:var(--ink)}
+  .toolbar-select{border:1px solid var(--line);border-radius:10px;background:var(--input);padding:9px 10px;color:var(--ink)}
   .load-more{display:flex;justify-content:center;padding:20px 0 4px}
   .load-more[hidden]{display:none}
   .card{border:1px solid var(--line);background:var(--surface);border-radius:15px;overflow:hidden;
     box-shadow:0 4px 14px rgba(23,49,60,.025);min-width:0;display:flex;flex-direction:column}
-  .thumb{width:100%;aspect-ratio:1.35;background:#e9eff0;display:grid;place-items:center;position:relative;
+  .thumb{width:100%;aspect-ratio:1.35;background:var(--surface-raised);display:grid;place-items:center;position:relative;
     overflow:hidden;color:#789;border:0;padding:0;cursor:pointer}
   .thumb img{width:100%;height:100%;object-fit:cover;display:block}
   .thumb .file-icon{font-size:34px}
@@ -127,11 +141,11 @@
   .actions{display:flex;gap:7px;margin-top:auto;padding-top:9px}
   .actions .btn{font-size:11px;padding:7px 10px;border-radius:8px;flex:1}
 
-  .empty{grid-column:1/-1;text-align:center;border:1px dashed #d4dfe1;background:rgba(255,255,255,.65);
+  .empty{grid-column:1/-1;text-align:center;border:1px dashed var(--line);background:var(--surface);
     border-radius:16px;padding:40px 18px;color:var(--muted)}
   .empty strong{display:block;color:var(--ink);font-size:15px;margin-bottom:5px}
   .loading{grid-column:1/-1;text-align:center;color:var(--muted);padding:34px}
-  .foot{padding:26px 0 0;text-align:center;color:#8a989f;font-size:12px}
+  .foot{padding:26px 0 0;text-align:center;color:var(--muted);font-size:12px}
 
   /* player */
   .modal{display:none;position:fixed;inset:0;background:rgba(9,22,30,.86);z-index:9;
@@ -142,7 +156,8 @@
   .modal-top{display:flex;justify-content:space-between;align-items:center;padding:11px 14px;color:#eaf3f1;gap:12px}
   .modal-top strong{font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .modal-top .btn{background:#1d3038;color:#dfeeeb}
-  .stage{background:#000;display:flex;align-items:center;justify-content:center;flex:1;min-height:0;max-height:none;overflow:hidden}
+  .stage{background:#000;display:flex;align-items:center;justify-content:center;flex:1;min-height:0;max-height:min(72vh,calc(100dvh - 190px));overflow:hidden}
+  .stage.video-stage{flex:0 0 auto;width:auto;height:auto;max-width:100%;margin:auto}
   .stage video,.stage img{width:100%;height:100%;max-height:100%;display:block;object-fit:contain;background:#000}
   .stage.ratio-16-9{aspect-ratio:16/9}.stage.ratio-4-3{aspect-ratio:4/3}.stage.ratio-1-1{aspect-ratio:1/1}.stage.ratio-original{aspect-ratio:auto}
   .music-layout{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(300px,.9fr);gap:18px;align-items:start}
@@ -160,14 +175,14 @@
   .music-progress input,.music-volume input{width:100%;accent-color:#31b28d}
   .music-volume{display:flex;align-items:center;gap:8px;color:#b8cbc8;font-size:13px;margin-top:12px}
   #musicAudio{display:none}
-  .music-queue{background:#fff;border:1px solid var(--line);border-radius:18px;padding:8px;max-height:70vh;overflow:auto}
+  .music-queue{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:8px;max-height:70vh;overflow:auto}
   .music-row{display:grid;grid-template-columns:48px minmax(0,1fr) auto;align-items:center;gap:11px;padding:9px;border-radius:12px;cursor:pointer;border:0;width:100%;text-align:left;background:transparent;color:var(--ink)}
-  .music-row:hover{background:#f3f8f7}.music-row.active{background:var(--teal-soft);color:var(--teal-dark)}
-  .music-thumb{width:48px;height:48px;border-radius:10px;overflow:hidden;background:#e7f0ee;display:grid;place-items:center;color:var(--teal);font-size:20px}
+  .music-row:hover{background:var(--hover)}.music-row.active{background:var(--teal-soft);color:var(--teal-dark)}
+  .music-thumb{width:48px;height:48px;border-radius:10px;overflow:hidden;background:var(--surface-raised);display:grid;place-items:center;color:var(--teal);font-size:20px}
   .music-thumb img{width:100%;height:100%;object-fit:cover}.music-track{min-width:0}.music-track strong,.music-track span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.music-track strong{font-size:13px}.music-track span{font-size:11px;color:var(--muted);margin-top:3px}.music-size{font-size:11px;color:var(--muted);white-space:nowrap}
   .chat-attach-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
   .chat-attach-row [role="status"]{font-size:12px;color:var(--muted)}
-  .chat-file-card{display:grid;grid-template-columns:42px minmax(0,1fr) auto;align-items:center;gap:10px;margin-top:9px;padding:10px;border:1px solid var(--line);border-radius:12px;background:#fff}
+  .chat-file-card{display:grid;grid-template-columns:42px minmax(0,1fr) auto;align-items:center;gap:10px;margin-top:9px;padding:10px;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
   .chat-file-icon{width:40px;height:40px;display:grid;place-items:center;border-radius:10px;background:var(--teal-soft);color:var(--teal-dark);font-size:19px;font-weight:800}
   .chat-file-name{font-size:13px;font-weight:800;overflow-wrap:anywhere}.chat-file-meta{font-size:11px;color:var(--muted);margin-top:3px}
   .chat-file-card .btn{white-space:nowrap}
@@ -193,7 +208,7 @@
   .card.selected{outline:3px solid var(--teal);outline-offset:-3px}
   .card.selected .pick{background:var(--teal)}
   @media(hover:none){.pick{opacity:1}}
-  .selbar{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:var(--ink);color:#fff;border-radius:14px;
+  .selbar{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:var(--surface-raised);color:var(--ink);border:1px solid var(--line);border-radius:14px;
     padding:10px 12px;display:none;align-items:center;gap:10px;box-shadow:0 14px 40px rgba(20,38,47,.35);z-index:8;
     max-width:calc(100vw - 24px);flex-wrap:wrap;justify-content:center}
   .selbar.show{display:flex}
@@ -224,9 +239,9 @@
 </nav>
 
 <main class="shell">
-  <header class="topbar">
+<header class="topbar">
     <div class="brand"><div class="mark">↗</div><span>PocketBridge</span></div>
-    <div class="pill"><i class="dot"></i> LOCAL &amp; PRIVATE</div>
+    <div class="topbar-actions"><div class="pill"><i class="dot"></i> LOCAL &amp; PRIVATE</div><button class="btn btn-ghost theme-toggle" id="themeToggle" type="button" aria-pressed="true">Light mode</button></div>
   </header>
 
   <!-- code gate -->
@@ -261,7 +276,7 @@
       <button class="btn btn-white" id="watchButton" type="button">Watch screen</button>
     </section>
 
-    <section class="screen-card" id="transferSection" style="background:#fff;color:var(--ink);border:1px solid var(--line)">
+    <section class="screen-card transfer-card" id="transferSection">
       <div class="screen-copy"><div class="screen-icon" style="background:var(--teal-soft);color:var(--teal-dark)">⇧</div><div>
         <div class="screen-title">Send a file to this phone</div>
         <div class="screen-desc" style="color:var(--muted)">File size is limited only by the phone’s available storage.</div>
@@ -403,6 +418,19 @@
   const modal = document.getElementById('modal');
   const stage = document.getElementById('stage');
   const controls = document.getElementById('controls');
+  const themeToggle = document.getElementById('themeToggle');
+
+  function setTheme(theme, persist) {
+    const selected = theme === 'light' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = selected;
+    document.querySelector('meta[name="color-scheme"]').content = selected === 'dark' ? 'dark light' : 'light';
+    themeToggle.textContent = selected === 'dark' ? 'Light mode' : 'Dark mode';
+    themeToggle.setAttribute('aria-pressed', String(selected === 'dark'));
+    if (persist) { try { localStorage.setItem('pocketbridge_theme', selected); } catch (_) { } }
+  }
+  try { setTheme(localStorage.getItem('pocketbridge_theme') || 'dark', false); }
+  catch (_) { setTheme('dark', false); }
+  themeToggle.addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark', true));
 
   const hasToken = TOKEN && !TOKEN.startsWith('__');
 
@@ -567,7 +595,7 @@
           (playable ? 'Play' : 'View') + '</button>'
         : '';
       const vlcBtn = (file.kind === 'video' || file.kind === 'audio')
-        ? '<a class="btn btn-outline" target="_blank" rel="noopener" href="' + safe(endpoint('/api/open-vlc?url=' + encodeURIComponent(new URL(endpoint(file.url), location.href).href))) + '">Play in VLC</a>'
+        ? '<a class="btn btn-outline" target="_blank" rel="noopener" href="' + safe(endpoint('/api/open-with?url=' + encodeURIComponent(new URL(endpoint(file.url), location.href).href))) + '">Open with</a>'
         : '';
       const isSelected = selected.has(file.id);
       return heading + '<article class="card' + (isSelected ? ' selected' : '') + '" data-card="' + safe(file.id) + '">' +
@@ -771,7 +799,31 @@
   function releaseMedia() {
     if (media) { try { media.pause(); } catch (e) {} media.src = ''; media = null; }
     stage.innerHTML = '';
+    stage.classList.remove('video-stage');
+    stage.style.removeProperty('width');
+    stage.style.removeProperty('height');
   }
+
+  function fitVideoStage() {
+    if (!(media instanceof HTMLVideoElement) || !modal.classList.contains('open')) return;
+    const ratioControl = document.getElementById('aspectRatio');
+    const naturalRatio = media.videoWidth > 0 && media.videoHeight > 0 ? media.videoWidth / media.videoHeight : 16 / 9;
+    const ratio = ratioControl.value === 'original' ? naturalRatio : ({'16-9':16/9,'4-3':4/3,'1-1':1}[ratioControl.value] || naturalRatio);
+    const fullscreen = document.fullscreenElement === modal;
+    const box = modal.querySelector('.modal-box');
+    const topHeight = modal.querySelector('.modal-top').getBoundingClientRect().height || 52;
+    const controlHeight = controls.getBoundingClientRect().height || 54;
+    const verticalSpace = fullscreen
+      ? Math.max(120, window.innerHeight - topHeight - controlHeight - 16)
+      : Math.max(120, Math.min(window.innerHeight * 0.72, window.innerHeight - topHeight - controlHeight - 56));
+    const horizontalSpace = fullscreen
+      ? window.innerWidth
+      : Math.min(box.clientWidth || window.innerWidth * 0.96, window.innerWidth * 0.96);
+    const width = Math.max(2, Math.floor(Math.min(horizontalSpace, verticalSpace * ratio)));
+    stage.style.width = width + 'px';
+    stage.style.height = Math.floor(width / ratio) + 'px';
+  }
+  window.addEventListener('resize', fitVideoStage);
 
   function openFile(id) {
     viewIndex = viewList.findIndex(item => item.id === id);
@@ -783,6 +835,7 @@
     }
     showCurrent();
     modal.classList.add('open');
+    requestAnimationFrame(fitVideoStage);
   }
 
   function stepViewer(delta) {
@@ -810,6 +863,7 @@
       const ratioSelect = document.getElementById('aspectRatio');
       ratioSelect.value = 'original';
       stage.classList.remove('ratio-16-9','ratio-4-3','ratio-1-1');
+      stage.classList.add('video-stage');
       media = document.createElement('video');
       media.src = url;
       media.playsInline = true;
@@ -840,6 +894,7 @@
 
     controls.style.display = media ? 'flex' : 'none';
     if (media) wirePlayer(media, file.kind, file);
+    if (file.kind === 'video') requestAnimationFrame(fitVideoStage);
   }
 
   function wirePlayer(element, kind, file) {
@@ -854,6 +909,7 @@
     });
     element.addEventListener('loadedmetadata', () => {
       timeLabel.textContent = '0:00 / ' + formatTime(element.duration);
+      if (kind === 'video') fitVideoStage();
     });
     element.addEventListener('waiting', () => { timeLabel.textContent = 'Buffering · ' + formatTime(element.currentTime); });
     element.addEventListener('canplay', () => {
@@ -906,6 +962,7 @@
       if (ratioSelect.value !== 'original') stage.classList.add('ratio-' + ratioSelect.value);
       // Preserve the complete source frame even when a display ratio is chosen.
       element.style.objectFit = 'contain';
+      fitVideoStage();
     };
     fsButton.style.display = kind === 'video' ? 'inline-flex' : 'none';
     fsButton.onclick = () => {
@@ -970,7 +1027,7 @@
   let screenFrames = 0;
   let latestScreenJpeg = null;
   let decodingScreenFrame = false;
-  let screenPathLabel = 'Compatibility JPEG';
+  let screenPathLabel = 'Compatibility JPEG · up to 2560px / 12 fps';
 
   async function watchScreen() {
     const screenView = document.getElementById('screenView');
@@ -985,7 +1042,7 @@
     watchButton.disabled = true;
     screenView.classList.add('active');
     state.textContent = 'Connecting · showing the first available frame…';
-    screenPathLabel = 'Compatibility JPEG';
+    screenPathLabel = 'Compatibility JPEG · up to 2560px / 12 fps';
     video.hidden = true;
     canvas.hidden = false;
     // Start the local preview immediately. JPEG remains visible only until the
@@ -1001,7 +1058,7 @@
       video.srcObject = null;
       video.hidden = true;
       canvas.hidden = false;
-      screenPathLabel = 'Compatibility JPEG · direct link unavailable';
+      screenPathLabel = 'Compatibility JPEG · up to 2560px / 12 fps · direct link unavailable';
       state.textContent = screenPathLabel + ' (' + (error.message || 'connection failed') + ')';
     }
   }
@@ -1030,12 +1087,12 @@
     };
     const offer = await peer.createOffer();
     await peer.setLocalDescription(offer);
-    await waitForIceGathering(peer, 3000);
+    await waitForIceGathering(peer, 10000);
     if (peer.iceGatheringState !== 'complete') throw new Error('Local network candidates did not finish gathering');
 
     const controller = new AbortController();
     screenSignalAbort = controller;
-    const signalTimeout = setTimeout(() => controller.abort(), 8000);
+    const signalTimeout = setTimeout(() => controller.abort(), 22000);
     try {
       const response = await fetch(endpoint('/api/screen/offer'), {
         method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -1048,7 +1105,7 @@
       clearTimeout(signalTimeout);
       if (screenSignalAbort === controller) screenSignalAbort = null;
     }
-    await waitForIceConnection(peer, 5000);
+    await waitForIceConnection(peer, 8000);
     if (!video.srcObject) throw new Error('The phone connected without a video track');
     await video.play();
   }
@@ -1229,6 +1286,7 @@
   document.addEventListener('fullscreenchange', () => {
     const box = document.getElementById('screenView');
     box.classList.toggle('focused', document.fullscreenElement === box);
+    fitVideoStage();
   });
   document.getElementById('sendFile').addEventListener('change', async event => {
     const file = event.target.files && event.target.files[0];
@@ -1289,7 +1347,7 @@
       target.replaceChildren();
       for (const item of messages) {
         const row = document.createElement('article');
-        row.style.cssText = 'margin:6px 0;padding:10px 12px;background:' + (item.from === 'phone' ? '#e8f3f0' : '#f0f2f4') + ';border-radius:12px';
+        row.style.cssText = 'margin:6px 0;padding:10px 12px;background:' + (item.from === 'phone' ? 'var(--teal-soft)' : 'var(--surface-raised)') + ';color:var(--ink);border:1px solid var(--line);border-radius:12px';
         const label = document.createElement('span');
         const attachment = item.attachment && item.attachment.id ? item.attachment : null;
         const displayText = attachment ? 'Shared file' : (item.text || '');
@@ -1340,9 +1398,9 @@
           }
           if (mediaKind === 'video' || mediaKind === 'audio') {
             const vlc = document.createElement('a'); vlc.className = 'btn btn-outline';
-            vlc.textContent = 'Play in VLC'; vlc.target = '_blank'; vlc.rel = 'noopener';
+            vlc.textContent = 'Open with'; vlc.target = '_blank'; vlc.rel = 'noopener';
             const mediaUrl = new URL(endpoint('/api/inbox/' + encodeURIComponent(attachment.id)), location.href).href;
-            vlc.href = endpoint('/api/open-vlc?url=' + encodeURIComponent(mediaUrl));
+            vlc.href = endpoint('/api/open-with?url=' + encodeURIComponent(mediaUrl));
             actions.appendChild(vlc);
           }
           const download = document.createElement('button');

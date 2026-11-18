@@ -230,6 +230,25 @@ final class MediaHttpServer {
                 return;
             }
 
+            if (path.equals("/api/open-with") && method.equals("GET")) {
+                String helper = laptopHelperLink;
+                Uri helperUri = Uri.parse(helper);
+                String helperToken = helperUri.getQueryParameter("t");
+                String mediaUrl = target.getQueryParameter("url");
+                if (!"http".equalsIgnoreCase(helperUri.getScheme()) || helperUri.getHost() == null
+                        || helperToken == null || helperToken.isEmpty() || mediaUrl == null
+                        || !(mediaUrl.startsWith("http://") || mediaUrl.startsWith("https://"))) {
+                    respond(output, 503, "text/plain; charset=utf-8",
+                            "Start the Windows helper and paste its current link in Connect to choose a laptop player.", null);
+                    return;
+                }
+                String launch = helperUri.buildUpon().path("/open-with").clearQuery()
+                        .appendQueryParameter("t", helperToken).appendQueryParameter("url", mediaUrl).build().toString();
+                respond(output, 302, "text/plain; charset=utf-8", "Choose a player",
+                        "Location: " + launch + "\r\n");
+                return;
+            }
+
             if (path.equals("/api/upload") && method.equals("POST")) {
                 if (!uploadAllowed(declaredLength)) {
                     respond(output, 413, "application/json; charset=utf-8", "{\"error\":\"Upload must include a valid, non-empty file size.\"}", null);
