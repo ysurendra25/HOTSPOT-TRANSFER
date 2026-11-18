@@ -275,12 +275,7 @@ public final class MainActivity extends Activity {
         content.addView(copyButton, copyGap);
 
         Button sendFromPhone = button("Choose a file to send to laptop", COLOR_GREEN);
-        sendFromPhone.setOnClickListener(v -> {
-            Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-            picker.setType("*/*");
-            picker.addCategory(Intent.CATEGORY_OPENABLE);
-            startActivityForResult(picker, REQUEST_SEND_FILE);
-        });
+        sendFromPhone.setOnClickListener(v -> choosePhoneFileForLaptop());
         content.addView(sendFromPhone, matchWrap());
 
         stopButton = button("Stop sharing", Color.rgb(150, 60, 60));
@@ -477,6 +472,8 @@ public final class MainActivity extends Activity {
     private LinearLayout chatList;
     private TextView chatStatus;
     private EditText chatInput;
+    private boolean chatNotificationsPrimed;
+    private long lastChatNotificationTime;
     private final android.os.Handler chatHandler = new android.os.Handler(android.os.Looper.getMainLooper());
     private final Runnable chatPoll = new Runnable() {
         @Override public void run() {
@@ -791,6 +788,13 @@ public final class MainActivity extends Activity {
         sendGap.topMargin = dp(4);
         parent.addView(send, sendGap);
 
+        Button attach = button("＋ Share a photo, video or file", COLOR_SOFT);
+        attach.setTextColor(COLOR_INK);
+        attach.setOnClickListener(v -> choosePhoneFileForLaptop());
+        LinearLayout.LayoutParams attachGap = matchWrap();
+        attachGap.topMargin = dp(8);
+        parent.addView(attach, attachGap);
+
         Button clear = button("Clear conversation", COLOR_SOFT);
         clear.setTextColor(COLOR_INK);
         clear.setOnClickListener(v -> { ChatStore.clear(this); refreshChat(); });
@@ -802,6 +806,21 @@ public final class MainActivity extends Activity {
     private void refreshChat() {
         if (chatList == null) return;
         org.json.JSONArray messages = ChatStore.read(this);
+        long newestTime = 0;
+        JSONObject newestLaptopAttachment = null;
+        for (int i = 0; i < messages.length(); i++) {
+            JSONObject item = messages.optJSONObject(i);
+            if (item == null) continue;
+            long time = item.optLong("time", 0);
+            newestTime = Math.max(newestTime, time);
+            if (chatNotificationsPrimed && "laptop".equals(item.optString("from"))
+                    && item.optJSONObject("attachment") != null && time > lastChatNotificationTime) {
+                newestLaptopAttachment = item.optJSONObject("attachment");
+            }
+        }
+        boolean showIncomingFileAlert = chatNotificationsPrimed && newestLaptopAttachment != null;
+        chatNotificationsPrimed = true;
+        lastChatNotificationTime = Math.max(lastChatNotificationTime, newestTime);
         chatList.removeAllViews();
         if (messages.length() == 0) {
             TextView empty = new TextView(this);
@@ -849,6 +868,33 @@ public final class MainActivity extends Activity {
             lp.rightMargin = mine ? 0 : dp(36);
             chatList.addView(row, lp);
         }
+        if (showIncomingFileAlert && !isFinishing()) {
+            JSONObject attachment = newestLaptopAttachment;
+            String name = attachment.optString("name", "a file");
+            new android.app.AlertDialog.Builder(this)
+                    .setTitle("File received in chat")
+                    .setMessage("The laptop shared " + name + ". Open the file from the chat?")
+                    .setNegativeButton("Later", null)
+                    .setPositiveButton("Open file", (dialog, which) -> openChatAttachment(attachment))
+                    .show();
+        }
+    }
+
+    private void choosePhoneFileForLaptop() {
+        Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        picker.setType("*/*");
+        picker.addCategory(Intent.CATEGORY_OPENABLE);
+        try { startActivityForResult(picker, REQUEST_SEND_FILE); }
+        catch (Exception error) { Toast.makeText(this, "Could not open the file picker.", Toast.LENGTH_SHORT).show(); }
+    }
+
+    private void openChatAttachment(JSONObject attachment) {
+        String id = attachment.optString("id", "");
+        String code = codeText == null ? "" : codeText.getText().toString().replaceAll("\\s", "");
+        String url = "http://127.0.0.1:" + MediaHttpServer.PORT + "/api/inbox/"
+                + android.net.Uri.encode(id) + "?code=" + android.net.Uri.encode(code);
+        try { startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))); }
+        catch (Exception ignored) { Toast.makeText(this, "Could not open the shared file.", Toast.LENGTH_SHORT).show(); }
     }
 
     private void addCard(LinearLayout parent, String label, View content) {
@@ -972,7 +1018,7 @@ public final class MainActivity extends Activity {
                 try (java.io.InputStream input = getContentResolver().openInputStream(uri);
                      java.io.FileOutputStream output = new java.io.FileOutputStream(target)) {
                     if (input == null) throw new java.io.IOException("Could not open the selected file.");
-                    byte[] buffer = new byte[64 * 1024];
+                    byte[] buffer = new byte[1024 * 1024];
                     int read;
                     while ((read = input.read(buffer)) != -1) {
                         copied += read;

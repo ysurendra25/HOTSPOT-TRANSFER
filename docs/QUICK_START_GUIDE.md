@@ -20,6 +20,8 @@ This guide shows how to share files and your phone screen with a laptop. The lap
 - Photos and video thumbnails appear in the grid. Select **Photos**, **Videos**, **Audio**, or **Files** to narrow the list.
 - Tap **View** or a photo preview to open a photo. Tap **Play** or a video thumbnail to open a video.
 - In the player, tap **Play**, **↶ Back 10s**, or **Forward 10s ↷**. The seek bar also moves through the video; the left and right arrow keys skip ten seconds while the player is open.
+- Use the **Music** tab for a searchable track queue, album artwork, shuffle/repeat, and playback controls.
+- Use **Chat** → **Attach photos, videos or files** to send laptop files to the phone. On the phone, use **Chat** → **Share a photo, video or file** to send phone files to the laptop. The receiver is prompted before opening/downloading, and the attachment stays in the conversation.
 - If your browser cannot decode a video's format, PocketBridge creates an H.264/AAC copy on the phone and switches to that copy. This can take a few minutes and uses temporary phone storage. **Download** always saves the original file.
 
 Keep PocketBridge open on the phone while previews, playback, or downloads are in progress. Large files can take longer on a slow Wi-Fi connection.
@@ -31,7 +33,7 @@ Keep PocketBridge open on the phone while previews, playback, or downloads are i
 1. Keep the phone and laptop on the same Wi-Fi network or PocketBridge hotspot.
 2. Tap **Share phone screen** in PocketBridge on the phone.
 3. Approve Android's screen-capture prompt. Android asks for this approval each time.
-4. On the laptop, tap **Watch screen**. PocketBridge sends up to 1280-pixel, 12-fps JPEG frames directly over the local connection; it needs no internet, WebRTC setup, or laptop installation. Keep PocketBridge open and the screen on while sharing.
+4. On the laptop, tap **Watch screen**. PocketBridge first uses a direct WebRTC video stream over the hotspot (no internet, STUN server, or relay). If the browser cannot establish it, the page automatically falls back to the local JPEG stream. Use **Fullscreen** to fit the phone screen to the whole laptop display while preserving its shape. Keep PocketBridge open and the screen on while sharing.
 
 To stop, tap **Stop viewing** in the browser and **Stop sharing** in PocketBridge.
 

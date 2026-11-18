@@ -75,14 +75,14 @@
     place-items:center;font-size:20px}
   .screen-title{font-size:16px;font-weight:750}
   .screen-desc{font-size:13px;color:#cde3de;margin-top:2px}
-  .screen-view{display:none;margin:0 0 22px;background:#0f1b22;border-radius:18px;overflow:hidden}
-  .screen-view.active{display:block}
-  .screen-view.focused{position:fixed;inset:0;z-index:30;margin:0;border-radius:0;display:flex;flex-direction:column;background:#000}
+  .screen-view{display:none;margin:0 0 22px;background:#0f1b22;border-radius:18px;overflow:hidden;min-width:0}
+  .screen-view.active{display:flex;flex-direction:column}
+  .screen-view.focused,.screen-view:fullscreen{position:fixed;inset:0;z-index:1000;margin:0;border-radius:0;display:flex;flex-direction:column;background:#000;width:100vw;height:100vh;height:100dvh;max-width:none;overflow:hidden}
   .screen-toolbar{padding:11px 15px;color:#fff;display:flex;justify-content:space-between;align-items:center;gap:10px}
   .screen-toolbar span{font-size:13px}
-  .screen-view img{display:block;width:100%;max-height:72vh;min-height:220px;background:#000;object-fit:contain}
-  .screen-view img[hidden]{display:none}
-  .screen-view.focused img{flex:1;min-height:0;max-height:none;width:100%;height:100%;object-fit:contain}
+  .screen-view canvas,.screen-view video{display:block;width:100%;height:auto;max-height:72vh;min-height:160px;object-fit:contain;background:#000;image-rendering:auto}
+  .screen-view canvas[hidden],.screen-view video[hidden]{display:none}
+  .screen-view.focused canvas,.screen-view:fullscreen canvas,.screen-view.focused video,.screen-view:fullscreen video{flex:1;min-width:0;min-height:0;max-height:none;width:100%;height:100%;object-fit:contain}
   .modal:fullscreen{padding:0;background:#000}
   .modal:fullscreen .modal-box{max-width:none;width:100vw;height:100vh;border-radius:0;display:flex;flex-direction:column}
   .modal:fullscreen .stage{flex:1;min-height:0;max-height:none}
@@ -145,11 +145,28 @@
   .stage{background:#000;display:flex;align-items:center;justify-content:center;flex:1;min-height:0;max-height:none;overflow:hidden}
   .stage video,.stage img{width:100%;height:100%;max-height:100%;display:block;object-fit:contain;background:#000}
   .stage.ratio-16-9{aspect-ratio:16/9}.stage.ratio-4-3{aspect-ratio:4/3}.stage.ratio-1-1{aspect-ratio:1/1}.stage.ratio-original{aspect-ratio:auto}
-  .music-player{background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px;margin:12px 0}
-  .music-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-  .music-controls audio{width:100%}
-  .music-row{display:flex;align-items:center;gap:10px;padding:10px;border-bottom:1px solid var(--line);cursor:pointer}
-  .music-row.active{background:var(--teal-soft);font-weight:750}
+  .music-layout{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(300px,.9fr);gap:18px;align-items:start}
+  .music-player{position:sticky;top:14px;background:linear-gradient(145deg,#18353b,#10252c);border:1px solid #27474d;border-radius:22px;padding:22px;color:#f5fbf9;margin:12px 0;box-shadow:0 18px 38px rgba(18,45,53,.15)}
+  .music-kicker{color:#a8d3c8;font-size:11px;font-weight:800;letter-spacing:.13em;text-transform:uppercase}
+  .music-now{display:flex;align-items:center;gap:16px;margin:16px 0}
+  .music-art{width:118px;height:118px;flex:none;border-radius:18px;background:linear-gradient(145deg,#39a587,#164e4a);display:grid;place-items:center;overflow:hidden;color:#d7fff1;font-size:42px;box-shadow:0 10px 26px #06181c55}
+  .music-art img{width:100%;height:100%;object-fit:cover}
+  .music-meta{min-width:0}.music-meta strong{display:block;font-size:20px;line-height:1.2;overflow-wrap:anywhere}.music-meta span{display:block;margin-top:7px;color:#b8cbc8;font-size:13px}
+  .music-controls{display:flex;align-items:center;justify-content:center;gap:10px;margin:16px 0 12px}
+  .music-controls .btn{min-width:44px;min-height:42px;padding:9px 12px;background:#24434a;color:#f0f8f6;border:1px solid #35565d}
+  .music-controls .btn[aria-pressed="true"]{background:#0e8469;border-color:#30aa8d}
+  .music-controls .music-main{width:54px;height:54px;border:0;border-radius:50%;background:#27a481;color:#fff;font-size:20px}
+  .music-progress{display:grid;grid-template-columns:42px 1fr 42px;gap:9px;align-items:center;color:#b8cbc8;font-size:11px;font-variant-numeric:tabular-nums}
+  .music-progress input,.music-volume input{width:100%;accent-color:#31b28d}
+  .music-volume{display:flex;align-items:center;gap:8px;color:#b8cbc8;font-size:13px;margin-top:12px}
+  #musicAudio{display:none}
+  .music-queue{background:#fff;border:1px solid var(--line);border-radius:18px;padding:8px;max-height:70vh;overflow:auto}
+  .music-row{display:grid;grid-template-columns:48px minmax(0,1fr) auto;align-items:center;gap:11px;padding:9px;border-radius:12px;cursor:pointer;border:0;width:100%;text-align:left;background:transparent;color:var(--ink)}
+  .music-row:hover{background:#f3f8f7}.music-row.active{background:var(--teal-soft);color:var(--teal-dark)}
+  .music-thumb{width:48px;height:48px;border-radius:10px;overflow:hidden;background:#e7f0ee;display:grid;place-items:center;color:var(--teal);font-size:20px}
+  .music-thumb img{width:100%;height:100%;object-fit:cover}.music-track{min-width:0}.music-track strong,.music-track span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.music-track strong{font-size:13px}.music-track span{font-size:11px;color:var(--muted);margin-top:3px}.music-size{font-size:11px;color:var(--muted);white-space:nowrap}
+  .chat-attach-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .chat-attach-row [role="status"]{font-size:12px;color:var(--muted)}
   .stage audio{width:100%;margin:26px 0}
   .controls{display:flex;align-items:center;gap:10px;padding:11px 14px 14px;color:#eaf3f1;flex-wrap:wrap}
   .ctrl{background:#1d3038;color:#eaf3f1;border:0;border-radius:10px;padding:9px 12px;font-weight:700;font-size:13px}
@@ -180,6 +197,7 @@
   .stage .note{color:#cfe0dc;padding:40px 20px;text-align:center}
 
   @media(max-width:900px){.grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+  @media(max-width:760px){.music-layout{grid-template-columns:1fr}.music-player{position:static}.music-queue{max-height:52vh}}
   @media(max-width:640px){
     .shell{padding:0 14px 40px}.topbar{height:62px}.hero{padding:22px 0 16px}h1{font-size:26px}
     .grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
@@ -251,7 +269,12 @@
     <section class="card" id="chatCard" style="padding:14px;gap:10px">
       <div id="chatMessages" aria-live="polite" style="max-height:220px;overflow:auto;white-space:pre-wrap">Loading messages…</div>
       <textarea id="chatInput" maxlength="2000" rows="2" placeholder="Write a message for this share session" style="width:100%;box-sizing:border-box;padding:10px;border:1px solid var(--line);border-radius:10px;font:inherit"></textarea>
-      <button class="btn btn-dark" id="sendMessage" type="button">Send message</button>
+      <div class="chat-attach-row">
+        <label class="btn btn-soft" for="chatFile">＋ Attach photos, videos or files</label>
+        <input id="chatFile" type="file" multiple hidden>
+        <span id="chatFileStatus" role="status" aria-live="polite"></span>
+        <button class="btn btn-dark" id="sendMessage" type="button">Send message</button>
+      </div>
     </section>
 
     <section class="screen-view" id="screenView">
@@ -260,6 +283,7 @@
         <button class="btn btn-outline" id="screenFullscreen" type="button">Fullscreen</button>
         <button class="btn btn-outline" id="stopWatch" type="button">Stop viewing</button>
       </div>
+      <video id="screenVideo" autoplay muted playsinline aria-label="Live screen from the Android phone" hidden></video>
       <canvas id="screenCanvas" aria-label="Live screen from the Android phone" hidden></canvas>
       <div class="note" id="screenViewHint">Tap “Share phone screen” in PocketBridge on the phone to begin.</div>
     </section>
@@ -284,9 +308,24 @@
     <div class="load-more" id="loadMoreWrap" hidden><button class="btn btn-soft" id="loadMore" type="button">Load more</button></div>
 
     <section id="musicSection" hidden>
-      <div class="library-head"><div><span class="section-title">Music player</span><span class="count" id="musicCount">Loading songs…</span></div><input class="search" id="musicSearch" placeholder="Search songs" autocomplete="off"></div>
-      <div class="music-player"><div class="music-controls"><button class="btn btn-outline" id="musicShuffle" type="button" aria-pressed="false">Shuffle off</button><button class="btn btn-outline" id="musicPrev" type="button">Previous</button><button class="btn btn-dark" id="musicNext" type="button">Next</button></div><audio id="musicAudio" controls preload="metadata"></audio><strong id="musicTitle">Choose a song</strong></div>
-      <section id="musicList" class="card" style="padding:8px"></section>
+      <div class="library-head"><div><span class="section-title">Music</span><span class="count" id="musicCount">Loading songs…</span></div><input class="search" id="musicSearch" placeholder="Search your songs" autocomplete="off"></div>
+      <div class="music-layout">
+        <section class="music-player" aria-label="Now playing">
+          <div class="music-kicker">Now playing</div>
+          <div class="music-now"><div class="music-art" id="musicArt" aria-label="Album artwork">♫</div><div class="music-meta"><strong id="musicTitle">Choose a song</strong><span id="musicSubtitle">Your phone music library</span></div></div>
+          <div class="music-progress"><span id="musicCurrentTime">0:00</span><input id="musicSeek" type="range" min="0" max="1000" value="0" aria-label="Track position"><span id="musicDuration">0:00</span></div>
+          <div class="music-controls">
+            <button class="btn" id="musicShuffle" type="button" aria-label="Shuffle off" aria-pressed="false" title="Shuffle">⤨</button>
+            <button class="btn" id="musicPrev" type="button" aria-label="Previous song" title="Previous">|◀</button>
+            <button class="btn music-main" id="musicPlayPause" type="button" aria-label="Play" title="Play">▶</button>
+            <button class="btn" id="musicNext" type="button" aria-label="Next song" title="Next">▶|</button>
+            <button class="btn" id="musicRepeat" type="button" aria-label="Repeat off" aria-pressed="false" title="Repeat">↻</button>
+          </div>
+          <div class="music-volume"><span aria-hidden="true">◖</span><input id="musicVolume" type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume"><span>Volume</span></div>
+          <audio id="musicAudio" preload="metadata"></audio>
+        </section>
+        <section><div class="library-head" style="margin-top:8px"><strong>All songs</strong><span class="count" id="musicQueueCount">Queue</span></div><div id="musicList" class="music-queue" aria-label="Song list"></div></section>
+      </div>
     </section>
     <footer class="foot">Shared directly over your own network · PocketBridge open source</footer>
   </div>
@@ -912,30 +951,120 @@
   // stall, counts frames, and can reconnect on its own.
   let screenReader = null;
   let screenAbort = null;
+  let screenSignalAbort = null;
+  let screenPeer = null;
   let screenFrames = 0;
-  let screenStartedAt = 0;
+  let latestScreenJpeg = null;
+  let decodingScreenFrame = false;
 
   async function watchScreen() {
     const screenView = document.getElementById('screenView');
     const state = document.getElementById('screenState');
     const watchButton = document.getElementById('watchButton');
     const canvas = document.getElementById('screenCanvas');
+    const video = document.getElementById('screenVideo');
     if (watchButton.disabled) return;
     clearTimeout(screenFrameTimer);
     screenWanted = true;
     screenRetries = 0;
     watchButton.disabled = true;
     screenView.classList.add('active');
-    state.textContent = 'Opening a direct local screen stream…';
-    canvas.hidden = false;
-    await readScreenStream(state, watchButton, canvas, 0);
+    state.textContent = 'Starting low-latency screen connection…';
+    video.hidden = false;
+    canvas.hidden = true;
+    try {
+      await watchScreenWebRtc(video, state);
+    } catch (error) {
+      if (!screenWanted) return;
+      await closeScreenPeer();
+      video.pause();
+      video.srcObject = null;
+      video.hidden = true;
+      canvas.hidden = false;
+      state.textContent = 'Using the compatible local stream…';
+      await readScreenStream(state, watchButton, canvas, 0);
+    }
+  }
+
+  async function watchScreenWebRtc(video, state) {
+    if (!window.RTCPeerConnection) throw new Error('WebRTC is unavailable');
+    const peer = new RTCPeerConnection({iceServers: [], bundlePolicy: 'max-bundle'});
+    screenPeer = peer;
+    peer.addTransceiver('video', {direction: 'recvonly'});
+    peer.ontrack = event => {
+      const stream = event.streams && event.streams[0] ? event.streams[0] : new MediaStream([event.track]);
+      video.srcObject = stream;
+      video.play().catch(() => {});
+    };
+    peer.oniceconnectionstatechange = () => {
+      if (peer.iceConnectionState === 'connected' || peer.iceConnectionState === 'completed') {
+        state.textContent = 'Live · direct low-latency hotspot stream';
+        document.getElementById('screenHint').textContent = 'Your phone screen is streaming directly over the local network.';
+        document.getElementById('screenViewHint').textContent = 'Live screen from your phone.';
+      }
+    };
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+    await waitForIceGathering(peer, 8000);
+    if (peer.iceGatheringState !== 'complete') throw new Error('Local network candidates did not finish gathering');
+
+    const controller = new AbortController();
+    screenSignalAbort = controller;
+    const signalTimeout = setTimeout(() => controller.abort(), 14000);
+    try {
+      const response = await fetch(endpoint('/api/screen/offer'), {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({sdp: peer.localDescription.sdp}), signal: controller.signal
+      });
+      const answer = await response.json();
+      if (!response.ok || !answer.sdp) throw new Error(answer.error || 'The phone rejected the local screen connection');
+      await peer.setRemoteDescription({type: answer.type || 'answer', sdp: answer.sdp});
+    } finally {
+      clearTimeout(signalTimeout);
+      if (screenSignalAbort === controller) screenSignalAbort = null;
+    }
+    await waitForIceConnection(peer, 9000);
+    if (!video.srcObject) throw new Error('The phone connected without a video track');
+    await video.play();
+  }
+
+  function waitForIceGathering(peer, timeoutMs) {
+    if (peer.iceGatheringState === 'complete') return Promise.resolve();
+    return new Promise(resolve => {
+      const finish = () => { clearTimeout(timer); peer.removeEventListener('icegatheringstatechange', check); resolve(); };
+      const check = () => { if (peer.iceGatheringState === 'complete') finish(); };
+      const timer = setTimeout(finish, timeoutMs);
+      peer.addEventListener('icegatheringstatechange', check);
+    });
+  }
+
+  function waitForIceConnection(peer, timeoutMs) {
+    if (peer.iceConnectionState === 'connected' || peer.iceConnectionState === 'completed') return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const finish = error => {
+        clearTimeout(timer);
+        peer.removeEventListener('iceconnectionstatechange', check);
+        error ? reject(error) : resolve();
+      };
+      const check = () => {
+        if (peer.iceConnectionState === 'connected' || peer.iceConnectionState === 'completed') finish();
+        else if (peer.iceConnectionState === 'failed' || peer.iceConnectionState === 'closed') finish(new Error('The direct hotspot video path could not connect'));
+      };
+      const timer = setTimeout(() => finish(new Error('The direct screen connection timed out')), timeoutMs);
+      peer.addEventListener('iceconnectionstatechange', check);
+    });
+  }
+
+  async function closeScreenPeer() {
+    if (screenSignalAbort) { try { screenSignalAbort.abort(); } catch (e) {} screenSignalAbort = null; }
+    if (screenPeer) { try { screenPeer.close(); } catch (e) {} screenPeer = null; }
+    try { await fetch(endpoint('/api/screen/stop'), {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}); } catch (e) {}
   }
 
   async function readScreenStream(state, watchButton, canvas, attempt) {
     if (!screenWanted) return;
     screenAbort = new AbortController();
-    screenFrames = 0;
-    screenStartedAt = Date.now();
+    if (attempt === 0) { screenFrames = 0; latestScreenJpeg = null; }
     try {
       const response = await fetch(endpoint('/api/screen/mjpeg') + '&_=' + Date.now(), {
         cache: 'no-store', signal: screenAbort.signal
@@ -959,33 +1088,32 @@
       while (screenWanted) {
         const {done, value} = await reader.read();
         if (done) break;
-        // Collect bytes until a whole JPEG is buffered, then draw it.
+        // Keep consuming the network while a JPEG is decoding. If the phone or
+        // hotspot is faster than this browser, only the newest frame is drawn;
+        // decoding a queue of old frames is what made the view several seconds late.
         const merged = new Uint8Array(pending.length + value.length);
         merged.set(pending, 0);
         merged.set(value, pending.length);
-        pending = merged;
-        let start = indexOfJpegStart(pending, 0);
+        let start = indexOfJpegStart(merged, 0);
+        if (start < 0) {
+          pending = merged.length && merged[merged.length - 1] === 0xFF ? merged.slice(-1) : new Uint8Array(0);
+          continue;
+        }
+        let latest = null;
         while (start >= 0) {
-          const finish = indexOfJpegEnd(pending, start);
+          const finish = indexOfJpegEnd(merged, start);
           if (finish < 0) break;
-          const jpeg = pending.slice(start, finish + 2);
-          const bitmap = await createImageBitmap(new Blob([jpeg], {type: 'image/jpeg'}));
-          if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
-            canvas.width = bitmap.width;
-            canvas.height = bitmap.height;
-          }
-          context.drawImage(bitmap, 0, 0);
-          bitmap.close && bitmap.close();
-          screenFrames++;
-          pending = pending.slice(finish + 2);
-          start = indexOfJpegStart(pending, 0);
+          latest = merged.slice(start, finish + 2);
+          start = indexOfJpegStart(merged, finish + 2);
         }
-        if (screenFrames === 1) {
-          state.textContent = 'Live · direct phone-to-laptop stream (no internet needed)';
-          document.getElementById('screenHint').textContent = 'Your phone screen is streaming over the local Wi-Fi connection.';
-          document.getElementById('screenViewHint').textContent = 'Live screen from your phone.';
+        if (start >= 0) {
+          // A partial frame remains; keep only that frame instead of every older
+          // complete frame in the chunk.
+          pending = merged.slice(start);
+        } else {
+          pending = new Uint8Array(0);
         }
-        if (screenFrames > 0) state.textContent = 'Live · ' + screenFrames + ' frames received';
+        if (latest) { latestScreenJpeg = latest; drawLatestScreenFrame(canvas, context, state); }
       }
     } catch (error) {
       if (!screenWanted) return;
@@ -1003,6 +1131,37 @@
     }
   }
 
+  async function drawLatestScreenFrame(canvas, context, state) {
+    if (decodingScreenFrame || !latestScreenJpeg || !screenWanted) return;
+    decodingScreenFrame = true;
+    try {
+      while (latestScreenJpeg && screenWanted) {
+        const jpeg = latestScreenJpeg;
+        latestScreenJpeg = null;
+        const bitmap = await createImageBitmap(new Blob([jpeg], {type: 'image/jpeg'}));
+        if (screenWanted) {
+          if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+            canvas.width = bitmap.width;
+            canvas.height = bitmap.height;
+          }
+          context.drawImage(bitmap, 0, 0);
+          screenFrames++;
+          if (screenFrames === 1) {
+            document.getElementById('screenHint').textContent = 'Your phone screen is streaming over the local Wi-Fi connection.';
+            document.getElementById('screenViewHint').textContent = 'Live screen from your phone.';
+          }
+          state.textContent = 'Live · ' + screenFrames + ' frames shown';
+        }
+        if (bitmap.close) bitmap.close();
+      }
+    } catch (error) {
+      if (screenWanted) state.textContent = 'Could not decode a screen frame. Reconnect and try again.';
+    } finally {
+      decodingScreenFrame = false;
+      if (latestScreenJpeg && screenWanted) drawLatestScreenFrame(canvas, context, state);
+    }
+  }
+
   function indexOfJpegStart(bytes, from) {
     for (let i = from; i < bytes.length - 1; i++) if (bytes[i] === 0xFF && bytes[i + 1] === 0xD8) return i;
     return -1;
@@ -1016,12 +1175,19 @@
   function stopWatching() {
     screenWanted = false;
     clearTimeout(screenFrameTimer);
+    closeScreenPeer();
     if (screenAbort) { try { screenAbort.abort(); } catch (e) {} screenAbort = null; }
     if (screenReader) { try { screenReader.cancel(); } catch (e) {} screenReader = null; }
     const canvas = document.getElementById('screenCanvas');
+    const video = document.getElementById('screenVideo');
     canvas.hidden = true;
+    video.pause();
+    video.srcObject = null;
+    video.hidden = true;
+    latestScreenJpeg = null;
     document.getElementById('watchButton').disabled = false;
     document.getElementById('screenView').classList.remove('active');
+    document.getElementById('screenView').classList.remove('focused');
     document.getElementById('screenState').textContent = 'Not connected';
     document.getElementById('screenHint').textContent = 'Tap “Share phone screen” in PocketBridge on the phone to begin.';
     document.getElementById('screenViewHint').textContent = 'Tap “Share phone screen” in PocketBridge on the phone to begin.';
@@ -1031,22 +1197,32 @@
   document.getElementById('screenFullscreen').addEventListener('click', () => {
     const box = document.getElementById('screenView');
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-    else if (box.requestFullscreen) box.requestFullscreen().catch(() => {});
+    else if (box.classList.contains('focused')) box.classList.remove('focused');
+    else if (box.requestFullscreen) box.requestFullscreen().catch(() => box.classList.add('focused'));
+    else box.classList.add('focused');
+  });
+  document.addEventListener('fullscreenchange', () => {
+    const box = document.getElementById('screenView');
+    box.classList.toggle('focused', document.fullscreenElement === box);
   });
   document.getElementById('sendFile').addEventListener('change', async event => {
     const file = event.target.files && event.target.files[0];
     if (!file) return;
     const status = document.getElementById('sendStatus');
+    await sendFileToPhone(file, status);
+    event.target.value = '';
+  });
+  async function sendFileToPhone(file, status) {
     status.textContent = 'Sending ' + file.name + '…';
     try {
       const response = await fetch(endpoint('/api/upload?name=' + encodeURIComponent(file.name)), {method:'POST', headers:{'Content-Type':'application/octet-stream'}, body:file});
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Transfer failed');
-      status.textContent = 'Sent to phone: ' + result.name;
+      status.textContent = 'Sent: ' + result.name;
       loadInbox();
-    } catch (error) { status.textContent = error.message || 'Transfer failed. Check the connection.'; }
-    event.target.value = '';
-  });
+      return true;
+    } catch (error) { status.textContent = error.message || 'Transfer failed. Check the connection.'; return false; }
+  }
   async function loadInbox() {
     const grid = document.getElementById('inboxGrid');
     try {
@@ -1058,16 +1234,30 @@
     } catch (_) { grid.innerHTML = '<div class="empty">Could not load received files.</div>'; }
   }
   document.getElementById('refreshInbox').addEventListener('click', loadInbox);
+  let chatMessagesPrimed = false;
+  let lastChatMessageTime = 0;
   async function refreshMessages() {
     try {
       const response = await fetch(endpoint('/api/messages'), {cache:'no-store'});
       if (!response.ok) return;
       const data = await response.json();
+      const messages = data.messages || [];
+      const newestTime = messages.reduce((latest, item) => Math.max(latest, Number(item.time) || 0), 0);
+      if (chatMessagesPrimed) {
+        for (const item of messages) {
+          const time = Number(item.time) || 0;
+          if (time <= lastChatMessageTime || item.from !== 'phone' || !item.attachment) continue;
+          const name = item.attachment.name || 'a file';
+          if (confirm('Your phone shared “' + name + '”. Download it to this laptop now?')) downloadChatAttachment(item.attachment);
+        }
+      }
+      chatMessagesPrimed = true;
+      lastChatMessageTime = Math.max(lastChatMessageTime, newestTime);
       const target = document.getElementById('chatMessages');
       target.replaceChildren();
-      for (const item of data.messages || []) {
+      for (const item of messages) {
         const row = document.createElement('p');
-        row.style.cssText = 'margin:4px 0;padding:8px 10px;background:#eef5f3;border-radius:10px';
+        row.style.cssText = 'margin:4px 0;padding:8px 10px;background:' + (item.from === 'phone' ? '#e8f3f0' : '#f0f2f4') + ';border-radius:10px';
         const label = document.createElement('span');
         label.textContent = new Date(item.time).toLocaleTimeString() + ' · ' + item.text;
         row.appendChild(label);
@@ -1079,10 +1269,7 @@
           download.textContent = 'Accept and download ' + (item.attachment.name || 'file');
           download.addEventListener('click', () => {
             if (!confirm('Download ' + (item.attachment.name || 'this file') + ' to this computer?')) return;
-            const link = document.createElement('a');
-            link.href = endpoint('/api/inbox/' + encodeURIComponent(item.attachment.id));
-            link.download = item.attachment.name || 'shared-file';
-            document.body.appendChild(link); link.click(); link.remove();
+            downloadChatAttachment(item.attachment);
           });
           row.appendChild(download);
         }
@@ -1092,14 +1279,33 @@
       target.scrollTop = target.scrollHeight;
     } catch (_) { }
   }
+  function downloadChatAttachment(attachment) {
+    const link = document.createElement('a');
+    link.href = endpoint('/api/inbox/' + encodeURIComponent(attachment.id));
+    link.download = attachment.name || 'shared-file';
+    document.body.appendChild(link); link.click(); link.remove();
+  }
   document.getElementById('sendMessage').addEventListener('click', async () => {
     const input = document.getElementById('chatInput');
     const text = input.value.trim(); if (!text) return;
     const response = await fetch(endpoint('/api/messages'), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
     if (response.ok) { input.value = ''; refreshMessages(); }
   });
+  document.getElementById('chatFile').addEventListener('change', async event => {
+    const input = event.currentTarget;
+    const files = Array.from(input.files || []);
+    const status = document.getElementById('chatFileStatus');
+    let allSent = true;
+    for (let index = 0; index < files.length; index++) {
+      status.textContent = 'Sending ' + (index + 1) + ' of ' + files.length + ': ' + files[index].name;
+      if (!await sendFileToPhone(files[index], status)) { allSent = false; break; }
+    }
+    if (allSent && files.length) status.textContent = files.length + ' file(s) shared in chat.';
+    input.value = '';
+    refreshMessages();
+  });
 
-  let musicFiles = [], musicIndex = -1, musicShuffle = false;
+  let musicFiles = [], musicIndex = -1, musicShuffle = false, musicRepeatMode = 0;
   async function loadMusic() {
     const list = document.getElementById('musicList'); list.textContent = 'Loading songs…';
     try { const r=await fetch(endpoint('/api/files?kind=audio&limit=5000'),{cache:'no-store'}); if(!r.ok)throw new Error(); musicFiles=(await r.json()).files||[]; renderMusic(); }
@@ -1107,16 +1313,50 @@
   }
   function renderMusic() {
     const q=document.getElementById('musicSearch').value.trim().toLowerCase(), list=document.getElementById('musicList');
-    document.getElementById('musicCount').textContent=musicFiles.length+' songs'; list.replaceChildren();
-    const visible=musicFiles.map((song,i)=>({song,i})).filter(x=>!q||x.song.name.toLowerCase().includes(q));
+    document.getElementById('musicCount').textContent=musicFiles.length+' songs';
+    document.getElementById('musicQueueCount').textContent=musicFiles.length+' in queue'; list.replaceChildren();
+    const visible=musicFiles.map((song,i)=>({song,i})).filter(x=>!q||(x.song.name+' '+(x.song.mime||'')).toLowerCase().includes(q));
     if(!visible.length){list.textContent='No matching songs.';return;}
-    for(const {song,i} of visible){const row=document.createElement('div');row.className='music-row'+(i===musicIndex?' active':'');row.textContent='♫  '+song.name+' · '+formatSize(song.size);row.onclick=()=>playSong(i);list.appendChild(row);}
+    for(const {song,i} of visible){
+      const row=document.createElement('button');row.type='button';row.className='music-row'+(i===musicIndex?' active':'');
+      const art=document.createElement('span');art.className='music-thumb';
+      if(song.thumb){const image=document.createElement('img');image.loading='lazy';image.alt='';image.src=endpoint(song.thumb);image.onerror=()=>{art.textContent='♫';};art.appendChild(image);}else art.textContent='♫';
+      const track=document.createElement('span');track.className='music-track';
+      const title=document.createElement('strong');title.textContent=song.name;const subtitle=document.createElement('span');subtitle.textContent='Local audio';track.append(title,subtitle);
+      const size=document.createElement('span');size.className='music-size';size.textContent=formatSize(song.size);
+      row.append(art,track,size);row.setAttribute('aria-current',i===musicIndex?'true':'false');row.onclick=()=>playSong(i);list.appendChild(row);
+    }
   }
-  function playSong(i){if(!musicFiles.length)return;musicIndex=(i+musicFiles.length)%musicFiles.length;const song=musicFiles[musicIndex];const audio=document.getElementById('musicAudio');audio.src=endpoint(song.url);document.getElementById('musicTitle').textContent=song.name;audio.play().catch(()=>{});renderMusic();}
-  document.getElementById('musicPrev').onclick=()=>playSong(musicIndex-1);
-  document.getElementById('musicNext').onclick=()=>playSong(musicShuffle?Math.floor(Math.random()*musicFiles.length):musicIndex+1);
-  document.getElementById('musicShuffle').onclick=e=>{musicShuffle=!musicShuffle;e.currentTarget.textContent=musicShuffle?'Shuffle on':'Shuffle off';e.currentTarget.setAttribute('aria-pressed',String(musicShuffle));};
-  document.getElementById('musicAudio').addEventListener('ended',()=>playSong(musicShuffle?Math.floor(Math.random()*musicFiles.length):musicIndex+1));
+  function playSong(i){
+    if(!musicFiles.length)return;
+    musicIndex=(i+musicFiles.length)%musicFiles.length;
+    const song=musicFiles[musicIndex],audio=document.getElementById('musicAudio');
+    audio.src=endpoint(song.url);
+    document.getElementById('musicTitle').textContent=song.name;
+    document.getElementById('musicSubtitle').textContent='Track '+(musicIndex+1)+' of '+musicFiles.length+' · Local audio';
+    const art=document.getElementById('musicArt');art.replaceChildren();
+    if(song.thumb){const image=document.createElement('img');image.alt='Album artwork for '+song.name;image.src=endpoint(song.thumb);image.onerror=()=>{art.textContent='♫';};art.appendChild(image);}else art.textContent='♫';
+    audio.play().catch(()=>{});renderMusic();
+  }
+  function nextMusicIndex(){
+    if(musicFiles.length<2)return musicIndex;
+    if(musicShuffle){const offset=1+Math.floor(Math.random()*(musicFiles.length-1));return (musicIndex+offset)%musicFiles.length;}
+    return (musicIndex+1)%musicFiles.length;
+  }
+  function formatMusicTime(seconds){if(!Number.isFinite(seconds)||seconds<0)return '0:00';const n=Math.floor(seconds);return Math.floor(n/60)+':'+String(n%60).padStart(2,'0');}
+  const musicAudio=document.getElementById('musicAudio');
+  document.getElementById('musicPrev').onclick=()=>{if(musicAudio.currentTime>3){musicAudio.currentTime=0;return;}playSong(musicIndex-1);};
+  document.getElementById('musicNext').onclick=()=>playSong(nextMusicIndex());
+  document.getElementById('musicPlayPause').onclick=()=>{if(musicIndex<0){playSong(0);return;}if(musicAudio.paused)musicAudio.play().catch(()=>{});else musicAudio.pause();};
+  document.getElementById('musicShuffle').onclick=e=>{musicShuffle=!musicShuffle;e.currentTarget.setAttribute('aria-pressed',String(musicShuffle));e.currentTarget.setAttribute('aria-label',musicShuffle?'Shuffle on':'Shuffle off');};
+  document.getElementById('musicRepeat').onclick=e=>{musicRepeatMode=(musicRepeatMode+1)%3;e.currentTarget.setAttribute('aria-pressed',String(musicRepeatMode!==0));e.currentTarget.setAttribute('aria-label',['Repeat off','Repeat all','Repeat one'][musicRepeatMode]);e.currentTarget.title=['Repeat off','Repeat all','Repeat one'][musicRepeatMode];};
+  musicAudio.addEventListener('timeupdate',()=>{document.getElementById('musicCurrentTime').textContent=formatMusicTime(musicAudio.currentTime);document.getElementById('musicDuration').textContent=formatMusicTime(musicAudio.duration);if(Number.isFinite(musicAudio.duration))document.getElementById('musicSeek').value=String(Math.round(musicAudio.currentTime/musicAudio.duration*1000));});
+  musicAudio.addEventListener('loadedmetadata',()=>{document.getElementById('musicDuration').textContent=formatMusicTime(musicAudio.duration);});
+  musicAudio.addEventListener('play',()=>{document.getElementById('musicPlayPause').textContent='Ⅱ';document.getElementById('musicPlayPause').setAttribute('aria-label','Pause');});
+  musicAudio.addEventListener('pause',()=>{document.getElementById('musicPlayPause').textContent='▶';document.getElementById('musicPlayPause').setAttribute('aria-label','Play');});
+  musicAudio.addEventListener('ended',()=>{if(musicRepeatMode===2){musicAudio.currentTime=0;musicAudio.play().catch(()=>{});}else if(musicRepeatMode===1||musicShuffle)playSong(nextMusicIndex());else if(musicIndex+1<musicFiles.length)playSong(musicIndex+1);else{musicAudio.currentTime=0;musicAudio.pause();}});
+  document.getElementById('musicSeek').addEventListener('input',e=>{if(Number.isFinite(musicAudio.duration))musicAudio.currentTime=(Number(e.currentTarget.value)/1000)*musicAudio.duration;});
+  document.getElementById('musicVolume').addEventListener('input',e=>{musicAudio.volume=Number(e.currentTarget.value);});
   document.getElementById('musicSearch').addEventListener('input',renderMusic);
   setInterval(refreshMessages, 2500);
 

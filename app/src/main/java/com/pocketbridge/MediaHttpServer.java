@@ -228,7 +228,9 @@ final class MediaHttpServer {
                 File destination = new File(inbox, System.currentTimeMillis() + "-" + safeName);
                 long receivedBytes = 0;
                 try (java.io.FileOutputStream file = new java.io.FileOutputStream(destination)) {
-                    byte[] buffer = new byte[64 * 1024];
+                    // A 1 MiB streaming buffer keeps multi-gigabyte hotspot uploads
+                    // from paying a read/write round trip for every 64 KiB chunk.
+                    byte[] buffer = new byte[1024 * 1024];
                     while (receivedBytes < declaredLength) {
                         int read = input.read(buffer, 0, (int) Math.min(buffer.length, declaredLength - receivedBytes));
                         if (read < 0) throw new IOException("The upload ended early.");
@@ -388,6 +390,9 @@ final class MediaHttpServer {
                     respond(output, 409, "application/json; charset=utf-8", refusal.toString(), null);
                     return;
                 }
+                // WebRTC is the low-latency path. Only allocate and encode JPEGs
+                // after the browser has explicitly requested the compatibility path.
+                ScreenCaptureService.prepareMjpegFallback();
                 // Do not stop/start the MediaProjection capture on viewer connection.
                 // Rebuilding its virtual display stalls the first frame on some phones.
                 ScreenCaptureService.JpegFrame frame = ScreenCaptureService.awaitJpegFrame(-1, 6000);

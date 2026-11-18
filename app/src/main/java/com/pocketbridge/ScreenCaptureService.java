@@ -7,14 +7,10 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
-import android.hardware.display.DisplayManager;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
-import android.os.Handler;
 import android.os.IBinder;
-import android.os.Looper;
 import android.util.DisplayMetrics;
-import android.view.Display;
 import android.view.WindowManager;
 import android.content.pm.ServiceInfo;
 import android.graphics.Bitmap;
@@ -71,8 +67,6 @@ public final class ScreenCaptureService extends Service {
     private volatile CountDownLatch answerLatch;
     private volatile boolean iceGatheringComplete;
     private volatile JpegSink jpegSink;
-    private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private DisplayManager.DisplayListener displayListener;
     private int captureWidth;
     private int captureHeight;
 
@@ -96,6 +90,12 @@ public final class ScreenCaptureService extends Service {
         return sink == null ? null : sink.awaitAfter(afterSequence, timeoutMs);
     }
 
+    /** Enable the JPEG compatibility stream only when a browser needs it. */
+    static void prepareMjpegFallback() {
+        ScreenCaptureService service = instance;
+        if (service != null) service.enableJpegFallback();
+    }
+
     /** How many JPEG frames the phone has produced this session. */
     static long framesSent() {
         ScreenCaptureService service = instance;
@@ -116,11 +116,6 @@ public final class ScreenCaptureService extends Service {
         ScreenCaptureService service = instance;
         if (service == null || service.captureWidth == 0) return "";
         return service.captureWidth + "x" + service.captureHeight;
-    }
-
-    static void refreshForMjpeg() {
-        ScreenCaptureService service = instance;
-        if (service != null) service.mainHandler.post(service::refreshCapture);
     }
 
     public static String answerOffer(String sdp) {
@@ -199,9 +194,6 @@ public final class ScreenCaptureService extends Service {
         captureHeight = size[1];
         videoTrack = factory.createVideoTrack("pocketbridge-screen", videoSource);
         videoTrack.setEnabled(true);
-        jpegSink = new JpegSink();
-        videoTrack.addSink(jpegSink);
-        registerDisplayListener();
     }
 
     /** Capture size for the current screen orientation, at most 1920 pixels on the long side. */
@@ -217,55 +209,19 @@ public final class ScreenCaptureService extends Service {
         return new int[]{width, height};
     }
 
-    /** Follows phone rotation. A fixed capture size would otherwise show a squashed picture. */
-    private void registerDisplayListener() {
-        DisplayManager manager = (DisplayManager) getSystemService(DISPLAY_SERVICE);
-        if (manager == null) return;
-        displayListener = new DisplayManager.DisplayListener() {
-            @Override public void onDisplayAdded(int displayId) { }
-            @Override public void onDisplayRemoved(int displayId) { }
-            @Override public void onDisplayChanged(int displayId) {
-                if (displayId == Display.DEFAULT_DISPLAY) applyDisplaySize();
-            }
-        };
-        manager.registerDisplayListener(displayListener, mainHandler);
+    /** JPEG is CPU-heavy, so reserve it for old browsers or a failed WebRTC link. */
+    private synchronized void enableJpegFallback() {
+        if (videoTrack == null || jpegSink != null) return;
+        jpegSink = new JpegSink();
+        videoTrack.addSink(jpegSink);
     }
 
-    private void applyDisplaySize() {
-        ScreenCapturerAndroid active = capturer;
-        if (active == null) return;
-        int[] size = captureSize();
-        if (size[0] == captureWidth && size[1] == captureHeight) return;
-        captureWidth = size[0];
-        captureHeight = size[1];
-        try {
-            // Restart rather than resize: a rotation also needs a fresh frame, and a
-            // resized surface alone can keep showing the old orientation.
-            active.stopCapture();
-            active.startCapture(size[0], size[1], 30);
-        } catch (Exception error) {
-            android.util.Log.w("PocketBridge", "Could not resize screen capture", error);
+    private synchronized void disableJpegFallback() {
+        if (jpegSink == null) return;
+        if (videoTrack != null) {
+            try { videoTrack.removeSink(jpegSink); } catch (Exception ignored) { }
         }
-    }
-
-    /**
-     * Android only delivers a screen frame when something on screen changes, so a
-     * browser that connects to a still screen would wait for a frame that never
-     * comes. Recreating the capture surface produces a fresh frame straight away.
-     */
-    private void refreshCapture() {
-        ScreenCapturerAndroid active = capturer;
-        if (active == null || captureWidth == 0 || captureHeight == 0) return;
-        try {
-            // changeCaptureFormat() with the size it already has is ignored, and a
-            // still screen produces no new frame at all. Stopping and starting the
-            // capture rebuilds the virtual display, which hands over a fresh frame
-            // straight away. This is what a frozen "live" picture needed.
-            active.stopCapture();
-            active.startCapture(captureWidth, captureHeight, 30);
-        } catch (Exception error) {
-            android.util.Log.w("PocketBridge", "Could not refresh screen capture", error);
-        }
+        jpegSink = null;
     }
 
     private String acceptOffer(String offerSdp) {
@@ -284,9 +240,9 @@ public final class ScreenCaptureService extends Service {
             @Override public void onIceConnectionChange(PeerConnection.IceConnectionState state) {
                 lastIceState = state == null ? "unknown" : state.toString().toLowerCase(java.util.Locale.ROOT);
                 if (state == PeerConnection.IceConnectionState.CONNECTED || state == PeerConnection.IceConnectionState.COMPLETED) {
-                    // Once now, and once more after the encoder and DTLS are surely ready.
-                    mainHandler.post(ScreenCaptureService.this::refreshCapture);
-                    mainHandler.postDelayed(ScreenCaptureService.this::refreshCapture, 1200);
+                    // Keep one MediaProjection capture session alive. Restarting it to
+                    // refresh a still frame breaks Android 14+ one-session capture rules.
+                    disableJpegFallback();
                 }
             }
             @Override public void onIceConnectionReceivingChange(boolean receiving) { }
@@ -477,11 +433,6 @@ public final class ScreenCaptureService extends Service {
     }
 
     @Override public void onDestroy() {
-        mainHandler.removeCallbacksAndMessages(null);
-        try {
-            DisplayManager manager = (DisplayManager) getSystemService(DISPLAY_SERVICE);
-            if (manager != null && displayListener != null) manager.unregisterDisplayListener(displayListener);
-        } catch (Exception ignored) { }
         closePeer();
         if (jpegSink != null && videoTrack != null) {
             try { videoTrack.removeSink(jpegSink); } catch (Exception ignored) { }

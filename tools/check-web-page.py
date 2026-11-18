@@ -55,7 +55,20 @@ def main():
     for element_id in sorted(ids_used - ids_present):
         problems += fail("the script uses #" + element_id + ", which is not in the page")
 
-    # 3. The inline script must parse. node is optional, so skip when absent.
+    # 3. Keep the fragile interactive flows wired in the actual shipped page.
+    required_page_features = {
+        "direct local WebRTC screen path": "endpoint('/api/screen/offer')",
+        "MJPEG latest-frame fallback": "function drawLatestScreenFrame",
+        "screen fullscreen video sizing": ".screen-view:fullscreen video",
+        "chat file picker": 'id="chatFile"',
+        "music play control": 'id="musicPlayPause"',
+        "music queue repeat control": 'id="musicRepeat"',
+    }
+    for feature, marker in required_page_features.items():
+        if marker not in html:
+            problems += fail("missing " + feature)
+
+    # 4. The inline script must parse. node is optional, so skip when absent.
     scripts = re.findall(r"<script>(.*?)</script>", html, re.S)
     if not scripts:
         problems += fail("no inline script found in the page")

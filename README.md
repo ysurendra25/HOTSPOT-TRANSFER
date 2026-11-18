@@ -4,6 +4,14 @@ PocketBridge is an open-source Android app for sharing phone media and the phone
 
 See the illustrated [quick-start guide](docs/QUICK_START_GUIDE.md) for connecting, browsing, and screen sharing.
 
+## Version 0.5.9.5
+
+- **Low-latency screen sharing.** The browser now negotiates a direct WebRTC video stream using only local network candidates; it does not require STUN, a relay or internet. The old MJPEG stream remains as a browser fallback and is only JPEG-encoded when needed.
+- **No multi-second frame queue.** The fallback viewer keeps reading while decoding and draws the latest frame, dropping stale frames if the browser falls behind. The screen video and canvas both use a fitted full-viewport fullscreen layout.
+- **Files can be sent from Chat on either device.** Attach multiple photos, videos or other files; the receiver gets a prompt and can download/open from the shared conversation.
+- **A full music listening view.** Album artwork, searchable song queue, playback/seek/volume controls, shuffle, repeat, previous and next are together in a responsive now-playing layout.
+- **Larger transfer blocks.** Multi-gigabyte uploads remain streamed with no app size cap; transfers still need enough phone storage and a stable hotspot. The server now uses 1 MiB blocks for upload writes.
+
 ## Version 0.5.9.4
 
 - **No fixed upload-size cap.** Laptop uploads are streamed to the phone's private inbox in small blocks, and phone-selected files are copied the same way. The app checks free storage before and during a transfer and removes incomplete files. A 15 GB movie can transfer when the phone has enough free space; device storage and the connection still set the real limit.
@@ -30,7 +38,7 @@ What's new:
 - **Album art for music.** Tracks that carry embedded artwork now show it in the gallery, the way videos show a thumbnail. Tracks without art keep the note icon.
 - **A sturdier screen stream.** The browser reads the stream frame by frame and draws it on a canvas, so a dropped connection reconnects on its own, the state line reports how many frames have arrived, and the phone's own setup error is shown instead of a generic message.
 - **Screen diagnostics.** `/api/screen/status` now reports frame count, how long ago the last frame arrived, and the capture size.
-- **Faster transfers.** File copying uses a 512 KB buffer.
+- **Faster transfers.** File copying used a 512 KB buffer at this version.
 - **Oversized uploads are refused immediately**, before the phone reads any of the body, instead of after draining it.
 
 Tests: 39 in total, including 14 that start the real server and drive it over HTTP — the page, the code gate and its rate limit, chat in both directions, sending a file to the phone and reading it back, byte ranges, path traversal, and a 20 MB upload being refused.
@@ -62,11 +70,11 @@ What's new:
 
 Everything from 0.5.7:
 
-- **Direct offline screen sharing.** The browser receives screen frames as a local MJPEG stream over the same HTTP connection as file sharing. It no longer depends on WebRTC ICE negotiation, STUN, a relay, or internet access. Frames are capped at 1280 pixels and 12 fps for hotspot use.
+- **Initial offline screen sharing.** Version 0.5.7 used local MJPEG frames over HTTP. Version 0.5.9.5 now prefers WebRTC for lower latency and keeps MJPEG as a fallback; both paths stay on the local hotspot and require no internet relay.
 - **More reliable media labels.** If Android reports a generic MIME type, PocketBridge identifies common photo, video, and audio formats from the filename extension.
 - **More reliable video response headers.** The server infers common MIME types and can stream files whose provider does not report a size instead of returning an empty response.
 
-The local screen-stream design follows the same broad MJPEG-over-HTTP approach used by [ScreenStream's offline local mode](https://github.com/dkrivoruchko/ScreenStream); PocketBridge's implementation is separate and integrated with its existing sharing server.
+The original local MJPEG mode follows the broad HTTP-streaming approach used by [ScreenStream's offline local mode](https://github.com/dkrivoruchko/ScreenStream); PocketBridge's implementation is separate and integrated with its existing sharing server.
 - **Stop screen share** from the phone (the button changes to "Stop screen share" while sharing). Stopping the share also stops screen capture.
 - **Video thumbnails on every supported Android version** (they were missing on Android 8 and 9). A frame from about one second in is used instead of a possibly black first frame.
 - **Sharper thumbnails**, lazy-loaded so the first page appears faster, grouped by day (Today, Yesterday, dates).
@@ -95,7 +103,7 @@ For illustrated setup steps, see the [Quick Start Guide](docs/QUICK_START_GUIDE.
 
 ## Build
 
-Use Android SDK Platform 35, Build Tools 35.0.0, Gradle 9.1.0, and JDK 25. Then run:
+Use Android SDK Platform 35, Build Tools 35.0.0, Gradle 9.1.0, and JDK 17 or newer. Then run:
 
 ```powershell
 .\gradlew.bat assembleDebug
