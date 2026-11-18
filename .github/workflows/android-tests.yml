@@ -25,10 +25,10 @@ jobs:
         run: python3 tools/check-web-page.py
 
       - name: Run unit tests
-        run: ./gradlew testDebugUnitTest --console=plain
+        run: bash gradlew testDebugUnitTest --console=plain
 
       - name: Build the debug APK
-        run: ./gradlew assembleDebug --console=plain
+        run: bash gradlew assembleDebug --console=plain
 
       - name: Keep the test report
         if: always()

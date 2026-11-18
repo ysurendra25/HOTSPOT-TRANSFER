@@ -22,13 +22,13 @@ jobs:
       - name: Check browser routes and run Android tests
         run: |
           python3 tools/check-web-page.py
-          ./gradlew testDebugUnitTest lintDebug --console=plain
+          bash gradlew testDebugUnitTest lintDebug --console=plain
       - name: Build arm64 and universal APKs
         run: |
-          ./gradlew assembleDebug --console=plain
+          bash gradlew assembleDebug --console=plain
           mkdir -p release-assets
           cp app/build/outputs/apk/debug/app-debug.apk release-assets/PocketBridge-${GITHUB_REF_NAME#v}.apk
-          ./gradlew assembleDebug -PpocketbridgeUniversal=true --console=plain
+          bash gradlew assembleDebug -PpocketbridgeUniversal=true --console=plain
           zip -j release-assets/PocketBridge-${GITHUB_REF_NAME#v}-universal.apk.zip app/build/outputs/apk/debug/app-debug.apk
       - uses: actions/upload-artifact@v7
         with:
