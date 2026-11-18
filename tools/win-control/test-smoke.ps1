@@ -1,6 +1,7 @@
 param([Parameter(Mandatory=$true)][string]$PackageDirectory)
 $ErrorActionPreference = 'Stop'
-$exe = Join-Path $PackageDirectory 'pc-remote.exe'
+$exe = Join-Path $PackageDirectory 'PocketBridge-Windows-Control.exe'
+if (-not (Test-Path $exe)) { $exe = Join-Path $PackageDirectory 'pc-remote.exe' }
 if (-not (Test-Path $exe)) { throw "Missing helper: $exe" }
 
 # Hide FFmpeg from this test process so the offline JPEG branch is exercised.

@@ -61,7 +61,6 @@ def main():
         "MJPEG latest-frame fallback": "function drawLatestScreenFrame",
         "screen fullscreen video sizing": ".screen-view:fullscreen video",
         "dark theme and persisted theme control": "pocketbridge_theme",
-        "installed-player chooser route": "endpoint('/api/open-with?url='",
         "video aspect ratio recalculation": "function fitVideoStage()",
         "aspect ratio selection resizes the viewer": "fitVideoStage();",
         "chat file picker": 'id="chatFile"',

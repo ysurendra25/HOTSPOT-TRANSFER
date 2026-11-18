@@ -51,7 +51,9 @@ jobs:
           $version = $env:GITHUB_REF_NAME -replace '^v', ''
           $stage = Join-Path $env:RUNNER_TEMP 'PocketBridge-Windows-Control'
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Copy-Item tools/win-control/dist/pc-remote.exe, tools/win-control/Start-Control.bat, tools/win-control/README.md $stage
+          Copy-Item tools/win-control/Start-Control.bat, tools/win-control/README.md $stage
+          # Ship one name only: the launcher and the docs both refer to this one.
+          Copy-Item tools/win-control/dist/pc-remote.exe (Join-Path $stage 'PocketBridge-Windows-Control.exe')
           Copy-Item tools/win-control/upstream-v0.1.0/web-remote-desktop-0.1.0/LICENSE $stage/UPSTREAM-LICENSE.txt
           Compress-Archive -Path (Join-Path $stage '*') -DestinationPath "PocketBridge-Windows-Control-$version.zip"
       - uses: actions/upload-artifact@v7
