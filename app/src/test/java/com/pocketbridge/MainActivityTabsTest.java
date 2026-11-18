@@ -115,8 +115,8 @@ public class MainActivityTabsTest {
 
         List<String> texts = new ArrayList<>();
         collectText(root, texts);
-        assertTrue("the laptop message should be listed", texts.contains("from the laptop"));
-        assertTrue("the phone message should be listed", texts.contains("from the phone"));
+        assertTrue("the laptop message should be listed: " + texts, texts.toString().contains("from the laptop"));
+        assertTrue("the phone message should be listed: " + texts, texts.toString().contains("from the phone"));
         controller.pause().stop().destroy();
     }
 
@@ -128,6 +128,23 @@ public class MainActivityTabsTest {
         if (view instanceof ViewGroup) {
             ViewGroup group = (ViewGroup) view;
             for (int i = 0; i < group.getChildCount(); i++) collectText(group.getChildAt(i), texts);
+        }
+    }
+
+    private static List<String> editHints(View view) {
+        List<String> hints = new ArrayList<>();
+        collectEditHints(view, hints);
+        return hints;
+    }
+
+    private static void collectEditHints(View view, List<String> hints) {
+        if (view instanceof android.widget.EditText) {
+            CharSequence hint = ((android.widget.EditText) view).getHint();
+            if (hint != null) hints.add(hint.toString());
+        }
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) collectEditHints(group.getChildAt(i), hints);
         }
     }
 
@@ -153,8 +170,8 @@ public class MainActivityTabsTest {
 
         List<String> texts = new ArrayList<>();
         collectText(root, texts);
-        assertTrue("the laptop section should be there", texts.contains("ON THE LAPTOP"));
-        assertTrue("the laptop search should be there", texts.contains("SEARCH LAPTOP FILES"));
+        assertTrue("the laptop section switch should be there", !buttonsLabelled(root, "Files on the laptop").isEmpty());
+        assertTrue("the laptop search should be there", editHints(root).contains("Search laptop files"));
         assertNotNull(buttonsLabelled(root, "Load laptop files"));
         controller.pause().stop().destroy();
     }

@@ -167,6 +167,11 @@
   .music-thumb img{width:100%;height:100%;object-fit:cover}.music-track{min-width:0}.music-track strong,.music-track span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.music-track strong{font-size:13px}.music-track span{font-size:11px;color:var(--muted);margin-top:3px}.music-size{font-size:11px;color:var(--muted);white-space:nowrap}
   .chat-attach-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
   .chat-attach-row [role="status"]{font-size:12px;color:var(--muted)}
+  .chat-file-card{display:grid;grid-template-columns:42px minmax(0,1fr) auto;align-items:center;gap:10px;margin-top:9px;padding:10px;border:1px solid var(--line);border-radius:12px;background:#fff}
+  .chat-file-icon{width:40px;height:40px;display:grid;place-items:center;border-radius:10px;background:var(--teal-soft);color:var(--teal-dark);font-size:19px;font-weight:800}
+  .chat-file-name{font-size:13px;font-weight:800;overflow-wrap:anywhere}.chat-file-meta{font-size:11px;color:var(--muted);margin-top:3px}
+  .chat-file-card .btn{white-space:nowrap}
+  @media(max-width:520px){.chat-file-card{grid-template-columns:34px minmax(0,1fr)}.chat-file-icon{width:34px;height:34px}.chat-file-card .btn{grid-column:2}}
   .stage audio{width:100%;margin:26px 0}
   .controls{display:flex;align-items:center;gap:10px;padding:11px 14px 14px;color:#eaf3f1;flex-wrap:wrap}
   .ctrl{background:#1d3038;color:#eaf3f1;border:0;border-radius:10px;padding:9px 12px;font-weight:700;font-size:13px}
@@ -1244,11 +1249,18 @@
       const messages = data.messages || [];
       const newestTime = messages.reduce((latest, item) => Math.max(latest, Number(item.time) || 0), 0);
       if (chatMessagesPrimed) {
+        const incoming = [];
         for (const item of messages) {
           const time = Number(item.time) || 0;
           if (time <= lastChatMessageTime || item.from !== 'phone' || !item.attachment) continue;
-          const name = item.attachment.name || 'a file';
-          if (confirm('Your phone shared “' + name + '”. Download it to this laptop now?')) downloadChatAttachment(item.attachment);
+          incoming.push(item.attachment);
+        }
+        if (incoming.length) {
+          const names = incoming.slice(0, 4).map(file => file.name || 'file').join('\n');
+          const more = incoming.length > 4 ? '\n… and ' + (incoming.length - 4) + ' more' : '';
+          if (confirm('Your phone shared ' + incoming.length + ' file' + (incoming.length === 1 ? '' : 's') + ':\n' + names + more + '\n\nDownload all to this laptop now?')) {
+            for (const attachment of incoming) downloadChatAttachment(attachment);
+          }
         }
       }
       chatMessagesPrimed = true;
@@ -1256,22 +1268,38 @@
       const target = document.getElementById('chatMessages');
       target.replaceChildren();
       for (const item of messages) {
-        const row = document.createElement('p');
-        row.style.cssText = 'margin:4px 0;padding:8px 10px;background:' + (item.from === 'phone' ? '#e8f3f0' : '#f0f2f4') + ';border-radius:10px';
+        const row = document.createElement('article');
+        row.style.cssText = 'margin:6px 0;padding:10px 12px;background:' + (item.from === 'phone' ? '#e8f3f0' : '#f0f2f4') + ';border-radius:12px';
         const label = document.createElement('span');
-        label.textContent = new Date(item.time).toLocaleTimeString() + ' · ' + item.text;
+        const attachment = item.attachment && item.attachment.id ? item.attachment : null;
+        const displayText = attachment ? 'Shared file' : (item.text || '');
+        label.textContent = new Date(item.time).toLocaleTimeString() + ' · ' + displayText + (item.from === 'phone' ? ' · Phone' : ' · Laptop');
         row.appendChild(label);
-        if (item.attachment && item.attachment.id) {
+        if (attachment) {
+          const file = document.createElement('div');
+          file.className = 'chat-file-card';
+          const icon = document.createElement('div');
+          icon.className = 'chat-file-icon';
+          const filename = attachment.name || 'shared-file';
+          const ext = filename.includes('.') ? filename.split('.').pop().toLowerCase() : '';
+          const mime = attachment.mime || '';
+          const kind = mime.startsWith('image/') ? 'PHOTO' : mime.startsWith('video/') ? 'VIDEO'
+            : mime.startsWith('audio/') ? 'AUDIO' : (ext === 'pdf' ? 'PDF' : (ext || 'FILE').toUpperCase());
+          icon.textContent = mime.startsWith('image/') ? '▧' : mime.startsWith('video/') ? '▶' : mime.startsWith('audio/') ? '♫' : '↧';
+          const details = document.createElement('div');
+          const name = document.createElement('div'); name.className = 'chat-file-name'; name.textContent = filename;
+          const meta = document.createElement('div'); meta.className = 'chat-file-meta'; meta.textContent = kind + ' · ' + formatBytes(Number(attachment.size) || 0);
+          details.append(name, meta);
           const download = document.createElement('button');
           download.type = 'button';
           download.className = 'btn btn-soft';
-          download.style.cssText = 'display:block;margin-top:7px';
-          download.textContent = 'Accept and download ' + (item.attachment.name || 'file');
+          download.textContent = 'Download';
           download.addEventListener('click', () => {
-            if (!confirm('Download ' + (item.attachment.name || 'this file') + ' to this computer?')) return;
-            downloadChatAttachment(item.attachment);
+            if (!confirm('Download ' + filename + ' to this computer?')) return;
+            downloadChatAttachment(attachment);
           });
-          row.appendChild(download);
+          file.append(icon, details, download);
+          row.appendChild(file);
         }
         target.appendChild(row);
       }

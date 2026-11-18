@@ -9,7 +9,9 @@ import android.content.Context;
 import android.content.Intent;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.util.DisplayMetrics;
 import android.view.WindowManager;
 import android.content.pm.ServiceInfo;
@@ -69,6 +71,7 @@ public final class ScreenCaptureService extends Service {
     private volatile JpegSink jpegSink;
     private int captureWidth;
     private int captureHeight;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     static final class JpegFrame {
         final long sequence;
@@ -185,6 +188,15 @@ public final class ScreenCaptureService extends Service {
                 android.util.Log.i("PocketBridge", "Screen capture stopped by Android");
                 stopSelf();
             }
+
+            @Override public void onCapturedContentResize(int width, int height) {
+                // Android 14+ reports the captured region's exact dimensions when the
+                // phone rotates or a shared app changes window size. Resize on the main
+                // thread; the WebRTC capturer then resizes its existing VirtualDisplay
+                // and output surface on its own texture thread (without creating a new
+                // MediaProjection VirtualDisplay).
+                mainHandler.post(() -> resizeCaptureForContent(width, height));
+            }
         });
         capturer.initialize(surfaceTextureHelper, getApplicationContext(), videoSource.getCapturerObserver());
 
@@ -207,6 +219,27 @@ public final class ScreenCaptureService extends Service {
         width = Math.max(2, Math.round(width * scale / 2f) * 2);
         height = Math.max(2, Math.round(height * scale / 2f) * 2);
         return new int[]{width, height};
+    }
+
+    private void resizeCaptureForContent(int contentWidth, int contentHeight) {
+        if (contentWidth <= 0 || contentHeight <= 0 || capturer == null || videoSource == null) return;
+        int[] size = boundedCaptureSize(contentWidth, contentHeight);
+        if (size[0] == captureWidth && size[1] == captureHeight) return;
+        try {
+            capturer.changeCaptureFormat(size[0], size[1], 24);
+            captureWidth = size[0];
+            captureHeight = size[1];
+            android.util.Log.i("PocketBridge", "Screen capture resized to " + captureWidth + "x" + captureHeight);
+        } catch (RuntimeException error) {
+            android.util.Log.e("PocketBridge", "Could not resize screen capture after rotation", error);
+        }
+    }
+
+    private int[] boundedCaptureSize(int width, int height) {
+        float scale = Math.min(1f, 1920f / Math.max(width, height));
+        int boundedWidth = Math.max(2, Math.round(width * scale / 2f) * 2);
+        int boundedHeight = Math.max(2, Math.round(height * scale / 2f) * 2);
+        return new int[]{boundedWidth, boundedHeight};
     }
 
     /** JPEG is CPU-heavy, so reserve it for old browsers or a failed WebRTC link. */
@@ -270,7 +303,13 @@ public final class ScreenCaptureService extends Service {
         if (sender != null) {
             try {
                 RtpParameters parameters = sender.getParameters();
-                for (RtpParameters.Encoding encoding : parameters.encodings) encoding.maxBitrateBps = 8_000_000;
+                // Keep the hotspot stream crisp while leaving headroom for file
+                // transfers on the same link; a hard 8 Mbps ceiling caused queues
+                // to build on midrange phone hotspots.
+                for (RtpParameters.Encoding encoding : parameters.encodings) {
+                    encoding.maxBitrateBps = 5_000_000;
+                    encoding.maxFramerate = 24;
+                }
                 sender.setParameters(parameters);
             } catch (Exception ignored) { }
         }

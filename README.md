@@ -4,6 +4,14 @@ PocketBridge is an open-source Android app for sharing phone media and the phone
 
 See the illustrated [quick-start guide](docs/QUICK_START_GUIDE.md) for connecting, browsing, and screen sharing.
 
+## Version 0.5.9.6
+
+- **Phone and laptop files are separate library views.** Laptop files no longer sit below the phone's long media list. The phone view now has device tabs, laptop search, and type filters.
+- **Laptop videos can stream.** The helper lists nested files in its shared folder, serves supported media inline with byte ranges, and the phone opens remote items using their actual media type.
+- **Paste the helper link once.** The phone shares the link between Library and Screen; screen status explains whether the helper page could be reached.
+- **Smoother hotspot screen streaming.** The Windows helper defaults to 1280 px / 10 fps / quality 60 and reuses JPEG buffers in its offline path. Phone-to-laptop WebRTC is capped at 5 Mbps / 24 fps to leave hotspot capacity for files.
+- **Clearer multi-file chat.** Attachments show sender, time, media type and size. Incoming groups can be accepted in one prompt, and Android can queue multiple selected files in order.
+
 ## Version 0.5.9.5
 
 - **Low-latency screen sharing.** The browser now negotiates a direct WebRTC video stream using only local network candidates; it does not require STUN, a relay or internet. The old MJPEG stream remains as a browser fallback and is only JPEG-encoded when needed.

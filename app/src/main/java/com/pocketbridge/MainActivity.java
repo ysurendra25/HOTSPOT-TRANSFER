@@ -25,6 +25,8 @@ import android.widget.Toast;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import org.json.JSONArray;
@@ -52,6 +54,12 @@ public final class MainActivity extends Activity {
     private Button stopButton;
     private Button copyButton;
     private Button screenButton;
+    private EditText screenHelperLink;
+    private EditText libraryHelperLink;
+    private boolean syncingHelperLinks;
+    private Button phoneLibrarySourceButton;
+    private Button laptopLibrarySourceButton;
+    private Button[] laptopKindButtons;
     private boolean receiverRegistered;
     private boolean sharing;
 
@@ -314,121 +322,52 @@ public final class MainActivity extends Activity {
         screenGap.topMargin = dp(10);
         content.addView(screenButton, screenGap);
 
-        EditText laptopAddress = new EditText(this);
-        laptopAddress.setSingleLine(true);
-        laptopAddress.setHint("http://laptop-address:7070/?t=code");
-        laptopAddress.setTextSize(14);
-        addCard(content, "BROWSE LAPTOP FILES", laptopAddress);
-        TextView laptopStatus = new TextView(this);
-        laptopStatus.setText("Start the portable Windows helper, then paste its local link here.");
-        laptopStatus.setTextColor(COLOR_MUTED);
-        laptopStatus.setTextSize(13);
-        LinearLayout laptopResults = new LinearLayout(this);
-        laptopResults.setOrientation(LinearLayout.VERTICAL);
-        boolean[] showLaptopRecents = {false};
-        EditText laptopSearch = new EditText(this);
-        laptopSearch.setSingleLine(true);
-        laptopSearch.setHint("Search laptop files");
-        laptopSearch.setTextSize(14);
-        laptopSearch.addTextChangedListener(new android.text.TextWatcher() {
-            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
-            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
-                String query = s.toString().trim().toLowerCase(java.util.Locale.ROOT);
-                for (int i = 0; i < laptopResults.getChildCount(); i++) {
-                    View row = laptopResults.getChildAt(i);
-                    Object tag = row.getTag();
-                    String name = tag instanceof String ? (String) tag : "";
-                    boolean recent = getPreferences(MODE_PRIVATE).getStringSet("laptop_recent", java.util.Collections.emptySet()).contains(name);
-                    row.setVisibility(name.toLowerCase(java.util.Locale.ROOT).contains(query) && (!showLaptopRecents[0] || recent) ? View.VISIBLE : View.GONE);
-                }
-            }
-            @Override public void afterTextChanged(android.text.Editable s) { }
-        });
-        addCard(content, "SEARCH LAPTOP FILES", laptopSearch);
-        Button browseLaptop = button("Load laptop files", COLOR_GREEN);
-        Button recentLaptop = button("Recent files", COLOR_SOFT);
-        recentLaptop.setTextColor(COLOR_INK);
-        recentLaptop.setOnClickListener(v -> {
-            showLaptopRecents[0] = !showLaptopRecents[0];
-            recentLaptop.setText(showLaptopRecents[0] ? "Show all laptop files" : "Recent files");
-            String query = laptopSearch.getText().toString().trim().toLowerCase(java.util.Locale.ROOT);
-            java.util.Set<String> recent = getPreferences(MODE_PRIVATE).getStringSet("laptop_recent", java.util.Collections.emptySet());
-            for (int i = 0; i < laptopResults.getChildCount(); i++) {
-                View row = laptopResults.getChildAt(i);
-                String name = row.getTag() instanceof String ? (String) row.getTag() : "";
-                row.setVisibility(name.toLowerCase(java.util.Locale.ROOT).contains(query) && (!showLaptopRecents[0] || recent.contains(name)) ? View.VISIBLE : View.GONE);
-            }
-        });
-        browseLaptop.setOnClickListener(v -> {
-            String text = laptopAddress.getText().toString().trim();
-            if (text.isEmpty()) { laptopStatus.setText("Paste the laptop helper link first."); return; }
-            browseLaptop.setEnabled(false);
-            laptopStatus.setText("Connecting over the local network…");
-            laptopResults.removeAllViews();
-            new Thread(() -> {
-                HttpURLConnection connection = null;
-                try {
-                    android.net.Uri supplied = android.net.Uri.parse(text);
-                    String token = supplied.getQueryParameter("t");
-                    if (token == null || !"http".equalsIgnoreCase(supplied.getScheme())) throw new Exception("Use the full local http link printed by the Windows helper.");
-                    android.net.Uri filesUri = supplied.buildUpon().path("/files").clearQuery().appendQueryParameter("t", token).build();
-                    connection = (HttpURLConnection) new URL(filesUri.toString()).openConnection();
-                    connection.setConnectTimeout(5000); connection.setReadTimeout(10000);
-                    if (connection.getResponseCode() != 200) throw new Exception("Laptop helper returned HTTP " + connection.getResponseCode());
-                    java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
-                    byte[] buffer = new byte[8192]; int count;
-                    try (java.io.InputStream stream = connection.getInputStream()) { while ((count = stream.read(buffer)) != -1) bytes.write(buffer, 0, count); }
-                    JSONObject data = new JSONObject(new String(bytes.toByteArray(), java.nio.charset.StandardCharsets.UTF_8));
-                    JSONArray items = data.optJSONArray("files");
-                    runOnUiThread(() -> {
-                        if (items == null || items.length() == 0) laptopStatus.setText("No files found in the helper’s shared folder.");
-                        else {
-                            laptopStatus.setText(items.length() + " laptop files. Tap one to open/download.");
-                            for (int i = 0; i < items.length(); i++) {
-                                JSONObject item = items.optJSONObject(i);
-                                if (item == null) continue;
-                                String name = item.optString("name", "File");
-                                String relative = item.optString("url", "");
-                                android.net.Uri fileUri = supplied.buildUpon().path(relative).clearQuery().appendQueryParameter("t", token).build();
-                                Button row = button(name + " · " + android.text.format.Formatter.formatShortFileSize(this, item.optLong("size")), COLOR_SOFT);
-                                row.setTextColor(COLOR_INK);
-                                row.setTag(name);
-                                row.setOnClickListener(open -> {
-                                    java.util.Set<String> recent = new java.util.HashSet<>(getPreferences(MODE_PRIVATE).getStringSet("laptop_recent", java.util.Collections.emptySet()));
-                                    recent.add(name);
-                                    getPreferences(MODE_PRIVATE).edit().putStringSet("laptop_recent", recent).apply();
-                                    startActivity(new Intent(Intent.ACTION_VIEW, fileUri));
-                                });
-                                laptopResults.addView(row, matchWrap());
-                            }
-                        }
-                    });
-                } catch (Exception error) {
-                    runOnUiThread(() -> laptopStatus.setText("Could not connect: " + error.getMessage()));
-                } finally { if (connection != null) connection.disconnect(); runOnUiThread(() -> browseLaptop.setEnabled(true)); }
-            }, "PocketBridge-laptop-files").start();
-        });
-        content.addView(browseLaptop, matchWrap());
-        content.addView(recentLaptop, matchWrap());
-        content.addView(laptopStatus, matchWrap());
-        content.addView(laptopResults, matchWrap());
+        screenHelperLink = new EditText(this);
+        screenHelperLink.setSingleLine(true);
+        screenHelperLink.setHint("http://laptop-address:7070/?t=code");
+        screenHelperLink.setTextSize(14);
+        screenHelperLink.setText(getSavedHelperLink());
+        watchHelperLink(screenHelperLink);
+        addCard(content, "LAPTOP HELPER LINK · PASTE ONCE", screenHelperLink);
+        TextView laptopScreenStatus = new TextView(this);
+        laptopScreenStatus.setText("Start the portable Windows helper, then paste its local link here. This same link also loads laptop files in Library.");
+        laptopScreenStatus.setTextColor(COLOR_MUTED);
+        laptopScreenStatus.setTextSize(13);
+        laptopScreenStatus.setLineSpacing(dp(3), 1f);
+        content.addView(laptopScreenStatus, matchWrap());
 
         // Laptop screen on the phone: the Windows helper already streams JPEG over
         // the hotspot, so show its own live page here instead of duplicating it.
         android.webkit.WebView laptopView = new android.webkit.WebView(this);
         laptopView.getSettings().setJavaScriptEnabled(true);
+        laptopView.getSettings().setDomStorageEnabled(true);
         laptopView.getSettings().setLoadWithOverviewMode(true);
         laptopView.getSettings().setUseWideViewPort(true);
         laptopView.setBackgroundColor(Color.BLACK);
         laptopView.setVisibility(View.GONE);
-        laptopView.setLayoutParams(new LinearLayout.LayoutParams(-1, dp(240)));
+        laptopView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        laptopView.setLayoutParams(new LinearLayout.LayoutParams(-1, dp(380)));
+        laptopView.setWebViewClient(new android.webkit.WebViewClient() {
+            @Override public void onPageFinished(android.webkit.WebView view, String url) {
+                laptopScreenStatus.setText("Laptop viewer opened. If its screen remains blank, check that the PC helper is active and the laptop is awake.");
+            }
+            @Override public void onReceivedError(android.webkit.WebView view, android.webkit.WebResourceRequest request, android.webkit.WebResourceError error) {
+                if (request.isForMainFrame()) laptopScreenStatus.setText("Could not reach the laptop helper. Keep both devices on the same hotspot and confirm Windows Firewall allows PocketBridge on private networks.");
+            }
+            @Override public void onReceivedHttpError(android.webkit.WebView view, android.webkit.WebResourceRequest request, android.webkit.WebResourceResponse response) {
+                if (request.isForMainFrame()) laptopScreenStatus.setText(response.getStatusCode() == 401
+                        ? "The helper link was rejected. Copy a fresh link from the running Windows helper and paste it again."
+                        : "The laptop helper returned HTTP " + response.getStatusCode() + ". Check the helper and try again.");
+            }
+        });
         Button showLaptop = button("Show laptop screen here", COLOR_GREEN);
         showLaptop.setOnClickListener(v -> {
-            String link = laptopAddress.getText().toString().trim();
+            String link = screenHelperLink.getText().toString().trim();
             if (link.isEmpty()) {
-                Toast.makeText(this, "Paste the helper link above first.", Toast.LENGTH_SHORT).show();
+                laptopScreenStatus.setText("Start PocketBridge Windows Control on the laptop, then paste its printed link above.");
                 return;
             }
+            laptopScreenStatus.setText("Connecting to the laptop screen…");
             laptopView.setVisibility(View.VISIBLE);
             laptopView.loadUrl(link);
         });
@@ -469,12 +408,16 @@ public final class MainActivity extends Activity {
     private LinearLayout libraryList;
     private TextView libraryStatus;
     private String libraryFilter = "all";
+    private LinearLayout phoneLibrarySection;
+    private LinearLayout laptopLibrarySection;
+    private String laptopFilterKind = "all";
     private LinearLayout chatList;
     private TextView chatStatus;
     private EditText chatInput;
     private boolean chatNotificationsPrimed;
     private long lastChatNotificationTime;
     private final android.os.Handler chatHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final ExecutorService phoneUploadQueue = Executors.newSingleThreadExecutor();
     private final Runnable chatPoll = new Runnable() {
         @Override public void run() {
             refreshChat();
@@ -531,6 +474,7 @@ public final class MainActivity extends Activity {
             }
         }
         if (index == 2) refreshLibrary();
+        if (index == 1 || index == 2) syncHelperLinkFields();
         if (index == 3) {
             refreshChat();
             chatHandler.removeCallbacks(chatPoll);
@@ -543,12 +487,37 @@ public final class MainActivity extends Activity {
 
     /** Library tab: what is on this phone, newest first, tap to open. */
     private void buildLibraryTab(LinearLayout parent) {
+        LinearLayout sourceTabs = new LinearLayout(this);
+        sourceTabs.setOrientation(LinearLayout.HORIZONTAL);
+        Button phoneSource = button("Files on this phone", COLOR_GREEN);
+        Button laptopSource = button("Files on the laptop", COLOR_SOFT);
+        laptopSource.setTextColor(COLOR_INK);
+        LinearLayout.LayoutParams sourceLp = new LinearLayout.LayoutParams(0, -2, 1f);
+        sourceLp.rightMargin = dp(4);
+        sourceTabs.addView(phoneSource, sourceLp);
+        LinearLayout.LayoutParams remoteLp = new LinearLayout.LayoutParams(0, -2, 1f);
+        remoteLp.leftMargin = dp(4);
+        sourceTabs.addView(laptopSource, remoteLp);
+        addCard(parent, "CHOOSE A DEVICE", sourceTabs);
+
+        phoneLibrarySection = new LinearLayout(this);
+        phoneLibrarySection.setOrientation(LinearLayout.VERTICAL);
+        parent.addView(phoneLibrarySection, matchWrap());
+        laptopLibrarySection = new LinearLayout(this);
+        laptopLibrarySection.setOrientation(LinearLayout.VERTICAL);
+        laptopLibrarySection.setVisibility(View.GONE);
+        parent.addView(laptopLibrarySection, matchWrap());
+        phoneSource.setOnClickListener(v -> showLibrarySource(false));
+        laptopSource.setOnClickListener(v -> showLibrarySource(true));
+        phoneLibrarySourceButton = phoneSource;
+        laptopLibrarySourceButton = laptopSource;
+
         libraryStatus = new TextView(this);
         libraryStatus.setText("Reading your media…");
         libraryStatus.setTextColor(COLOR_INK);
         libraryStatus.setTextSize(14);
         libraryStatus.setLineSpacing(dp(3), 1f);
-        addCard(parent, "ON THIS PHONE", libraryStatus);
+        addCard(phoneLibrarySection, "ON THIS PHONE", libraryStatus);
 
         LinearLayout filters = new LinearLayout(this);
         filters.setOrientation(LinearLayout.HORIZONTAL);
@@ -565,42 +534,67 @@ public final class MainActivity extends Activity {
             if (i > 0) lp.leftMargin = dp(4);
             filters.addView(chip, lp);
         }
-        addCard(parent, "SHOW", filters);
+        addCard(phoneLibrarySection, "SHOW", filters);
 
         libraryList = new LinearLayout(this);
         libraryList.setOrientation(LinearLayout.VERTICAL);
-        addCard(parent, "ON THIS PHONE", libraryList);
+        addCard(phoneLibrarySection, "PHONE FILES", libraryList);
 
-        // The same idea for the laptop: paste the helper link once, then search its
-        // files from here instead of opening a second window on the phone.
-        EditText laptopLink = new EditText(this);
-        laptopLink.setSingleLine(true);
-        laptopLink.setTextSize(14);
-        laptopLink.setHint("http://laptop-address:7070/?t=code");
-        addCard(parent, "ON THE LAPTOP", laptopLink);
+        TextView laptopIntro = new TextView(this);
+        laptopIntro.setText("Browse and play files from the laptop’s shared folder. Start PocketBridge Windows Control on the laptop and paste its printed link once; both tabs will use it.");
+        laptopIntro.setTextColor(COLOR_MUTED);
+        laptopIntro.setTextSize(13);
+        laptopIntro.setLineSpacing(dp(3), 1f);
+        addCard(laptopLibrarySection, "LAPTOP FILES · SAME HOTSPOT", laptopIntro);
+
+        libraryHelperLink = new EditText(this);
+        libraryHelperLink.setSingleLine(true);
+        libraryHelperLink.setTextSize(14);
+        libraryHelperLink.setHint("Paste laptop helper link · http://…:7070/?t=…");
+        libraryHelperLink.setText(getSavedHelperLink());
+        watchHelperLink(libraryHelperLink);
+        addCard(laptopLibrarySection, "LAPTOP HELPER LINK", libraryHelperLink);
 
         EditText laptopSearchField = new EditText(this);
         laptopSearchField.setSingleLine(true);
         laptopSearchField.setTextSize(14);
         laptopSearchField.setHint("Search laptop files");
-        addCard(parent, "SEARCH LAPTOP FILES", laptopSearchField);
+        addCard(laptopLibrarySection, "SEARCH", laptopSearchField);
+
+        LinearLayout laptopKinds = new LinearLayout(this);
+        laptopKinds.setOrientation(LinearLayout.HORIZONTAL);
+        String[] remoteKinds = {"all", "image", "video", "audio", "other"};
+        String[] remoteLabels = {"All", "Photos", "Videos", "Audio", "Other"};
+        laptopKindButtons = new Button[remoteKinds.length];
+        for (int i = 0; i < remoteKinds.length; i++) {
+            final String kind = remoteKinds[i];
+            Button chip = button(remoteLabels[i], "all".equals(kind) ? COLOR_GREEN : COLOR_SOFT);
+            if (!"all".equals(kind)) chip.setTextColor(COLOR_INK);
+            chip.setTextSize(11);
+            laptopKindButtons[i] = chip;
+            chip.setOnClickListener(v -> setLaptopFilterKind(kind));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -2, 1f);
+            if (i > 0) lp.leftMargin = dp(3);
+            laptopKinds.addView(chip, lp);
+        }
+        addCard(laptopLibrarySection, "FILE TYPE", laptopKinds);
 
         TextView laptopStatusView = new TextView(this);
-        laptopStatusView.setText("Paste the Windows helper link, then load the files.");
+        laptopStatusView.setText("Start the portable laptop helper, paste its link, then load files.");
         laptopStatusView.setTextColor(COLOR_MUTED);
         laptopStatusView.setTextSize(12);
         laptopStatusView.setPadding(dp(4), 0, dp(4), dp(10));
-        parent.addView(laptopStatusView);
+        laptopLibrarySection.addView(laptopStatusView);
 
         LinearLayout laptopRows = new LinearLayout(this);
         laptopRows.setOrientation(LinearLayout.VERTICAL);
-        addCard(parent, "LAPTOP FILES", laptopRows);
+        addCard(laptopLibrarySection, "LAPTOP FILES", laptopRows);
 
         Button loadLaptop = button("Load laptop files", COLOR_GREEN);
         loadLaptop.setOnClickListener(v -> {
-            String link = laptopLink.getText().toString().trim();
+            String link = libraryHelperLink.getText().toString().trim();
             if (link.isEmpty()) {
-                laptopStatusView.setText("Paste the helper link first.");
+                laptopStatusView.setText("Start the Windows helper and paste the local link it prints.");
                 return;
             }
             laptopStatusView.setText("Reading the laptop folder…");
@@ -610,11 +604,10 @@ public final class MainActivity extends Activity {
         });
         LinearLayout.LayoutParams loadGap = matchWrap();
         loadGap.topMargin = dp(2);
-        parent.addView(loadLaptop, loadGap);
+        laptopLibrarySection.addView(loadLaptop, loadGap);
         this.laptopFilter = laptopSearchField;
         this.laptopRowHolder = laptopRows;
         this.laptopStatus = laptopStatusView;
-        this.laptopLinkField = laptopLink;
         laptopSearchField.addTextChangedListener(new android.text.TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) { filterLaptopRows(); }
@@ -623,9 +616,67 @@ public final class MainActivity extends Activity {
     }
 
     private EditText laptopFilter;
-    private EditText laptopLinkField;
     private LinearLayout laptopRowHolder;
     private TextView laptopStatus;
+
+    private void showLibrarySource(boolean laptop) {
+        if (phoneLibrarySection == null || laptopLibrarySection == null) return;
+        phoneLibrarySection.setVisibility(laptop ? View.GONE : View.VISIBLE);
+        laptopLibrarySection.setVisibility(laptop ? View.VISIBLE : View.GONE);
+        if (phoneLibrarySourceButton != null) {
+            phoneLibrarySourceButton.setBackgroundColor(laptop ? COLOR_SOFT : COLOR_GREEN);
+            phoneLibrarySourceButton.setTextColor(laptop ? COLOR_INK : Color.WHITE);
+        }
+        if (laptopLibrarySourceButton != null) {
+            laptopLibrarySourceButton.setBackgroundColor(laptop ? COLOR_GREEN : COLOR_SOFT);
+            laptopLibrarySourceButton.setTextColor(laptop ? Color.WHITE : COLOR_INK);
+        }
+        syncHelperLinkFields();
+    }
+
+    private void setLaptopFilterKind(String kind) {
+        laptopFilterKind = kind;
+        if (laptopKindButtons != null) {
+            String[] values = {"all", "image", "video", "audio", "other"};
+            for (int i = 0; i < laptopKindButtons.length; i++) {
+                boolean selected = values[i].equals(kind);
+                laptopKindButtons[i].setBackgroundColor(selected ? COLOR_GREEN : COLOR_SOFT);
+                laptopKindButtons[i].setTextColor(selected ? Color.WHITE : COLOR_INK);
+            }
+        }
+        filterLaptopRows();
+    }
+
+    private String getSavedHelperLink() {
+        return getPreferences(MODE_PRIVATE).getString("laptop_helper_link", "");
+    }
+
+    private void watchHelperLink(EditText input) {
+        input.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                if (syncingHelperLinks) return;
+                String value = s.toString();
+                getPreferences(MODE_PRIVATE).edit().putString("laptop_helper_link", value).apply();
+                EditText other = input == screenHelperLink ? libraryHelperLink : screenHelperLink;
+                if (other != null && !other.getText().toString().equals(value)) {
+                    syncingHelperLinks = true;
+                    other.setText(value);
+                    other.setSelection(other.getText().length());
+                    syncingHelperLinks = false;
+                }
+            }
+            @Override public void afterTextChanged(android.text.Editable s) { }
+        });
+    }
+
+    private void syncHelperLinkFields() {
+        String saved = getSavedHelperLink();
+        syncingHelperLinks = true;
+        if (screenHelperLink != null && !screenHelperLink.getText().toString().equals(saved)) screenHelperLink.setText(saved);
+        if (libraryHelperLink != null && !libraryHelperLink.getText().toString().equals(saved)) libraryHelperLink.setText(saved);
+        syncingHelperLinks = false;
+    }
 
     /** Hides laptop rows that do not match the search box. */
     private void filterLaptopRows() {
@@ -634,15 +685,21 @@ public final class MainActivity extends Activity {
         int shown = 0;
         for (int i = 0; i < laptopRowHolder.getChildCount(); i++) {
             View row = laptopRowHolder.getChildAt(i);
-            String name = row.getTag() instanceof String ? (String) row.getTag() : "";
-            boolean matches = query.isEmpty() || name.toLowerCase(java.util.Locale.ROOT).contains(query);
+            String[] meta = row.getTag() instanceof String[] ? (String[]) row.getTag() : new String[]{"", "", ""};
+            String name = meta[0];
+            String mime = meta[1];
+            String searchable = (name + " " + meta[2] + " " + mime).toLowerCase(java.util.Locale.ROOT);
+            boolean typeMatches = "all".equals(laptopFilterKind)
+                    || ("other".equals(laptopFilterKind)
+                        ? !(mime.startsWith("image/") || mime.startsWith("video/") || mime.startsWith("audio/"))
+                        : mime.startsWith(laptopFilterKind + "/"));
+            boolean matches = typeMatches && (query.isEmpty() || searchable.contains(query));
             row.setVisibility(matches ? View.VISIBLE : View.GONE);
             if (matches) shown++;
         }
         if (laptopStatus != null && laptopRowHolder.getChildCount() > 0) {
-            laptopStatus.setText(query.isEmpty()
-                    ? shown + " laptop files. Tap one to open it."
-                    : shown + " of " + laptopRowHolder.getChildCount() + " laptop files match.");
+            laptopStatus.setText(shown + " of " + laptopRowHolder.getChildCount()
+                    + " laptop files shown. Photos open to view, videos/audio open to play, other files open in a compatible app.");
         }
     }
 
@@ -676,19 +733,37 @@ public final class MainActivity extends Activity {
                             if (item == null) continue;
                             String name = item.optString("name", "File");
                             String relative = item.optString("url", "");
-                            android.net.Uri fileUri = supplied.buildUpon().path(relative).clearQuery().appendQueryParameter("t", token).build();
-                            Button row = button(name + "\n" + android.text.format.Formatter.formatShortFileSize(this, item.optLong("size")), Color.WHITE);
+                            String mime = item.optString("mime", "");
+                            if (mime.isEmpty()) {
+                                String ext = android.webkit.MimeTypeMap.getFileExtensionFromUrl(name);
+                                mime = ext.isEmpty() ? "application/octet-stream"
+                                        : valueOr(android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext.toLowerCase(java.util.Locale.ROOT)), "application/octet-stream");
+                            }
+                            String relativePath = item.optString("path", name);
+                            android.net.Uri fileUri = supplied.buildUpon().encodedPath(relative).clearQuery().appendQueryParameter("t", token).build();
+                            String kindLabel = mime.startsWith("video/") ? "VIDEO · TAP TO PLAY"
+                                    : mime.startsWith("audio/") ? "AUDIO · TAP TO PLAY"
+                                    : mime.startsWith("image/") ? "PHOTO · TAP TO VIEW"
+                                    : "FILE · TAP TO OPEN";
+                            Button row = button(kindLabel + "\n" + name + "\n" + relativePath + " · "
+                                    + android.text.format.Formatter.formatShortFileSize(this, item.optLong("size")), Color.WHITE);
                             row.setTextColor(COLOR_INK);
                             row.setTextSize(13);
                             row.setAllCaps(false);
                             row.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-                            row.setTag(name);
-                            row.setOnClickListener(open -> startActivity(new Intent(Intent.ACTION_VIEW, fileUri)));
+                            row.setTag(new String[]{name, mime, relativePath});
+                            final String openMime = mime;
+                            row.setOnClickListener(open -> {
+                                Intent view = new Intent(Intent.ACTION_VIEW);
+                                view.setDataAndType(fileUri, openMime);
+                                try { startActivity(view); }
+                                catch (Exception error) { Toast.makeText(this, "No installed app can open this file type.", Toast.LENGTH_SHORT).show(); }
+                            });
                             LinearLayout.LayoutParams lp = matchWrap();
                             lp.topMargin = dp(4);
                             rows.addView(row, lp);
                         }
-                        status.setText(items.length() + " laptop files. Tap one to open it.");
+                        status.setText(items.length() + " laptop files loaded from the helper’s shared folder.");
                         filterLaptopRows();
                     }
                     done.run();
@@ -808,6 +883,7 @@ public final class MainActivity extends Activity {
         org.json.JSONArray messages = ChatStore.read(this);
         long newestTime = 0;
         JSONObject newestLaptopAttachment = null;
+        List<String> newLaptopFileNames = new ArrayList<>();
         for (int i = 0; i < messages.length(); i++) {
             JSONObject item = messages.optJSONObject(i);
             if (item == null) continue;
@@ -816,6 +892,7 @@ public final class MainActivity extends Activity {
             if (chatNotificationsPrimed && "laptop".equals(item.optString("from"))
                     && item.optJSONObject("attachment") != null && time > lastChatNotificationTime) {
                 newestLaptopAttachment = item.optJSONObject("attachment");
+                newLaptopFileNames.add(newestLaptopAttachment.optString("name", "a file"));
             }
         }
         boolean showIncomingFileAlert = chatNotificationsPrimed && newestLaptopAttachment != null;
@@ -838,9 +915,16 @@ public final class MainActivity extends Activity {
             TextView row = new TextView(this);
             JSONObject attachment = item.optJSONObject("attachment");
             String message = item.optString("text", "");
+            String time = new java.text.SimpleDateFormat("h:mm a", java.util.Locale.getDefault())
+                    .format(new java.util.Date(item.optLong("time", 0)));
+            message = (mine ? "YOU" : "LAPTOP") + " · " + time + "\n" + message;
             if (attachment != null) {
-                message += "\n" + attachment.optString("name", "Shared file")
-                        + " · " + android.text.format.Formatter.formatFileSize(this, attachment.optLong("size", 0));
+                String name = attachment.optString("name", "Shared file");
+                String mime = attachment.optString("mime", "application/octet-stream");
+                String kind = mime.startsWith("image/") ? "PHOTO" : mime.startsWith("video/") ? "VIDEO"
+                        : mime.startsWith("audio/") ? "AUDIO" : (name.toLowerCase(java.util.Locale.ROOT).endsWith(".pdf") ? "PDF" : "FILE");
+                message += "\n\n📎 " + kind + " · " + android.text.format.Formatter.formatFileSize(this, attachment.optLong("size", 0))
+                        + "\n" + name + "\nTap to open";
                 row.setOnClickListener(v -> new android.app.AlertDialog.Builder(this)
                         .setTitle("Open shared file?")
                         .setMessage("Open " + attachment.optString("name", "this file") + " from the shared inbox?")
@@ -870,12 +954,17 @@ public final class MainActivity extends Activity {
         }
         if (showIncomingFileAlert && !isFinishing()) {
             JSONObject attachment = newestLaptopAttachment;
-            String name = attachment.optString("name", "a file");
+            StringBuilder names = new StringBuilder();
+            for (int i = 0; i < Math.min(newLaptopFileNames.size(), 4); i++) {
+                if (i > 0) names.append("\n");
+                names.append("• ").append(newLaptopFileNames.get(i));
+            }
+            if (newLaptopFileNames.size() > 4) names.append("\n… and ").append(newLaptopFileNames.size() - 4).append(" more");
             new android.app.AlertDialog.Builder(this)
-                    .setTitle("File received in chat")
-                    .setMessage("The laptop shared " + name + ". Open the file from the chat?")
+                    .setTitle(newLaptopFileNames.size() == 1 ? "File received in chat" : newLaptopFileNames.size() + " files received in chat")
+                    .setMessage("From the laptop:\n" + names + "\n\nOpen the latest file now, or choose any item in the chat.")
                     .setNegativeButton("Later", null)
-                    .setPositiveButton("Open file", (dialog, which) -> openChatAttachment(attachment))
+                    .setPositiveButton("Open latest", (dialog, which) -> openChatAttachment(attachment))
                     .show();
         }
     }
@@ -884,6 +973,7 @@ public final class MainActivity extends Activity {
         Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         picker.setType("*/*");
         picker.addCategory(Intent.CATEGORY_OPENABLE);
+        picker.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
         try { startActivityForResult(picker, REQUEST_SEND_FILE); }
         catch (Exception error) { Toast.makeText(this, "Could not open the file picker.", Toast.LENGTH_SHORT).show(); }
     }
@@ -978,7 +1068,18 @@ public final class MainActivity extends Activity {
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQUEST_SEND_FILE) {
-            if (resultCode == RESULT_OK && data != null && data.getData() != null) savePhoneFileForLaptop(data.getData());
+            if (resultCode == RESULT_OK && data != null) {
+                List<android.net.Uri> selected = new ArrayList<>();
+                android.content.ClipData clip = data.getClipData();
+                if (clip != null) {
+                    for (int i = 0; i < clip.getItemCount(); i++) {
+                        android.net.Uri uri = clip.getItemAt(i).getUri();
+                        if (uri != null) selected.add(uri);
+                    }
+                } else if (data.getData() != null) selected.add(data.getData());
+                for (android.net.Uri uri : selected) savePhoneFileForLaptop(uri);
+                if (selected.size() > 1) Toast.makeText(this, "Queued " + selected.size() + " files in order.", Toast.LENGTH_SHORT).show();
+            }
             return;
         }
         if (requestCode == REQUEST_SCREEN_CAPTURE) {
@@ -995,7 +1096,7 @@ public final class MainActivity extends Activity {
     }
 
     private void savePhoneFileForLaptop(android.net.Uri uri) {
-        new Thread(() -> {
+        phoneUploadQueue.execute(() -> {
             java.io.File target = null;
             try {
                 String name = "shared-file";
@@ -1040,7 +1141,7 @@ public final class MainActivity extends Activity {
                 String message = error.getMessage() == null ? "Could not share this file." : error.getMessage();
                 runOnUiThread(() -> Toast.makeText(this, message, Toast.LENGTH_LONG).show());
             }
-        }, "PocketBridge-phone-upload").start();
+        });
     }
 
     private void sendServiceCommand(String action) {

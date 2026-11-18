@@ -6,8 +6,11 @@ import (
 	"image"
 	"image/jpeg"
 	"net/http"
+	"sync"
 	"time"
 )
+
+var jpegBufferPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
 
 // jpegStreamHandler is the no-install, no-FFmpeg screen path for local networks.
 // The normal H.264 path is more bandwidth-efficient, while this multipart JPEG
@@ -46,19 +49,30 @@ func jpegStreamHandler(w http.ResponseWriter, r *http.Request) {
 		if outW > 0 && outH > 0 && (outW != frame.Bounds().Dx() || outH != frame.Bounds().Dy()) {
 			frame = scaleRGBA(frame, outW, outH)
 		}
-		var data bytes.Buffer
-		if err := jpeg.Encode(&data, frame, &jpeg.Options{Quality: c.Quality}); err != nil {
+		data := jpegBufferPool.Get().(*bytes.Buffer)
+		data.Reset()
+		if err := jpeg.Encode(data, frame, &jpeg.Options{Quality: c.Quality}); err != nil {
+			data.Reset()
+			jpegBufferPool.Put(data)
 			continue
 		}
 		if _, err := fmt.Fprintf(w, "--pbframe\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n", data.Len()); err != nil {
+			data.Reset()
+			jpegBufferPool.Put(data)
 			return
 		}
 		if _, err := w.Write(data.Bytes()); err != nil {
+			data.Reset()
+			jpegBufferPool.Put(data)
 			return
 		}
 		if _, err := w.Write([]byte("\r\n")); err != nil {
+			data.Reset()
+			jpegBufferPool.Put(data)
 			return
 		}
+		data.Reset()
+		jpegBufferPool.Put(data)
 		flusher.Flush()
 		lastJPEG = time.Now()
 	}

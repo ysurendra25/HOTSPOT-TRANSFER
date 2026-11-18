@@ -6,11 +6,13 @@ This optional companion is based on [TaciTech web-remote-desktop](https://github
 
 1. Start **Start local share** in PocketBridge on Android.
 2. Connect Windows to the Wi-Fi name and password PocketBridge shows. Keep Windows connected even if it reports no internet.
-3. Extract `PocketBridge-Windows-Control-v0.3.0.zip` and double-click `Start-Control.bat`.
+3. Extract `PocketBridge-Windows-Control-0.5.9.6.zip` and double-click `Start-Control.bat`.
 4. If Windows Firewall asks, allow access on private networks only.
 5. Open the printed `http://...:7070/?t=...` link on the phone. Use it while the phone is still connected to the PocketBridge hotspot.
 6. Tap or drag the laptop image to move/click. Use the page's keyboard, scroll, right-click, and trackpad controls.
 7. Press a key in the helper console when finished. Stop the phone's local share separately.
+
+The helper shares the folder configured by `share_dir` in `config.json` (Downloads by default), including nested folders. Keep the helper running while the phone browses files or opens the laptop screen. Its default screen preset is tuned for a local hotspot; the screen settings still let you choose a sharper or lower-bandwidth stream.
 
 The helper runs as a portable process; it does not install a Windows service or need a cloud tunnel. Keep the control URL private. Its local HTTP page is protected by a random token, and anyone with that URL and access to the hotspot can control the laptop.
 

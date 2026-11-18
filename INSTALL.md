@@ -2,7 +2,7 @@
 
 ## Install the APK on Android 15
 
-1. Download `PocketBridge-0.5.9.5.apk` for 64-bit ARM phones. For other Android architectures, download `PocketBridge-0.5.9.5-universal.apk.zip`, extract it, and use the APK inside.
+1. Download `PocketBridge-0.5.9.6.apk` for 64-bit ARM phones. For other Android architectures, download `PocketBridge-0.5.9.6-universal.apk.zip`, extract it, and use the APK inside.
 2. Open the APK from the phone's Downloads app or Files app. If you downloaded the universal ZIP, extract it first.
 3. If Android asks, allow the app you used to open the APK to install unknown apps, then return and tap **Install**.
 4. Open PocketBridge and allow nearby Wi-Fi and access to the media you want to share.
@@ -70,9 +70,11 @@ Download the APK before going offline. After installation, PocketBridge creates 
 ## Control the laptop from the phone
 
 1. Start the PocketBridge hotspot and connect the laptop to it.
-2. Download and extract `PocketBridge-Windows-Control-0.5.9.5.zip` on Windows.
+2. Download and extract `PocketBridge-Windows-Control-0.5.9.6.zip` on Windows.
 3. Double-click `Start-Control.bat`. If Windows Firewall asks, allow private network access only.
 4. The helper prints a link in its window. Open that link on the phone while the phone is still connected to the laptop's PocketBridge hotspot.
 5. Use the touch screen for mouse movement and clicks, and the keyboard controls on the page to type. Leave the helper running while connected. Press a key in its console when done to stop it.
+
+The mobile **Library** tab has separate **Files on this phone** and **Files on the laptop** views. In **Files on the laptop**, paste the link printed by the helper and tap **Load laptop files**. The same saved link is used by **Screen** → **Show laptop screen here**. The helper shares the folder in its `config.json` (Downloads by default), including its subfolders; laptop video playback depends on an Android player that supports that file's codec.
 
 The Windows helper is open-source software from [TaciTech web-remote-desktop](https://github.com/tacitech/web-remote-desktop), redistributed under MIT. Keep its access link private. The helper does not need an internet tunnel for this local-hotspot workflow. It can use JPEG streaming offline; FFmpeg is needed only for hardware H.264/HEVC video.

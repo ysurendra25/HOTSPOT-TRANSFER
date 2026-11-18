@@ -85,13 +85,18 @@ final class ChatStore {
 
     /** Adds a file transfer card to the shared conversation. */
     static void appendFile(Context context, String name, String id, long size, String from) {
+        String extension = "";
+        int dot = name == null ? -1 : name.lastIndexOf('.');
+        if (dot >= 0 && dot + 1 < name.length()) extension = name.substring(dot + 1).toLowerCase(java.util.Locale.ROOT);
+        String mime = extension.isEmpty() ? null : android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
+        if (mime == null || mime.isEmpty()) mime = "application/octet-stream";
         synchronized (LOCK) {
             JSONArray messages = read(context);
             try {
                 messages.put(new JSONObject().put("text", "Shared a file")
                         .put("time", System.currentTimeMillis())
                         .put("from", normalizeSender(from))
-                        .put("attachment", new JSONObject().put("name", name).put("id", id).put("size", size)));
+                        .put("attachment", new JSONObject().put("name", name).put("id", id).put("size", size).put("mime", mime)));
                 writeFile(context, new JSONObject().put("messages", trimmed(messages, MAX_MESSAGES)).toString());
             } catch (Exception ignored) { }
         }

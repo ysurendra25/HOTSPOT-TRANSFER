@@ -46,9 +46,9 @@ func defaultConfig() Config {
 		Addr:      "127.0.0.1:7070",
 		Token:     randToken(),
 		Monitor:   0,
-		FPS:       12,
-		Quality:   65,
-		MaxW:      1600,
+		FPS:       10,
+		Quality:   60,
+		MaxW:      1280,
 		KeepAwake: "ac",
 		ShareDir:  defaultShareDir(),
 	}
@@ -164,6 +164,14 @@ func loadConfig() {
 	}
 	if cfg.Quality <= 0 || cfg.Quality > 100 {
 		cfg.Quality = 65
+	}
+	// Migrate the previous built-in stream settings to the hotspot-friendly
+	// balanced profile. Explicit user presets continue to be preserved.
+	if cfg.FPS == 12 && cfg.Quality == 65 && cfg.MaxW == 1600 {
+		cfg.FPS, cfg.Quality, cfg.MaxW = 10, 60, 1280
+		if data, err := json.MarshalIndent(cfg, "", "  "); err == nil {
+			_ = os.WriteFile(p, data, 0600)
+		}
 	}
 }
 
