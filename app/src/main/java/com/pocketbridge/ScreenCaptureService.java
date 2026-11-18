@@ -212,8 +212,12 @@ public final class ScreenCaptureService extends Service {
         windowManager.getDefaultDisplay().getRealMetrics(metrics);
         int width = metrics.widthPixels;
         int height = metrics.heightPixels;
-        width = Math.max(2, width / 2 * 2);
-        height = Math.max(2, height / 2 * 2);
+        // Capture at the size the encoder actually sends (1280 on the long side).
+        // Capturing at full native resolution and scaling afterwards wasted a lot of
+        // work per frame, which is what made the stream lag behind the phone.
+        float scale = Math.min(1f, 1280f / Math.max(width, height));
+        width = Math.max(2, Math.round(width * scale / 2f) * 2);
+        height = Math.max(2, Math.round(height * scale / 2f) * 2);
         return new int[]{width, height};
     }
 
@@ -372,8 +376,8 @@ public final class ScreenCaptureService extends Service {
         // The WebRTC path keeps the source resolution. Compatibility JPEG is a
         // last-resort path, so cap its CPU and hotspot bandwidth to prevent a
         // growing encode/send queue from turning into seconds of stale video.
-        private static final int MAX_EDGE = 2560;
-        private static final long MIN_FRAME_NS = 83_333_333L;
+        private static final int MAX_EDGE = 1280;
+        private static final long MIN_FRAME_NS = 50_000_000L;
         private final Object frameLock = new Object();
         private volatile JpegFrame latest;
         private long sequence;
@@ -425,7 +429,7 @@ public final class ScreenCaptureService extends Service {
                 Nv21Rotation.Frame rotated = Nv21Rotation.rotate(nv21, width, height, frame.getRotation());
                 ByteArrayOutputStream out = new ByteArrayOutputStream();
                 if (!new YuvImage(rotated.data, ImageFormat.NV21, rotated.width, rotated.height, null)
-                        .compressToJpeg(new Rect(0, 0, rotated.width, rotated.height), 80, out)) return null;
+                        .compressToJpeg(new Rect(0, 0, rotated.width, rotated.height), 65, out)) return null;
                 return out.toByteArray();
             } catch (Exception | OutOfMemoryError error) {
                 android.util.Log.w("PocketBridge", "Could not encode a local screen frame", error);

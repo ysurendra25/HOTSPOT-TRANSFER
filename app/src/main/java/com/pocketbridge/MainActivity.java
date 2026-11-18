@@ -753,14 +753,87 @@ public final class MainActivity extends Activity {
         }
     }
 
+    /** Turns a loopback helper link into one the phone can actually reach. */
+    private android.net.Uri resolveLoopbackHelper(android.net.Uri parsed, String token, TextView status) throws Exception {
+        runOnUiThread(() -> status.setText("That is the laptop's own address. Looking for the laptop on this network…"));
+        String found = discoverHelperHost(token);
+        if (found == null) {
+            throw new Exception("That is the laptop's own address (127.0.0.1), so the phone cannot reach it. "
+                    + "Copy the line marked LAN: from the helper window instead, for example http://192.168.43.42:7070/?t=…");
+        }
+        return android.net.Uri.parse(found);
+    }
+
+    /**
+     * Finds the Windows helper on this network when the pasted link points at the
+     * laptop's own loopback. Scans the /24 around each local address for port 7070
+     * and keeps the first host that answers with the same token.
+     */
+    private String discoverHelperHost(String token) {
+        java.util.List<String> prefixes = new java.util.ArrayList<>();
+        try {
+            java.util.Enumeration<java.net.NetworkInterface> interfaces = java.net.NetworkInterface.getNetworkInterfaces();
+            while (interfaces.hasMoreElements()) {
+                java.net.NetworkInterface network = interfaces.nextElement();
+                if (!network.isUp() || network.isLoopback()) continue;
+                for (java.net.InterfaceAddress address : network.getInterfaceAddresses()) {
+                    java.net.InetAddress ip = address.getAddress();
+                    if (ip == null || ip.getAddress().length != 4) continue;
+                    String text = ip.getHostAddress();
+                    prefixes.add(text.substring(0, text.lastIndexOf('.') + 1));
+                }
+            }
+        } catch (Exception ignored) { }
+        if (prefixes.isEmpty()) return null;
+
+        java.util.concurrent.atomic.AtomicReference<String> found = new java.util.concurrent.atomic.AtomicReference<>(null);
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(24);
+        java.util.List<java.util.concurrent.Future<?>> tasks = new java.util.ArrayList<>();
+        for (String prefix : prefixes) {
+            for (int host = 1; host <= 254 && found.get() == null; host++) {
+                final String encodedToken;
+                try { encodedToken = java.net.URLEncoder.encode(token, "UTF-8"); }
+                catch (Exception ignored) { continue; }
+                final String candidate = "http://" + prefix + host + ":" + 7070 + "/?t=" + encodedToken;
+                tasks.add(pool.submit(() -> {
+                    if (found.get() != null) return;
+                    java.net.HttpURLConnection probe = null;
+                    try {
+                        probe = (java.net.HttpURLConnection) new java.net.URL(candidate.replace("/?t=", "/files?t=")).openConnection();
+                        probe.setConnectTimeout(250);
+                        probe.setReadTimeout(400);
+                        probe.setRequestMethod("GET");
+                        if (probe.getResponseCode() == 200) found.compareAndSet(null, candidate);
+                    } catch (Exception unreachable) {
+                        // Not this host; keep scanning.
+                    } finally {
+                        if (probe != null) probe.disconnect();
+                    }
+                }));
+            }
+        }
+        pool.shutdown();
+        try { pool.awaitTermination(6, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+        for (java.util.concurrent.Future<?> task : tasks) task.cancel(true);
+        return found.get();
+    }
+
     /** Reads the helper's file list and fills the Library tab with it. */
     private void fetchLaptopFiles(String link, LinearLayout rows, TextView status, String initialQuery, Runnable done) {
         new Thread(() -> {
             HttpURLConnection connection = null;
             try {
-                android.net.Uri supplied = android.net.Uri.parse(link);
-                String token = supplied.getQueryParameter("t");
-                if (token == null || !"http".equalsIgnoreCase(supplied.getScheme())) throw new Exception("Use the full local http link printed by the Windows helper.");
+                android.net.Uri parsed = android.net.Uri.parse(link.trim());
+                String token = parsed.getQueryParameter("t");
+                if (token == null || !"http".equalsIgnoreCase(parsed.getScheme())) {
+                    throw new Exception("Use the full http link printed by the Windows helper, including the ?t= code.");
+                }
+                String host = parsed.getHost() == null ? "" : parsed.getHost();
+                boolean loopback = "127.0.0.1".equals(host) || "localhost".equalsIgnoreCase(host) || "::1".equals(host);
+                // The helper prints two links: "mo:" is the laptop talking to itself,
+                // "LAN:" is the one a phone can reach. Rather than only refusing the
+                // loopback one, look for the laptop on this network and use it.
+                final android.net.Uri supplied = loopback ? resolveLoopbackHelper(parsed, token, status) : parsed;
                 android.net.Uri filesUri = supplied.buildUpon().path("/files").clearQuery().appendQueryParameter("t", token).build();
                 connection = (HttpURLConnection) new URL(filesUri.toString()).openConnection();
                 connection.setConnectTimeout(5000);
