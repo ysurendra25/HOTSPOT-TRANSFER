@@ -157,7 +157,8 @@
   .modal-top strong{font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .modal-top .btn{background:#1d3038;color:#dfeeeb}
   .stage{background:#000;display:flex;align-items:center;justify-content:center;flex:1;min-height:0;max-height:min(72vh,calc(100dvh - 190px));overflow:hidden}
-  .stage.video-stage{flex:0 0 auto;width:auto;height:auto;max-width:100%;margin:auto}
+  .stage.video-stage{flex:1 1 auto;width:100%;height:100%;max-width:100%;margin:auto}
+  .stage.video-stage video{width:100%;height:100%;object-fit:contain}
   .stage video,.stage img{width:100%;height:100%;max-height:100%;display:block;object-fit:contain;background:#000}
   .stage.ratio-16-9{aspect-ratio:16/9}.stage.ratio-4-3{aspect-ratio:4/3}.stage.ratio-1-1{aspect-ratio:1/1}.stage.ratio-original{aspect-ratio:auto}
   .music-layout{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(300px,.9fr);gap:18px;align-items:start}
