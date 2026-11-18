@@ -82,6 +82,7 @@ func main() {
 	mux.Handle("/files", auth(http.HandlerFunc(filesHandler)))
 	mux.Handle("/file/", auth(http.HandlerFunc(fileHandler)))
 	mux.Handle("/power", auth(http.HandlerFunc(powerHandler)))
+	mux.Handle("/open-vlc", auth(http.HandlerFunc(openVLCHandler)))
 
 	// Keep the tunnel alive for as long as the server runs.
 	go superviseTunnel(context.Background())

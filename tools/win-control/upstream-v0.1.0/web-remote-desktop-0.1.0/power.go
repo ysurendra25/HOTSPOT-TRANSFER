@@ -10,6 +10,15 @@ type powerRequest struct {
 	Confirm bool   `json:"confirm"`
 }
 
+func supportedPowerAction(action string) bool {
+	switch action {
+	case "lock", "wake-display", "unlock", "sleep", "shutdown", "cancel-shutdown":
+		return true
+	default:
+		return false
+	}
+}
+
 func powerHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -20,7 +29,7 @@ func powerHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
-	if req.Action != "lock" && req.Action != "wake-display" && req.Action != "sleep" && req.Action != "shutdown" && req.Action != "cancel-shutdown" {
+	if !supportedPowerAction(req.Action) {
 		http.Error(w, "unsupported power action", http.StatusBadRequest)
 		return
 	}

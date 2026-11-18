@@ -286,6 +286,49 @@ public final class MainActivity extends Activity {
         sendFromPhone.setOnClickListener(v -> choosePhoneFileForLaptop());
         content.addView(sendFromPhone, matchWrap());
 
+        screenHelperLink = new EditText(this);
+        screenHelperLink.setSingleLine(true);
+        screenHelperLink.setHint("http://laptop-address:7070/?t=code");
+        screenHelperLink.setTextSize(14);
+        screenHelperLink.setText(getSavedHelperLink());
+        MediaHttpServer.setLaptopHelperLink(getSavedHelperLink());
+        watchHelperLink(screenHelperLink);
+        addCard(content, "WINDOWS HELPER LINK · PASTE ONCE", screenHelperLink);
+        TextView laptopScreenStatus = new TextView(this);
+        laptopScreenStatus.setText("Start the portable Windows helper, then paste its local link here. Keep the laptop awake for screen sharing.");
+        laptopScreenStatus.setTextColor(COLOR_MUTED);
+        laptopScreenStatus.setTextSize(13);
+        laptopScreenStatus.setLineSpacing(dp(3), 1f);
+        content.addView(laptopScreenStatus, matchWrap());
+
+        LinearLayout powerControls = new LinearLayout(this);
+        powerControls.setOrientation(LinearLayout.VERTICAL);
+        String[][] powerActions = {{"Lock laptop", "lock"}, {"Wake display", "wake-display"},
+                {"Unlock / show sign-in", "unlock"}, {"Shut down laptop", "shutdown"}};
+        for (String[] powerAction : powerActions) {
+            Button actionButton = button(powerAction[0], "shutdown".equals(powerAction[1]) ? COLOR_SOFT : COLOR_GREEN);
+            if ("shutdown".equals(powerAction[1])) actionButton.setTextColor(COLOR_INK);
+            actionButton.setOnClickListener(v -> {
+                String action = powerAction[1];
+                if ("shutdown".equals(action)) {
+                    new android.app.AlertDialog.Builder(this).setTitle("Shut down laptop")
+                            .setMessage("Schedule Windows shutdown in 15 seconds? The hotspot connection will end.")
+                            .setNegativeButton("Cancel", null)
+                            .setPositiveButton("Shut down", (dialog, which) -> postLaptopPowerAction(
+                                    screenHelperLink.getText().toString().trim(), action, true, laptopScreenStatus)).show();
+                } else {
+                    postLaptopPowerAction(screenHelperLink.getText().toString().trim(), action, false, laptopScreenStatus);
+                }
+            });
+            LinearLayout.LayoutParams actionLp = matchWrap(); actionLp.bottomMargin = dp(6);
+            powerControls.addView(actionButton, actionLp);
+        }
+        addCard(content, "LAPTOP CONTROLS", powerControls);
+        TextView powerNote = new TextView(this);
+        powerNote.setText("Unlock / show sign-in wakes the display; Windows still requires the laptop PIN or password. Wake works only while the helper and laptop are running.");
+        powerNote.setTextColor(COLOR_MUTED); powerNote.setTextSize(12);
+        powerNote.setPadding(dp(4), 0, dp(4), dp(12)); content.addView(powerNote, matchWrap());
+
         stopButton = button("Stop sharing", Color.rgb(150, 60, 60));
         stopButton.setEnabled(false);
         stopButton.setOnClickListener(v -> sendServiceCommand(ShareSessionService.ACTION_STOP));
@@ -322,19 +365,7 @@ public final class MainActivity extends Activity {
         screenGap.topMargin = dp(10);
         content.addView(screenButton, screenGap);
 
-        screenHelperLink = new EditText(this);
-        screenHelperLink.setSingleLine(true);
-        screenHelperLink.setHint("http://laptop-address:7070/?t=code");
-        screenHelperLink.setTextSize(14);
-        screenHelperLink.setText(getSavedHelperLink());
-        watchHelperLink(screenHelperLink);
-        addCard(content, "LAPTOP HELPER LINK · PASTE ONCE", screenHelperLink);
-        TextView laptopScreenStatus = new TextView(this);
-        laptopScreenStatus.setText("Start the portable Windows helper, then paste its local link here. This same link also loads laptop files in Library.");
-        laptopScreenStatus.setTextColor(COLOR_MUTED);
-        laptopScreenStatus.setTextSize(13);
-        laptopScreenStatus.setLineSpacing(dp(3), 1f);
-        content.addView(laptopScreenStatus, matchWrap());
+        // Shared helper URL and controls live in Connect. This view is only the viewer.
 
         // Laptop screen on the phone: the Windows helper already streams JPEG over
         // the hotspot, so show its own live page here instead of duplicating it.
@@ -347,9 +378,23 @@ public final class MainActivity extends Activity {
         laptopView.setVisibility(View.GONE);
         laptopView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         laptopView.setLayoutParams(new LinearLayout.LayoutParams(-1, dp(380)));
+        final android.os.Handler screenStatusHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+        final Runnable[] screenStatusPoll = new Runnable[1];
+        screenStatusPoll[0] = () -> {
+            if (laptopView.getVisibility() != View.VISIBLE) return;
+            laptopView.evaluateJavascript("(function(){var d=document.getElementById('dot');var v=document.getElementById('screenv');var i=document.getElementById('screenj');var s=d?d.className:'offline';var w=v&&v.videoWidth?v.videoWidth:(i?i.naturalWidth:0);var h=v&&v.videoHeight?v.videoHeight:(i?i.naturalHeight:0);return s+'|'+w+'x'+h})()", result -> {
+                String state = result == null ? "" : result.replace("\\\"", "").replace("\"", "");
+                if (state.startsWith("live|")) laptopScreenStatus.setText("Laptop screen live · " + state.substring(5));
+                else if (state.startsWith("connecting|")) laptopScreenStatus.setText("Connecting to the laptop screen…");
+                else if (state.startsWith("offline|")) laptopScreenStatus.setText("No screen frames received. Confirm Windows is awake, the helper is running, and the helper link is current.");
+            });
+            screenStatusHandler.postDelayed(screenStatusPoll[0], 1000);
+        };
         laptopView.setWebViewClient(new android.webkit.WebViewClient() {
             @Override public void onPageFinished(android.webkit.WebView view, String url) {
-                laptopScreenStatus.setText("Laptop viewer opened. If its screen remains blank, check that the PC helper is active and the laptop is awake.");
+                laptopScreenStatus.setText("Viewer loaded · waiting for laptop frames…");
+                screenStatusHandler.removeCallbacks(screenStatusPoll[0]);
+                screenStatusHandler.post(screenStatusPoll[0]);
             }
             @Override public void onReceivedError(android.webkit.WebView view, android.webkit.WebResourceRequest request, android.webkit.WebResourceError error) {
                 if (request.isForMainFrame()) laptopScreenStatus.setText("Could not reach the laptop helper. Keep both devices on the same hotspot and confirm Windows Firewall allows PocketBridge on private networks.");
@@ -373,7 +418,7 @@ public final class MainActivity extends Activity {
         });
         Button hideLaptop = button("Hide laptop screen", COLOR_SOFT);
         hideLaptop.setTextColor(COLOR_INK);
-        hideLaptop.setOnClickListener(v -> { laptopView.setVisibility(View.GONE); laptopView.loadUrl("about:blank"); });
+        hideLaptop.setOnClickListener(v -> { screenStatusHandler.removeCallbacks(screenStatusPoll[0]); laptopView.setVisibility(View.GONE); laptopView.loadUrl("about:blank"); });
         LinearLayout liveRow = new LinearLayout(this);
         liveRow.setOrientation(LinearLayout.HORIZONTAL);
         LinearLayout.LayoutParams liveLeft = new LinearLayout.LayoutParams(0, -2, 1f);
@@ -384,42 +429,6 @@ public final class MainActivity extends Activity {
         liveRow.addView(hideLaptop, liveRight);
         addCard(content, "LAPTOP SCREEN ON THIS PHONE", liveRow);
         content.addView(laptopView, matchWrap());
-
-        LinearLayout powerControls = new LinearLayout(this);
-        powerControls.setOrientation(LinearLayout.VERTICAL);
-        String[][] powerActions = {
-                {"Lock laptop", "lock"}, {"Wake display", "wake-display"},
-                {"Sleep laptop", "sleep"}, {"Shut down in 15 seconds", "shutdown"},
-                {"Cancel shutdown", "cancel-shutdown"}
-        };
-        for (String[] powerAction : powerActions) {
-            Button actionButton = button(powerAction[0], "shutdown".equals(powerAction[1]) ? COLOR_SOFT : COLOR_GREEN);
-            if ("shutdown".equals(powerAction[1])) actionButton.setTextColor(COLOR_INK);
-            actionButton.setOnClickListener(v -> {
-                String action = powerAction[1];
-                if ("sleep".equals(action) || "shutdown".equals(action)) {
-                    String warning = "sleep".equals(action)
-                            ? "Put the laptop to sleep? The hotspot connection will stop until the laptop wakes."
-                            : "Schedule Windows shutdown in 15 seconds? You can cancel it from PocketBridge during that delay.";
-                    new android.app.AlertDialog.Builder(this).setTitle(powerAction[0]).setMessage(warning)
-                            .setNegativeButton("Cancel", null)
-                            .setPositiveButton("Continue", (dialog, which) -> postLaptopPowerAction(
-                                    screenHelperLink.getText().toString().trim(), action, true, laptopScreenStatus)).show();
-                } else {
-                    postLaptopPowerAction(screenHelperLink.getText().toString().trim(), action, false, laptopScreenStatus);
-                }
-            });
-            LinearLayout.LayoutParams actionLp = matchWrap();
-            actionLp.bottomMargin = dp(6);
-            powerControls.addView(actionButton, actionLp);
-        }
-        addCard(content, "LAPTOP CONTROLS", powerControls);
-        TextView powerNote = new TextView(this);
-        powerNote.setText("Windows still requires its normal PIN/password to unlock. Wake display only asks the monitor to turn on. Sleeping disconnects the hotspot; wake the laptop physically or use Wake-on-LAN configured on it.");
-        powerNote.setTextColor(COLOR_MUTED);
-        powerNote.setTextSize(12);
-        powerNote.setPadding(dp(4), 0, dp(4), dp(12));
-        content.addView(powerNote, matchWrap());
 
         TextView note = new TextView(this);
         note.setText("The code keeps the link private. Anyone who joins the network still needs it to see your files. Android asks for screen-capture approval each time.");
@@ -694,6 +703,7 @@ public final class MainActivity extends Activity {
                 if (syncingHelperLinks) return;
                 String value = s.toString();
                 getPreferences(MODE_PRIVATE).edit().putString("laptop_helper_link", value).apply();
+                MediaHttpServer.setLaptopHelperLink(value);
                 EditText other = input == screenHelperLink ? libraryHelperLink : screenHelperLink;
                 if (other != null && !other.getText().toString().equals(value)) {
                     syncingHelperLinks = true;

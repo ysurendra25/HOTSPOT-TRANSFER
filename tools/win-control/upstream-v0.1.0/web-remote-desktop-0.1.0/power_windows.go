@@ -10,7 +10,6 @@ import (
 
 var powerUser32 = syscall.NewLazyDLL("user32.dll")
 var lockWorkstation = powerUser32.NewProc("LockWorkStation")
-var sendMessage = powerUser32.NewProc("SendMessageW")
 
 func runPowerAction(action string) error {
 	switch action {
@@ -21,8 +20,12 @@ func runPowerAction(action string) error {
 		}
 		return nil
 	case "wake-display":
-		// Broadcast WM_SYSCOMMAND/SC_MONITORPOWER with -1: request that monitors turn on.
-		_, _, _ = sendMessage.Call(0xffff, 0x0112, 0xF170, ^uintptr(1))
+		wakeDisplayNow()
+		return nil
+	case "unlock":
+		// Wake the panel so the sign-in UI is visible. Windows still requires the
+		// user to enter their PIN/password locally; this never bypasses sign-in.
+		wakeDisplayNow()
 		return nil
 	case "sleep":
 		return exec.Command("rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0").Run()

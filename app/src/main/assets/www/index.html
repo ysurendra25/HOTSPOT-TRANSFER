@@ -84,8 +84,8 @@
   .screen-view canvas[hidden],.screen-view video[hidden]{display:none}
   .screen-view.focused canvas,.screen-view:fullscreen canvas,.screen-view.focused video,.screen-view:fullscreen video{flex:1;min-width:0;min-height:0;max-height:none;width:100%;height:100%;object-fit:contain}
   .modal:fullscreen{padding:0;background:#000}
-  .modal:fullscreen .modal-box{max-width:none;width:100vw;height:100vh;border-radius:0;display:flex;flex-direction:column}
-  .modal:fullscreen .stage{flex:1;min-height:0;max-height:none}
+  .modal:fullscreen .modal-box{max-width:none;width:100vw;height:100vh;height:100dvh;max-height:none;min-height:0;border-radius:0;display:flex;flex-direction:column}
+  .modal:fullscreen .stage{flex:1;min-height:0;max-height:none;aspect-ratio:auto!important}
   .modal:fullscreen .stage video{width:100%;height:100%;max-height:none;object-fit:contain}
   .modal:fullscreen .controls{padding:7px 12px;gap:6px}
   .modal:fullscreen .controls .ctrl{font-size:12px;padding:6px 9px}
@@ -171,6 +171,8 @@
   .chat-file-icon{width:40px;height:40px;display:grid;place-items:center;border-radius:10px;background:var(--teal-soft);color:var(--teal-dark);font-size:19px;font-weight:800}
   .chat-file-name{font-size:13px;font-weight:800;overflow-wrap:anywhere}.chat-file-meta{font-size:11px;color:var(--muted);margin-top:3px}
   .chat-file-card .btn{white-space:nowrap}
+  .chat-file-actions{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:7px}
+  .chat-message-actions{display:flex;justify-content:flex-end;margin-top:7px}
   @media(max-width:520px){.chat-file-card{grid-template-columns:34px minmax(0,1fr)}.chat-file-icon{width:34px;height:34px}.chat-file-card .btn{grid-column:2}}
   .stage audio{width:100%;margin:26px 0}
   .controls{display:flex;align-items:center;gap:10px;padding:11px 14px 14px;color:#eaf3f1;flex-wrap:wrap}
@@ -564,6 +566,9 @@
         ? '<button class="btn btn-soft" data-preview="' + safe(file.id) + '" type="button">' +
           (playable ? 'Play' : 'View') + '</button>'
         : '';
+      const vlcBtn = (file.kind === 'video' || file.kind === 'audio')
+        ? '<a class="btn btn-outline" target="_blank" rel="noopener" href="' + safe(endpoint('/api/open-vlc?url=' + encodeURIComponent(new URL(endpoint(file.url), location.href).href))) + '">Play in VLC</a>'
+        : '';
       const isSelected = selected.has(file.id);
       return heading + '<article class="card' + (isSelected ? ' selected' : '') + '" data-card="' + safe(file.id) + '">' +
         '<button class="pick" type="button" data-pick="' + safe(file.id) + '" aria-label="Select ' + safe(file.name) + '">' + (isSelected ? '✓' : '') + '</button>' +
@@ -571,7 +576,7 @@
         '<div class="meta">' +
           '<div class="name" title="' + safe(file.name) + '">' + safe(file.name) + '</div>' +
           '<div class="submeta">' + formatSize(file.size) + ' · ' + labelForKind(file.kind) + '</div>' +
-          '<div class="actions">' + previewBtn +
+          '<div class="actions">' + previewBtn + vlcBtn +
             '<a class="btn btn-outline" href="' + safe(endpoint(file.url)) + '" download="' + safe(file.name) + '">Download</a>' +
           '</div>' +
         '</div></article>';
@@ -802,6 +807,9 @@
     original.setAttribute('download', file.name);
 
     if (file.kind === 'video') {
+      const ratioSelect = document.getElementById('aspectRatio');
+      ratioSelect.value = 'original';
+      stage.classList.remove('ratio-16-9','ratio-4-3','ratio-1-1');
       media = document.createElement('video');
       media.src = url;
       media.playsInline = true;
@@ -863,7 +871,7 @@
     element.addEventListener('error', () => {
       const mediaError = element.error;
       const code = mediaError ? mediaError.code : 0;
-      if (kind === 'video' && (code === 3 || code === 4) && element.dataset.compatibilityAttempted !== 'yes') {
+      if (kind === 'video' && file.allowCompatibility !== false && (code === 3 || code === 4) && element.dataset.compatibilityAttempted !== 'yes') {
         element.dataset.compatibilityAttempted = 'yes';
         timeLabel.textContent = 'This browser cannot decode the original. Preparing a compatible copy on the phone…';
         element.src = endpoint('/api/video/compatible/' + encodeURIComponent(file.id));
@@ -896,7 +904,8 @@
     ratioSelect.onchange = () => {
       stage.classList.remove('ratio-16-9','ratio-4-3','ratio-1-1');
       if (ratioSelect.value !== 'original') stage.classList.add('ratio-' + ratioSelect.value);
-      element.style.objectFit = ratioSelect.value === 'original' ? 'contain' : 'cover';
+      // Preserve the complete source frame even when a display ratio is chosen.
+      element.style.objectFit = 'contain';
     };
     fsButton.style.display = kind === 'video' ? 'inline-flex' : 'none';
     fsButton.onclick = () => {
@@ -1286,6 +1295,22 @@
         const displayText = attachment ? 'Shared file' : (item.text || '');
         label.textContent = new Date(item.time).toLocaleTimeString() + ' · ' + displayText + (item.from === 'phone' ? ' · Phone' : ' · Laptop');
         row.appendChild(label);
+        if (!attachment && item.text) {
+          const messageActions = document.createElement('div');
+          messageActions.className = 'chat-message-actions';
+          const copy = document.createElement('button'); copy.type = 'button';
+          copy.className = 'btn btn-outline'; copy.textContent = 'Copy';
+          copy.addEventListener('click', async () => {
+            try { await navigator.clipboard.writeText(item.text); }
+            catch (_) {
+              const temp = document.createElement('textarea'); temp.value = item.text;
+              temp.style.position = 'fixed'; temp.style.opacity = '0'; document.body.appendChild(temp);
+              temp.select(); document.execCommand('copy'); temp.remove();
+            }
+            copy.textContent = 'Copied'; setTimeout(() => { copy.textContent = 'Copy'; }, 1500);
+          });
+          messageActions.appendChild(copy); row.appendChild(messageActions);
+        }
         if (attachment) {
           const file = document.createElement('div');
           file.className = 'chat-file-card';
@@ -1301,6 +1326,25 @@
           const name = document.createElement('div'); name.className = 'chat-file-name'; name.textContent = filename;
           const meta = document.createElement('div'); meta.className = 'chat-file-meta'; meta.textContent = kind + ' · ' + formatBytes(Number(attachment.size) || 0);
           details.append(name, meta);
+          const actions = document.createElement('div'); actions.className = 'chat-file-actions';
+          const mediaKind = mime.startsWith('image/') ? 'image' : mime.startsWith('video/') ? 'video' : mime.startsWith('audio/') ? 'audio' : '';
+          if (mediaKind) {
+            const play = document.createElement('button'); play.type = 'button'; play.className = 'btn btn-soft';
+            play.textContent = mediaKind === 'image' ? 'View' : 'Play';
+            play.addEventListener('click', () => {
+              viewList = [{id:attachment.id, name:filename, size:Number(attachment.size)||0, mime, kind:mediaKind,
+                url:'/api/inbox/' + encodeURIComponent(attachment.id), allowCompatibility:false}];
+              viewIndex = 0; modal.classList.add('open'); showCurrent();
+            });
+            actions.appendChild(play);
+          }
+          if (mediaKind === 'video' || mediaKind === 'audio') {
+            const vlc = document.createElement('a'); vlc.className = 'btn btn-outline';
+            vlc.textContent = 'Play in VLC'; vlc.target = '_blank'; vlc.rel = 'noopener';
+            const mediaUrl = new URL(endpoint('/api/inbox/' + encodeURIComponent(attachment.id)), location.href).href;
+            vlc.href = endpoint('/api/open-vlc?url=' + encodeURIComponent(mediaUrl));
+            actions.appendChild(vlc);
+          }
           const download = document.createElement('button');
           download.type = 'button';
           download.className = 'btn btn-soft';
@@ -1309,7 +1353,8 @@
             if (!confirm('Download ' + filename + ' to this computer?')) return;
             downloadChatAttachment(attachment);
           });
-          file.append(icon, details, download);
+          actions.appendChild(download);
+          file.append(icon, details, actions);
           row.appendChild(file);
         }
         target.appendChild(row);

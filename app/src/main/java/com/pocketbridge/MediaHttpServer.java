@@ -52,6 +52,9 @@ final class MediaHttpServer {
     static final int MAX_ZIP_FILES = 300;
     private static final int MAX_JSON_BODY_BYTES = 2 * 1024 * 1024;
     static final long MAX_UPLOAD_BYTES = Long.MAX_VALUE;
+    private static volatile String laptopHelperLink = "";
+
+    static void setLaptopHelperLink(String link) { laptopHelperLink = link == null ? "" : link.trim(); }
 
     /** True when a POST body of this declared size may be accepted. */
     static boolean uploadAllowed(long declaredLength) {
@@ -207,6 +210,25 @@ final class MediaHttpServer {
                 return;
             }
             resetBadCodes();
+
+            if (path.equals("/api/open-vlc") && method.equals("GET")) {
+                String helper = laptopHelperLink;
+                Uri helperUri = Uri.parse(helper);
+                String helperToken = helperUri.getQueryParameter("t");
+                String mediaUrl = target.getQueryParameter("url");
+                if (!"http".equalsIgnoreCase(helperUri.getScheme()) || helperUri.getHost() == null
+                        || helperToken == null || helperToken.isEmpty() || mediaUrl == null
+                        || !(mediaUrl.startsWith("http://") || mediaUrl.startsWith("https://"))) {
+                    respond(output, 503, "text/plain; charset=utf-8",
+                            "Paste and start the Windows helper link in Connect before using VLC.", null);
+                    return;
+                }
+                String launch = helperUri.buildUpon().path("/open-vlc").clearQuery()
+                        .appendQueryParameter("t", helperToken).appendQueryParameter("url", mediaUrl).build().toString();
+                respond(output, 302, "text/plain; charset=utf-8", "Opening VLC",
+                        "Location: " + launch + "\r\n");
+                return;
+            }
 
             if (path.equals("/api/upload") && method.equals("POST")) {
                 if (!uploadAllowed(declaredLength)) {
@@ -932,6 +954,7 @@ final class MediaHttpServer {
     static String reasonPhrase(int status) {
         switch (status) {
             case 200: return "OK";
+            case 302: return "Found";
             case 201: return "Created";
             case 204: return "No Content";
             case 206: return "Partial Content";
