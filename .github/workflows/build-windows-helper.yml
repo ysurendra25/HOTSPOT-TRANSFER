@@ -14,15 +14,15 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.27.x'
           cache-dependency-path: tools/win-control/upstream-v0.1.0/web-remote-desktop-0.1.0/go.sum
       - name: Test and build
         shell: pwsh
         run: ./tools/win-control/build.ps1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: PocketBridge-Windows-Control
           path: tools/win-control/dist/pc-remote.exe

@@ -11,12 +11,12 @@ jobs:
   android:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4.0.4
       - name: Accept Android SDK licenses
         run: yes | sdkmanager --licenses >/dev/null
       - name: Check browser routes and run Android tests
@@ -30,7 +30,7 @@ jobs:
           cp app/build/outputs/apk/debug/app-debug.apk release-assets/PocketBridge-${GITHUB_REF_NAME#v}.apk
           ./gradlew assembleDebug -PpocketbridgeUniversal=true --console=plain
           zip -j release-assets/PocketBridge-${GITHUB_REF_NAME#v}-universal.apk.zip app/build/outputs/apk/debug/app-debug.apk
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: android-release
           path: release-assets/*
@@ -39,8 +39,8 @@ jobs:
   windows-helper:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.27.x'
           cache-dependency-path: tools/win-control/upstream-v0.1.0/web-remote-desktop-0.1.0/go.sum
@@ -55,7 +55,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item tools/win-control/dist/pc-remote.exe, tools/win-control/Start-Control.bat, tools/win-control/README.md $stage
           Compress-Archive -Path (Join-Path $stage '*') -DestinationPath "PocketBridge-Windows-Control-$version.zip"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-helper
           path: PocketBridge-Windows-Control-*.zip
@@ -67,8 +67,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
         with:
           path: release-assets
           merge-multiple: true
