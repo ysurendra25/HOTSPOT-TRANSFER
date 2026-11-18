@@ -223,7 +223,8 @@ final class MediaRepository {
         String[] projection = {MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME,
                 MediaStore.MediaColumns.MIME_TYPE, MediaStore.MediaColumns.SIZE, MediaStore.MediaColumns.DATE_MODIFIED};
         String selection = MediaStore.Files.FileColumns.MEDIA_TYPE + " IS NULL OR "
-                + MediaStore.Files.FileColumns.MEDIA_TYPE + " = 0";
+                + MediaStore.Files.FileColumns.MEDIA_TYPE + " = 0 OR "
+                + MediaStore.Files.FileColumns.MEDIA_TYPE + " = " + MediaStore.Files.FileColumns.MEDIA_TYPE_DOCUMENT;
         try (Cursor cursor = queryPage(collection, projection, selection, null, maxRows)) {
             if (cursor == null) return;
             int limit = maxRows;

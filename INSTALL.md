@@ -2,7 +2,7 @@
 
 ## Install the APK on Android 15
 
-1. Download `PocketBridge-v0.5.9.3.apk` for 64-bit ARM phones. For other Android architectures, download `PocketBridge-v0.5.9.3-universal.apk.zip`, extract it, and use the APK inside.
+1. Download `PocketBridge-v0.5.9.4.apk` for 64-bit ARM phones. For other Android architectures, download `PocketBridge-v0.5.9.4-universal.apk.zip`, extract it, and use the APK inside.
 2. Open the APK from the phone's Downloads app or Files app. If you downloaded the universal ZIP, extract it first.
 3. If Android asks, allow the app you used to open the APK to install unknown apps, then return and tap **Install**.
 4. Open PocketBridge and allow nearby Wi-Fi and access to the media you want to share.
@@ -22,6 +22,8 @@ The debug APK is signed with a development key. It is suitable for personal inst
 3. Open the short link shown on the phone (for example `http://192.168.43.1:43117`) and enter the 6-digit code. The link is short on purpose so it is easy to type; the code keeps it private.
 4. Browse photos, videos, audio and files. The gallery loads 120 items at a time. Tap a video or audio item to play it — the player has **Back 10s** and **Forward 10s** buttons, a seek bar and fullscreen. It first plays the original video; if the browser cannot decode it, PocketBridge creates an H.264/AAC copy on the phone for browser playback. That conversion uses phone storage and may take time; the original remains available to download. To share the screen, tap **Share phone screen** on the phone, approve Android's capture prompt, then tap **Watch screen** in the browser.
 5. Tap **Stop local share** on the phone when finished.
+
+There is no fixed app-level file-size limit. The phone needs enough free internal storage for a file received from the laptop; PocketBridge checks space before and during the transfer and removes an incomplete copy if storage runs out. A 15 GB file can transfer if that space is available. Phone-to-laptop files are streamed from PocketBridge's receive folder for the laptop to download.
 
 File sharing sends the original file bytes over the local hotspot. Screen sharing sends JPEG frames directly over the local HTTP connection (up to 1280 pixels and 12 fps); Android asks for capture approval each time. Neither feature uses a cloud account or relay. The local HTTP connection is not encrypted, so use a private hotspot and keep the link and code private.
 
@@ -64,7 +66,7 @@ Download the APK before going offline. After installation, PocketBridge creates 
 ## Control the laptop from the phone
 
 1. Start the PocketBridge hotspot and connect the laptop to it.
-2. Download and extract `PocketBridge-Windows-Control-v0.5.9.3.zip` on Windows.
+2. Download and extract `PocketBridge-Windows-Control-v0.5.9.4.zip` on Windows.
 3. Double-click `Start-Control.bat`. If Windows Firewall asks, allow private network access only.
 4. The helper prints a link in its window. Open that link on the phone while the phone is still connected to the laptop's PocketBridge hotspot.
 5. Use the touch screen for mouse movement and clicks, and the keyboard controls on the page to type. Leave the helper running while connected. Press a key in its console when done to stop it.

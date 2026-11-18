@@ -106,6 +106,10 @@
   .tab.active{background:var(--ink);border-color:var(--ink);color:#fff}
 
   .grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px}
+  .grid.list-view{display:flex;flex-direction:column;gap:6px}
+  .grid.list-view .card{display:grid;grid-template-columns:72px 1fr;align-items:center}
+  .grid.list-view .thumb{width:72px;aspect-ratio:1}
+  .toolbar-select{border:1px solid var(--line);border-radius:10px;background:#fff;padding:9px 10px;color:var(--ink)}
   .load-more{display:flex;justify-content:center;padding:20px 0 4px}
   .load-more[hidden]{display:none}
   .card{border:1px solid var(--line);background:var(--surface);border-radius:15px;overflow:hidden;
@@ -133,13 +137,19 @@
   .modal{display:none;position:fixed;inset:0;background:rgba(9,22,30,.86);z-index:9;
     align-items:center;justify-content:center;padding:22px}
   .modal.open{display:flex}
-  .modal-box{width:100%;max-width:min(1000px,96vw);background:#101c23;border-radius:16px;overflow:hidden;
+  .modal-box{width:100%;max-width:min(1000px,96vw);max-height:calc(100dvh - 44px);display:flex;flex-direction:column;background:#101c23;border-radius:16px;overflow:hidden;
     box-shadow:0 24px 70px rgba(0,0,0,.5)}
   .modal-top{display:flex;justify-content:space-between;align-items:center;padding:11px 14px;color:#eaf3f1;gap:12px}
   .modal-top strong{font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .modal-top .btn{background:#1d3038;color:#dfeeeb}
-  .stage{background:#000;display:grid;place-items:center;max-height:74vh;overflow:hidden}
-  .stage video,.stage img{width:100%;max-height:74vh;display:block;object-fit:contain;background:#000}
+  .stage{background:#000;display:flex;align-items:center;justify-content:center;flex:1;min-height:0;max-height:none;overflow:hidden}
+  .stage video,.stage img{width:100%;height:100%;max-height:100%;display:block;object-fit:contain;background:#000}
+  .stage.ratio-16-9{aspect-ratio:16/9}.stage.ratio-4-3{aspect-ratio:4/3}.stage.ratio-1-1{aspect-ratio:1/1}.stage.ratio-original{aspect-ratio:auto}
+  .music-player{background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px;margin:12px 0}
+  .music-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .music-controls audio{width:100%}
+  .music-row{display:flex;align-items:center;gap:10px;padding:10px;border-bottom:1px solid var(--line);cursor:pointer}
+  .music-row.active{background:var(--teal-soft);font-weight:750}
   .stage audio{width:100%;margin:26px 0}
   .controls{display:flex;align-items:center;gap:10px;padding:11px 14px 14px;color:#eaf3f1;flex-wrap:wrap}
   .ctrl{background:#1d3038;color:#eaf3f1;border:0;border-radius:10px;padding:9px 12px;font-weight:700;font-size:13px}
@@ -184,6 +194,7 @@
   <button class="tab" type="button" data-tab="connect"><span class="tabicon">⌂</span>Connect</button>
   <button class="tab" type="button" data-tab="screen"><span class="tabicon">▣</span>Screen</button>
   <button class="tab" type="button" data-tab="files"><span class="tabicon">▤</span>Files</button>
+  <button class="tab" type="button" data-tab="music"><span class="tabicon">♫</span>Music</button>
   <button class="tab" type="button" data-tab="chat"><span class="tabicon">✉</span>Chat</button>
 </nav>
 
@@ -228,7 +239,7 @@
     <section class="screen-card" id="transferSection" style="background:#fff;color:var(--ink);border:1px solid var(--line)">
       <div class="screen-copy"><div class="screen-icon" style="background:var(--teal-soft);color:var(--teal-dark)">⇧</div><div>
         <div class="screen-title">Send a file to this phone</div>
-        <div class="screen-desc" style="color:var(--muted)">Files are saved in PocketBridge’s private receive folder. Maximum 16 MB per file.</div>
+        <div class="screen-desc" style="color:var(--muted)">File size is limited only by the phone’s available storage.</div>
       </div></div>
       <label class="btn btn-soft" for="sendFile">Choose file</label>
       <input id="sendFile" type="file" hidden>
@@ -250,12 +261,14 @@
         <button class="btn btn-outline" id="stopWatch" type="button">Stop viewing</button>
       </div>
       <canvas id="screenCanvas" aria-label="Live screen from the Android phone" hidden></canvas>
-      <div class="note" id="screenHint">Tap “Share phone screen” in PocketBridge on the phone to begin.</div>
+      <div class="note" id="screenViewHint">Tap “Share phone screen” in PocketBridge on the phone to begin.</div>
     </section>
 
     <section class="library-head" id="librarySection">
       <div><span class="section-title">Your library</span><span class="count" id="count">Loading…</span></div>
       <input class="search" id="search" placeholder="Search files" autocomplete="off">
+      <select id="sizeFilter" class="toolbar-select" aria-label="File size"><option value="all">Any size</option><option value="small">Small · under 10 MB</option><option value="medium">Medium · 10–100 MB</option><option value="large">Large · over 100 MB</option></select>
+      <button class="btn btn-outline" id="layoutToggle" type="button">List view</button>
     </section>
 
     <nav class="tabs" id="kindTabs" aria-label="Media type">
@@ -269,6 +282,12 @@
 
     <section class="grid" id="grid"><div class="loading">Finding media on your phone…</div></section>
     <div class="load-more" id="loadMoreWrap" hidden><button class="btn btn-soft" id="loadMore" type="button">Load more</button></div>
+
+    <section id="musicSection" hidden>
+      <div class="library-head"><div><span class="section-title">Music player</span><span class="count" id="musicCount">Loading songs…</span></div><input class="search" id="musicSearch" placeholder="Search songs" autocomplete="off"></div>
+      <div class="music-player"><div class="music-controls"><button class="btn btn-outline" id="musicShuffle" type="button" aria-pressed="false">Shuffle off</button><button class="btn btn-outline" id="musicPrev" type="button">Previous</button><button class="btn btn-dark" id="musicNext" type="button">Next</button></div><audio id="musicAudio" controls preload="metadata"></audio><strong id="musicTitle">Choose a song</strong></div>
+      <section id="musicList" class="card" style="padding:8px"></section>
+    </section>
     <footer class="foot">Shared directly over your own network · PocketBridge open source</footer>
   </div>
 </main>
@@ -300,6 +319,7 @@
       <input class="seek" id="seek" type="range" min="0" max="1000" value="0" aria-label="Seek">
       <span class="time" id="time">0:00 / 0:00</span>
       <button class="ctrl" id="fullscreen" type="button" title="Fullscreen">⛶</button>
+      <select id="aspectRatio" class="toolbar-select" aria-label="Video aspect ratio"><option value="original">Original</option><option value="16-9">16:9</option><option value="4-3">4:3</option><option value="1-1">1:1</option></select>
     </div>
   </div>
 </div>
@@ -463,7 +483,13 @@
     const term = search.value.trim().toLowerCase();
     let recentIds = [];
     try { recentIds = JSON.parse(localStorage.getItem(recentKey) || '[]'); } catch (_) { }
-    const shown = files.filter(file => (currentKind !== 'recent' || recentIds.includes(file.id)) && (file.name || '').toLowerCase().includes(term));
+    const sizeMode = document.getElementById('sizeFilter').value;
+    const shown = files.filter(file => {
+      const bytes = Number(file.size) || 0;
+      const sizeOk = sizeMode === 'all' || (sizeMode === 'small' && bytes < 10*1024*1024) ||
+        (sizeMode === 'medium' && bytes >= 10*1024*1024 && bytes <= 100*1024*1024) || (sizeMode === 'large' && bytes > 100*1024*1024);
+      return sizeOk && (currentKind !== 'recent' || recentIds.includes(file.id)) && (file.name || '').toLowerCase().includes(term);
+    });
     count.textContent = files.length.toLocaleString() + (hasMore ? '+' : '') +
       (files.length === 1 && !hasMore ? ' item' : ' items') +
       (visibleLimit < shown.length ? ' · showing ' + Math.min(visibleLimit, shown.length) : '');
@@ -658,9 +684,21 @@
     if (visibleLimit < shownCount) { visibleLimit += PAGE_SIZE; renderFiles(); }
     else loadFiles(false);
   });
-  document.querySelectorAll('.tab').forEach(tab => {
+  document.getElementById('sizeFilter').addEventListener('change', renderFiles);
+  const layoutToggle = document.getElementById('layoutToggle');
+  layoutToggle.addEventListener('click', () => {
+    const isList = grid.classList.toggle('list-view');
+    layoutToggle.textContent = isList ? 'Grid view' : 'List view';
+    try { localStorage.setItem('pb_list_view', String(isList)); } catch (_) { }
+  });
+  try {
+    const listView = localStorage.getItem('pb_list_view') === 'true';
+    grid.classList.toggle('list-view', listView);
+    layoutToggle.textContent = listView ? 'Grid view' : 'List view';
+  } catch (_) { }
+  document.querySelectorAll('#kindTabs .tab').forEach(tab => {
     tab.addEventListener('click', () => {
-      document.querySelector('.tab.active').classList.remove('active');
+      document.querySelector('#kindTabs .tab.active')?.classList.remove('active');
       tab.classList.add('active');
       currentKind = tab.getAttribute('data-kind');
       loadFiles(true);
@@ -809,6 +847,13 @@
       }
     };
     const fsButton = document.getElementById('fullscreen');
+    const ratioSelect = document.getElementById('aspectRatio');
+    ratioSelect.style.display = kind === 'video' ? 'inline-flex' : 'none';
+    ratioSelect.onchange = () => {
+      stage.classList.remove('ratio-16-9','ratio-4-3','ratio-1-1');
+      if (ratioSelect.value !== 'original') stage.classList.add('ratio-' + ratioSelect.value);
+      element.style.objectFit = ratioSelect.value === 'original' ? 'contain' : 'cover';
+    };
     fsButton.style.display = kind === 'video' ? 'inline-flex' : 'none';
     fsButton.onclick = () => {
       const box = element.closest('.modal') || element;
@@ -938,6 +983,7 @@
         if (screenFrames === 1) {
           state.textContent = 'Live · direct phone-to-laptop stream (no internet needed)';
           document.getElementById('screenHint').textContent = 'Your phone screen is streaming over the local Wi-Fi connection.';
+          document.getElementById('screenViewHint').textContent = 'Live screen from your phone.';
         }
         if (screenFrames > 0) state.textContent = 'Live · ' + screenFrames + ' frames received';
       }
@@ -978,6 +1024,7 @@
     document.getElementById('screenView').classList.remove('active');
     document.getElementById('screenState').textContent = 'Not connected';
     document.getElementById('screenHint').textContent = 'Tap “Share phone screen” in PocketBridge on the phone to begin.';
+    document.getElementById('screenViewHint').textContent = 'Tap “Share phone screen” in PocketBridge on the phone to begin.';
   }
   document.getElementById('watchButton').addEventListener('click', watchScreen);
   document.getElementById('stopWatch').addEventListener('click', stopWatching);
@@ -990,7 +1037,6 @@
     const file = event.target.files && event.target.files[0];
     if (!file) return;
     const status = document.getElementById('sendStatus');
-    if (file.size > 16 * 1024 * 1024) { status.textContent = 'That file is over the 16 MB limit.'; event.target.value = ''; return; }
     status.textContent = 'Sending ' + file.name + '…';
     try {
       const response = await fetch(endpoint('/api/upload?name=' + encodeURIComponent(file.name)), {method:'POST', headers:{'Content-Type':'application/octet-stream'}, body:file});
@@ -1022,7 +1068,24 @@
       for (const item of data.messages || []) {
         const row = document.createElement('p');
         row.style.cssText = 'margin:4px 0;padding:8px 10px;background:#eef5f3;border-radius:10px';
-        row.textContent = new Date(item.time).toLocaleTimeString() + ' · ' + item.text;
+        const label = document.createElement('span');
+        label.textContent = new Date(item.time).toLocaleTimeString() + ' · ' + item.text;
+        row.appendChild(label);
+        if (item.attachment && item.attachment.id) {
+          const download = document.createElement('button');
+          download.type = 'button';
+          download.className = 'btn btn-soft';
+          download.style.cssText = 'display:block;margin-top:7px';
+          download.textContent = 'Accept and download ' + (item.attachment.name || 'file');
+          download.addEventListener('click', () => {
+            if (!confirm('Download ' + (item.attachment.name || 'this file') + ' to this computer?')) return;
+            const link = document.createElement('a');
+            link.href = endpoint('/api/inbox/' + encodeURIComponent(item.attachment.id));
+            link.download = item.attachment.name || 'shared-file';
+            document.body.appendChild(link); link.click(); link.remove();
+          });
+          row.appendChild(download);
+        }
         target.appendChild(row);
       }
       if (!target.childElementCount) target.textContent = 'No messages yet.';
@@ -1035,6 +1098,26 @@
     const response = await fetch(endpoint('/api/messages'), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
     if (response.ok) { input.value = ''; refreshMessages(); }
   });
+
+  let musicFiles = [], musicIndex = -1, musicShuffle = false;
+  async function loadMusic() {
+    const list = document.getElementById('musicList'); list.textContent = 'Loading songs…';
+    try { const r=await fetch(endpoint('/api/files?kind=audio&limit=5000'),{cache:'no-store'}); if(!r.ok)throw new Error(); musicFiles=(await r.json()).files||[]; renderMusic(); }
+    catch (_) { list.textContent='Could not load songs. Check Audio permission on the phone.'; }
+  }
+  function renderMusic() {
+    const q=document.getElementById('musicSearch').value.trim().toLowerCase(), list=document.getElementById('musicList');
+    document.getElementById('musicCount').textContent=musicFiles.length+' songs'; list.replaceChildren();
+    const visible=musicFiles.map((song,i)=>({song,i})).filter(x=>!q||x.song.name.toLowerCase().includes(q));
+    if(!visible.length){list.textContent='No matching songs.';return;}
+    for(const {song,i} of visible){const row=document.createElement('div');row.className='music-row'+(i===musicIndex?' active':'');row.textContent='♫  '+song.name+' · '+formatSize(song.size);row.onclick=()=>playSong(i);list.appendChild(row);}
+  }
+  function playSong(i){if(!musicFiles.length)return;musicIndex=(i+musicFiles.length)%musicFiles.length;const song=musicFiles[musicIndex];const audio=document.getElementById('musicAudio');audio.src=endpoint(song.url);document.getElementById('musicTitle').textContent=song.name;audio.play().catch(()=>{});renderMusic();}
+  document.getElementById('musicPrev').onclick=()=>playSong(musicIndex-1);
+  document.getElementById('musicNext').onclick=()=>playSong(musicShuffle?Math.floor(Math.random()*musicFiles.length):musicIndex+1);
+  document.getElementById('musicShuffle').onclick=e=>{musicShuffle=!musicShuffle;e.currentTarget.textContent=musicShuffle?'Shuffle on':'Shuffle off';e.currentTarget.setAttribute('aria-pressed',String(musicShuffle));};
+  document.getElementById('musicAudio').addEventListener('ended',()=>playSong(musicShuffle?Math.floor(Math.random()*musicFiles.length):musicIndex+1));
+  document.getElementById('musicSearch').addEventListener('input',renderMusic);
   setInterval(refreshMessages, 2500);
 
   /* ---------- sections behind the tab bar ---------- */
@@ -1042,7 +1125,8 @@
     connect: ['heroSection', 'transferSection'],
     screen: ['screenSection', 'screenView'],
     files: ['inboxSection', 'inboxGrid', 'librarySection', 'kindTabs', 'grid', 'transferSection'],
-    chat: ['chatSection', 'chatCard']
+    chat: ['chatSection', 'chatCard'],
+    music: ['musicSection']
   };
   function showTab(name) {
     const active = TAB_GROUPS[name] || TAB_GROUPS.connect;
@@ -1052,6 +1136,7 @@
       if (node) node.hidden = !active.includes(id);
     });
     try { localStorage.setItem('pb_tab', name); } catch (e) {}
+    if (name === 'music' && musicFiles.length === 0) loadMusic();
     window.scrollTo({top: 0, behavior: 'smooth'});
   }
   document.querySelectorAll('#tabbar .tab').forEach(tab => {

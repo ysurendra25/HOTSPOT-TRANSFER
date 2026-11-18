@@ -33,6 +33,7 @@ import org.json.JSONObject;
 public final class MainActivity extends Activity {
     private static final int REQUEST_PERMISSIONS = 40;
     private static final int REQUEST_SCREEN_CAPTURE = 41;
+    private static final int REQUEST_SEND_FILE = 42;
     private static final int COLOR_INK = Color.rgb(26, 41, 54);
     private static final int COLOR_MUTED = Color.rgb(98, 116, 129);
     private static final int COLOR_GREEN = Color.rgb(14, 132, 105);
@@ -272,6 +273,15 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams copyGap = matchWrap();
         copyGap.topMargin = dp(2);
         content.addView(copyButton, copyGap);
+
+        Button sendFromPhone = button("Choose a file to send to laptop", COLOR_GREEN);
+        sendFromPhone.setOnClickListener(v -> {
+            Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            picker.setType("*/*");
+            picker.addCategory(Intent.CATEGORY_OPENABLE);
+            startActivityForResult(picker, REQUEST_SEND_FILE);
+        });
+        content.addView(sendFromPhone, matchWrap());
 
         stopButton = button("Stop sharing", Color.rgb(150, 60, 60));
         stopButton.setEnabled(false);
@@ -807,7 +817,25 @@ public final class MainActivity extends Activity {
             if (item == null) continue;
             boolean mine = "phone".equals(item.optString("from", "laptop"));
             TextView row = new TextView(this);
-            row.setText(item.optString("text", ""));
+            JSONObject attachment = item.optJSONObject("attachment");
+            String message = item.optString("text", "");
+            if (attachment != null) {
+                message += "\n" + attachment.optString("name", "Shared file")
+                        + " · " + android.text.format.Formatter.formatFileSize(this, attachment.optLong("size", 0));
+                row.setOnClickListener(v -> new android.app.AlertDialog.Builder(this)
+                        .setTitle("Open shared file?")
+                        .setMessage("Open " + attachment.optString("name", "this file") + " from the shared inbox?")
+                        .setNegativeButton("Cancel", null)
+                        .setPositiveButton("Open", (dialog, which) -> {
+                            String id = attachment.optString("id", "");
+                            String code = codeText == null ? "" : codeText.getText().toString().replaceAll("\\s", "");
+                            String url = "http://127.0.0.1:" + MediaHttpServer.PORT + "/api/inbox/"
+                                    + android.net.Uri.encode(id) + "?code=" + android.net.Uri.encode(code);
+                            try { startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))); }
+                            catch (Exception ignored) { Toast.makeText(this, "Could not open the shared file.", Toast.LENGTH_SHORT).show(); }
+                        }).show());
+            }
+            row.setText(message);
             row.setTextSize(14);
             row.setTextColor(COLOR_INK);
             row.setPadding(dp(12), dp(10), dp(12), dp(10));
@@ -903,6 +931,10 @@ public final class MainActivity extends Activity {
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_SEND_FILE) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) savePhoneFileForLaptop(data.getData());
+            return;
+        }
         if (requestCode == REQUEST_SCREEN_CAPTURE) {
             if (resultCode == RESULT_OK && data != null) {
                 Intent service = new Intent(this, ScreenCaptureService.class);
@@ -914,6 +946,55 @@ public final class MainActivity extends Activity {
                 Toast.makeText(this, "Keep PocketBridge open. Choose Watch screen on the laptop.", Toast.LENGTH_LONG).show();
             } else Toast.makeText(this, "Screen sharing was cancelled", Toast.LENGTH_SHORT).show();
         }
+    }
+
+    private void savePhoneFileForLaptop(android.net.Uri uri) {
+        new Thread(() -> {
+            java.io.File target = null;
+            try {
+                String name = "shared-file";
+                long expected = -1;
+                try (android.database.Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
+                    if (cursor != null && cursor.moveToFirst()) {
+                        int nameColumn = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
+                        int sizeColumn = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE);
+                        if (nameColumn >= 0) name = cursor.getString(nameColumn);
+                        if (sizeColumn >= 0) expected = cursor.getLong(sizeColumn);
+                    }
+                }
+                String safeName = name.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "_").trim();
+                if (safeName.isEmpty() || safeName.equals(".") || safeName.equals("..")) safeName = "shared-file";
+                java.io.File inbox = new java.io.File(getFilesDir(), "received");
+                if (!inbox.exists() && !inbox.mkdirs()) throw new java.io.IOException("Could not create the receive folder.");
+                if (expected > 0 && inbox.getUsableSpace() < expected) throw new java.io.IOException("The phone does not have enough free storage for this file.");
+                target = new java.io.File(inbox, System.currentTimeMillis() + "-" + safeName);
+                long copied = 0;
+                try (java.io.InputStream input = getContentResolver().openInputStream(uri);
+                     java.io.FileOutputStream output = new java.io.FileOutputStream(target)) {
+                    if (input == null) throw new java.io.IOException("Could not open the selected file.");
+                    byte[] buffer = new byte[64 * 1024];
+                    int read;
+                    while ((read = input.read(buffer)) != -1) {
+                        copied += read;
+                        if (inbox.getUsableSpace() < read) throw new java.io.IOException("The phone ran out of storage while copying.");
+                        output.write(buffer, 0, read);
+                        if (expected >= copied && inbox.getUsableSpace() < expected - copied) {
+                            throw new java.io.IOException("The phone ran out of free storage while copying.");
+                        }
+                    }
+                    output.getFD().sync();
+                }
+                ChatStore.appendFile(this, safeName, target.getName(), copied, "phone");
+                runOnUiThread(() -> {
+                    Toast.makeText(this, "File is ready in the shared inbox.", Toast.LENGTH_LONG).show();
+                    showTab(3);
+                });
+            } catch (Exception error) {
+                if (target != null) { /*noinspection ResultOfMethodCallIgnored*/ target.delete(); }
+                String message = error.getMessage() == null ? "Could not share this file." : error.getMessage();
+                runOnUiThread(() -> Toast.makeText(this, message, Toast.LENGTH_LONG).show());
+            }
+        }, "PocketBridge-phone-upload").start();
     }
 
     private void sendServiceCommand(String action) {

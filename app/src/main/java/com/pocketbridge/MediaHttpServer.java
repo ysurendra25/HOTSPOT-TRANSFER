@@ -50,12 +50,16 @@ final class MediaHttpServer {
     private static final int PREVIEW_CACHE_BYTES = 32 * 1024 * 1024;
     // Keeps the request line of a multi-file ZIP download well under the 8 KB header limit.
     static final int MAX_ZIP_FILES = 300;
-    /** Largest request body the server will read: the upload limit plus headroom. */
-    static final int MAX_BODY_BYTES = 16 * 1024 * 1024;
+    private static final int MAX_JSON_BODY_BYTES = 2 * 1024 * 1024;
+    static final long MAX_UPLOAD_BYTES = Long.MAX_VALUE;
 
     /** True when a POST body of this declared size may be accepted. */
     static boolean uploadAllowed(long declaredLength) {
-        return declaredLength > 0 && declaredLength <= MAX_BODY_BYTES;
+        return declaredLength > 0 && declaredLength <= MAX_UPLOAD_BYTES;
+    }
+
+    static boolean hasEnoughStorage(long availableBytes, long requiredBytes) {
+        return requiredBytes > 0 && availableBytes >= requiredBytes;
     }
 
     // A six digit code is short enough to type on a laptop, so it is rate limited.
@@ -162,13 +166,15 @@ final class MediaHttpServer {
             try { if (lengthText != null) declaredLength = Long.parseLong(lengthText.trim()); } catch (Exception ignoredLength) { }
             // Refuse an oversized body before reading it. Reading first would tie up a
             // worker for the whole socket timeout while a too-large upload drained.
-            if (method.equals("POST") && declaredLength > MAX_BODY_BYTES) {
+            boolean uploadRequest = method.equals("POST") && path.equals("/api/upload");
+            long maxRequestBytes = uploadRequest ? MAX_UPLOAD_BYTES : MAX_JSON_BODY_BYTES;
+            if (method.equals("POST") && declaredLength > maxRequestBytes) {
                 respond(output, 413, "application/json; charset=utf-8",
-                        "{\"error\":\"Choose a file smaller than 16 MB.\"}", null);
+                        uploadRequest ? "{\"error\":\"Upload must include a valid, non-empty file size.\"}" : "{\"error\":\"Request body is too large.\"}", null);
                 return;
             }
-            int contentLength = (int) Math.max(0, Math.min(declaredLength, MAX_BODY_BYTES));
-            byte[] body = method.equals("POST") ? readBytes(input, contentLength) : new byte[0];
+            int contentLength = uploadRequest ? 0 : (int) Math.max(0, declaredLength);
+            byte[] body = method.equals("POST") && !uploadRequest ? readBytes(input, contentLength) : new byte[0];
 
             // The page itself carries no data, so it loads before the code is entered.
             if (path.equals("/") || path.equals("/index.html")) {
@@ -204,12 +210,7 @@ final class MediaHttpServer {
 
             if (path.equals("/api/upload") && method.equals("POST")) {
                 if (!uploadAllowed(declaredLength)) {
-                    respond(output, 413, "application/json; charset=utf-8", "{\"error\":\"Choose a file smaller than 16 MB.\"}", null);
-                    return;
-                }
-                if (body.length != declaredLength) {
-                    // The client closed early, so the file on disk would be incomplete.
-                    respond(output, 400, "application/json; charset=utf-8", "{\"error\":\"The upload did not finish. Try sending the file again.\"}", null);
+                    respond(output, 413, "application/json; charset=utf-8", "{\"error\":\"Upload must include a valid, non-empty file size.\"}", null);
                     return;
                 }
                 String requested = target.getQueryParameter("name");
@@ -220,13 +221,36 @@ final class MediaHttpServer {
                     respond(output, 500, "application/json; charset=utf-8", "{\"error\":\"Could not create the receive folder.\"}", null);
                     return;
                 }
-                File destination = new File(inbox, System.currentTimeMillis() + "-" + safeName);
-                try (java.io.FileOutputStream file = new java.io.FileOutputStream(destination)) {
-                    file.write(body);
-                    file.getFD().sync();
+                if (!hasEnoughStorage(inbox.getUsableSpace(), declaredLength)) {
+                    respond(output, 507, "application/json; charset=utf-8", "{\"error\":\"The phone needs more free storage for this file.\"}", null);
+                    return;
                 }
+                File destination = new File(inbox, System.currentTimeMillis() + "-" + safeName);
+                long receivedBytes = 0;
+                try (java.io.FileOutputStream file = new java.io.FileOutputStream(destination)) {
+                    byte[] buffer = new byte[64 * 1024];
+                    while (receivedBytes < declaredLength) {
+                        int read = input.read(buffer, 0, (int) Math.min(buffer.length, declaredLength - receivedBytes));
+                        if (read < 0) throw new IOException("The upload ended early.");
+                        if (!hasEnoughStorage(inbox.getUsableSpace(), read)) throw new StorageFullException();
+                        file.write(buffer, 0, read);
+                        receivedBytes += read;
+                        long remaining = declaredLength - receivedBytes;
+                        if (remaining > 0 && !hasEnoughStorage(inbox.getUsableSpace(), remaining)) throw new StorageFullException();
+                    }
+                    file.getFD().sync();
+                } catch (Exception uploadError) {
+                    // Never leave a truncated file in the recipient's inbox.
+                    //noinspection ResultOfMethodCallIgnored
+                    destination.delete();
+                    int status = uploadError instanceof StorageFullException ? 507 : 400;
+                    String message = status == 507 ? "The phone ran out of free storage. Free space and try again." : "The upload did not finish. Try sending the file again.";
+                    respond(output, status, "application/json; charset=utf-8", new JSONObject().put("error", message).toString(), null);
+                    return;
+                }
+                ChatStore.appendFile(context, safeName, destination.getName(), receivedBytes, "laptop");
                 respond(output, 201, "application/json; charset=utf-8",
-                        new JSONObject().put("ok", true).put("name", safeName).put("bytes", destination.length()).toString(), null);
+                        new JSONObject().put("ok", true).put("name", safeName).put("bytes", receivedBytes).toString(), null);
                 return;
             }
             if (path.equals("/api/inbox") && method.equals("GET")) {
@@ -364,7 +388,8 @@ final class MediaHttpServer {
                     respond(output, 409, "application/json; charset=utf-8", refusal.toString(), null);
                     return;
                 }
-                ScreenCaptureService.refreshForMjpeg();
+                // Do not stop/start the MediaProjection capture on viewer connection.
+                // Rebuilding its virtual display stalls the first frame on some phones.
                 ScreenCaptureService.JpegFrame frame = ScreenCaptureService.awaitJpegFrame(-1, 6000);
                 if (frame == null) {
                     respond(output, 503, "application/json; charset=utf-8",
@@ -975,6 +1000,10 @@ final class MediaHttpServer {
         int read;
         while ((read = input.read(buffer)) != -1) output.write(buffer, 0, read);
         return output.toByteArray();
+    }
+
+    private static final class StorageFullException extends IOException {
+        StorageFullException() { super("Not enough free storage for the remaining file."); }
     }
 
     private static boolean constantTimeEquals(String expected, String actual) {

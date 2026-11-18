@@ -83,6 +83,20 @@ final class ChatStore {
         }
     }
 
+    /** Adds a file transfer card to the shared conversation. */
+    static void appendFile(Context context, String name, String id, long size, String from) {
+        synchronized (LOCK) {
+            JSONArray messages = read(context);
+            try {
+                messages.put(new JSONObject().put("text", "Shared a file")
+                        .put("time", System.currentTimeMillis())
+                        .put("from", normalizeSender(from))
+                        .put("attachment", new JSONObject().put("name", name).put("id", id).put("size", size)));
+                writeFile(context, new JSONObject().put("messages", trimmed(messages, MAX_MESSAGES)).toString());
+            } catch (Exception ignored) { }
+        }
+    }
+
     static void clear(Context context) {
         synchronized (LOCK) { writeFile(context, "{\"messages\":[]}"); }
     }

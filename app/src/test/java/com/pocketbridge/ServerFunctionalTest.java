@@ -181,6 +181,9 @@ public class ServerFunctionalTest {
         Response inbox = send("GET", withCode("/api/inbox"), null, null);
         assertEquals(200, inbox.status);
         assertTrue(inbox.body.contains("note.txt"));
+        Response messages = send("GET", withCode("/api/messages"), null, null);
+        assertTrue("the transfer should be visible in chat", messages.body.contains("note.txt"));
+        assertTrue("the chat entry should carry its inbox id", messages.body.contains("\"attachment\""));
 
         String id = extractInboxId(inbox.body);
         assertNotNull(id);
@@ -197,21 +200,19 @@ public class ServerFunctionalTest {
         assertEquals("2345", partial.body);
     }
 
-    @Test public void uploadsOverTheLimitAreRefusedRatherThanTruncated() throws Exception {
-        // A raw socket, because HttpURLConnection refuses to read the reply until it
-        // has written the whole declared body. This is what a too-large upload looks
-        // like to the phone: a big Content-Length that must be refused up front.
+    @Test public void emptyUploadsAreRejected() throws Exception {
+        // A raw socket makes it possible to exercise an empty upload with an explicit
+        // Content-Length, which ordinary browser file pickers never produce.
         try (java.net.Socket socket = new java.net.Socket("127.0.0.1", MediaHttpServer.PORT)) {
             socket.setSoTimeout(8000);
             String request = "POST " + withCode("/api/upload?name=big.bin") + " HTTP/1.1\r\n"
                     + "Host: 127.0.0.1\r\n"
-                    + "Content-Length: " + (20L * 1024 * 1024) + "\r\n"
+                    + "Content-Length: 0\r\n"
                     + "Connection: close\r\n\r\n";
             socket.getOutputStream().write(request.getBytes(StandardCharsets.US_ASCII));
             socket.getOutputStream().flush();
             String statusLine = readLine(socket.getInputStream());
             assertTrue("expected a 413, got: " + statusLine, statusLine.contains("413"));
-            assertTrue("the refusal should name the limit", readAll(socket.getInputStream()).contains("16 MB"));
         }
     }
 

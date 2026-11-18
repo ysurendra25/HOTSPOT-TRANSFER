@@ -49,13 +49,20 @@ public class MediaHttpServerProtocolTest {
         assertFalse(response.contains("Content-Length"));
     }
 
-    @Test public void uploadLimitMatchesTheAdvertisedSixteenMegabytes() {
+    @Test public void uploadsAreNotCappedByAnArbitraryFileSize() {
         assertTrue(MediaHttpServer.uploadAllowed(1));
-        assertTrue(MediaHttpServer.uploadAllowed(16L * 1024 * 1024));
-        assertFalse(MediaHttpServer.uploadAllowed(16L * 1024 * 1024 + 1));
-        assertFalse(MediaHttpServer.uploadAllowed(500L * 1024 * 1024));
+        assertTrue(MediaHttpServer.uploadAllowed(15L * 1024 * 1024 * 1024));
+        assertTrue(MediaHttpServer.uploadAllowed(16L * 1024 * 1024 * 1024));
+        assertTrue(MediaHttpServer.uploadAllowed(Long.MAX_VALUE));
         assertFalse(MediaHttpServer.uploadAllowed(0));
         assertFalse(MediaHttpServer.uploadAllowed(-5));
+    }
+
+    @Test public void storageCheckAllowsExactFitAndRejectsWhenShort() {
+        long movieSize = 15L * 1024 * 1024 * 1024;
+        assertTrue(MediaHttpServer.hasEnoughStorage(movieSize, movieSize));
+        assertFalse(MediaHttpServer.hasEnoughStorage(movieSize - 1, movieSize));
+        assertFalse(MediaHttpServer.hasEnoughStorage(Long.MAX_VALUE, 0));
     }
 
     @Test public void zipEntriesAreMadeSafeAndUnique() {
