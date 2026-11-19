@@ -152,6 +152,59 @@ public class ServerFunctionalTest {
         assertEquals(429, lastStatus);
     }
 
+    @Test public void theLockoutStopsEvenTheRightCodeButNotThePhonesOwnToken() throws Exception {
+        for (int attempt = 0; attempt < 25; attempt++) send("GET", "/api/files?code=999999", null, null);
+        assertEquals("a locked-out gate must not test codes at all", 429, send("GET", withCode("/api/files"), null, null).status);
+        assertEquals(200, send("GET", "/api/files?token=" + TOKEN, null, null).status);
+    }
+
+    @Test public void aFewWrongCodesDoNotLockTheRightOneOut() throws Exception {
+        for (int attempt = 0; attempt < 5; attempt++) send("GET", "/api/files?code=999999", null, null);
+        assertEquals(200, send("GET", withCode("/api/files"), null, null).status);
+    }
+
+    // ------------------------------------------------------------- threads
+
+    @Test public void idleConnectionsCannotStarveTheServer() throws Exception {
+        // Twenty connections that never send a request used to occupy all 16
+        // fixed workers, so every later request (the page, the code check,
+        // the phone's own self test) hung until they timed out.
+        java.util.List<java.net.Socket> idle = new java.util.ArrayList<>();
+        try {
+            for (int i = 0; i < 20; i++) idle.add(new java.net.Socket("127.0.0.1", MediaHttpServer.PORT));
+            Thread.sleep(200);
+            long started = System.currentTimeMillis();
+            assertEquals(200, send("GET", "/health", null, null).status);
+            assertEquals(200, send("GET", withCode("/api/messages"), null, null).status);
+            assertTrue("requests must not wait behind idle connections", System.currentTimeMillis() - started < 3000);
+        } finally {
+            for (java.net.Socket socket : idle) socket.close();
+        }
+    }
+
+    @Test public void stoppingTheShareClosesOpenConnections() throws Exception {
+        Thread.sleep(300); // let the start-up health checks finish
+        int before = server.openConnectionCount();
+        try (java.net.Socket socket = new java.net.Socket("127.0.0.1", MediaHttpServer.PORT)) {
+            socket.setSoTimeout(5000);
+            // Half a request: the worker is now blocked reading, like a stalled viewer.
+            socket.getOutputStream().write("GET /api/".getBytes(StandardCharsets.US_ASCII));
+            socket.getOutputStream().flush();
+            for (int i = 0; i < 100 && server.openConnectionCount() <= before; i++) Thread.sleep(20);
+            assertTrue(server.openConnectionCount() > before);
+            server.stop();
+            long started = System.currentTimeMillis();
+            try {
+                InputStream in = socket.getInputStream();
+                while (in.read() != -1) { /* drain until the server closes the socket */ }
+            } catch (java.net.SocketException closed) {
+                // reset by the server: also closed
+            }
+            assertTrue("the socket should close at once, not at its read timeout", System.currentTimeMillis() - started < 3000);
+            server = null;
+        }
+    }
+
     // ---------------------------------------------------------------- chat
 
     @Test public void chatWorksFromBothSides() throws Exception {
@@ -195,6 +248,10 @@ public class ServerFunctionalTest {
         Response download = send("GET", withCode("/api/inbox/" + id), null, null);
         assertEquals(200, download.status);
         assertEquals(content, download.body);
+        HttpURLConnection typed = (HttpURLConnection) new URL(BASE + withCode("/api/inbox/" + id)).openConnection();
+        assertTrue("a received file is served with its real type so it can open in place",
+                typed.getContentType().startsWith("text/plain"));
+        typed.disconnect();
     }
 
     @Test public void aReceivedFileCanBeSeekedWithRanges() throws Exception {

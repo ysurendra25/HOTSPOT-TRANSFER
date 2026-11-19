@@ -54,8 +54,9 @@ To stop, tap **Stop viewing** in the browser and **Stop sharing** in PocketBridg
 - **A preview is blank:** leave the page open for a moment. If the phone's media provider has no thumbnail, PocketBridge tries a fallback preview; downloading still transfers the original.
 - **A video copy does not play:** the phone may not support converting that source codec. Use **Download** for the original; conversion can need free storage and time.
 - **No screen frame appears:** confirm Android's capture permission was approved, both devices remain on the same network, and PocketBridge stays open. Stop capture on the phone, start it again, then tap **Watch screen**.
-- **Laptop files are missing on the phone:** start the Windows helper, paste its printed link in **Library** → **Files on the laptop**, and load again. The helper lists the folder set by `share_dir` in its `config.json` (Downloads by default).
-- **Laptop screen is blank on the phone:** keep the Windows helper running, confirm the phone is on the laptop's hotspot, and check the helper link in **Screen**. A sleeping laptop or Windows Firewall can block the viewer.
+- **Laptop files are missing on the phone:** start the Windows helper, paste its printed link in **Library** → **Files on the laptop**, and load again. The helper lists the folder set by `share_dir` in its `config.json` (Downloads by default). If the phone says the folder was only partly read, enter a smaller folder path. If the pasted address does not answer, PocketBridge searches the hotspot for the laptop and remembers the address that works.
+- **Laptop screen is blank on the phone:** keep the Windows helper running, confirm the phone is on the laptop's hotspot, and check the helper link in **Connect**. A sleeping laptop or Windows Firewall can block the viewer.
+- **Laptop controls:** Lock, Wake display, Sleep and Shut down work while the helper runs. **Wake & show sign-in** only wakes the display; Windows still needs the PIN or password typed on the laptop.
 - **A large download pauses:** keep the phone unlocked and sharing, keep the laptop connected to the hotspot, and retry the download.
 
 PocketBridge transfers files and screen frames directly from the phone over the local network. The local HTTP connection is not encrypted; use a private hotspot and do not share the one-time code or link with people you do not trust.

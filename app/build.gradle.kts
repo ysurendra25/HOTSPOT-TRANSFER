@@ -2,16 +2,39 @@ plugins {
     id("com.android.application")
 }
 
+// Release builds can use the same CI-protected key on every run. Local debug
+// builds keep the normal Android debug key when these variables are absent.
+val pocketbridgeSigningStore = System.getenv("POCKETBRIDGE_SIGNING_STORE_FILE")
+val pocketbridgeSigningStorePassword = System.getenv("POCKETBRIDGE_SIGNING_STORE_PASSWORD")
+val pocketbridgeSigningAlias = System.getenv("POCKETBRIDGE_SIGNING_KEY_ALIAS")
+val pocketbridgeSigningKeyPassword = System.getenv("POCKETBRIDGE_SIGNING_KEY_PASSWORD")
+
 android {
     namespace = "com.pocketbridge"
     compileSdk = 35
+
+    if (!pocketbridgeSigningStore.isNullOrBlank()) {
+        signingConfigs {
+            create("pocketbridgeStable") {
+                storeFile = file(pocketbridgeSigningStore)
+                storePassword = pocketbridgeSigningStorePassword
+                keyAlias = pocketbridgeSigningAlias
+                keyPassword = pocketbridgeSigningKeyPassword
+            }
+        }
+        buildTypes {
+            getByName("debug") {
+                signingConfig = signingConfigs.getByName("pocketbridgeStable")
+            }
+        }
+    }
 
     defaultConfig {
         applicationId = "com.pocketbridge"
         minSdk = 26
         targetSdk = 35
-        versionCode = 27
-        versionName = "0.6.0.3"
+        versionCode = 28
+        versionName = "0.6.0.4"
         if (project.findProperty("pocketbridgeUniversal") != "true") {
             ndk {
                 abiFilters += "arm64-v8a"

@@ -32,7 +32,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -77,6 +76,15 @@ final class MediaHttpServer {
     private final AtomicInteger badCodes = new AtomicInteger(0);
     private volatile long badCodeWindowStart = 0L;
     private final ExecutorService clients = newClientPool();
+    /** Every open client socket, so stop() can end streams that are still playing. */
+    private final Set<Socket> openSockets = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /** Open screen streams, oldest first. A reconnecting viewer replaces the oldest. */
+    private final java.util.concurrent.ConcurrentLinkedDeque<Socket> screenStreams = new java.util.concurrent.ConcurrentLinkedDeque<>();
+    /** When a screen-stream write started, per socket; the watchdog closes stuck ones. */
+    private final Map<Socket, Long> streamWrites = new java.util.concurrent.ConcurrentHashMap<>();
+    static final int MAX_SCREEN_STREAMS = 2;
+    static final long STUCK_STREAM_WRITE_MS = 10_000L;
+    private Thread watchdogThread;
     private final LruCache<String, byte[]> thumbCache = new LruCache<String, byte[]>(THUMB_CACHE_BYTES) {
         @Override protected int sizeOf(String key, byte[] value) { return value == null ? 0 : value.length; }
     };
@@ -95,14 +103,20 @@ final class MediaHttpServer {
         this.videoCompatibility = new VideoCompatibility(context);
     }
 
+    static final int MAX_CLIENT_THREADS = 64;
+
     /**
-     * A fixed set of worker threads. The previous pool only grew once its queue was
-     * full and then ran the overflow on the accept thread, so a busy gallery or a
-     * playing video could stop new connections from being accepted at all.
+     * Workers for client connections. Long-lived streams (the screen, a playing
+     * video, a big download) each hold a worker for as long as they run. With a
+     * fixed 16 workers and a waiting queue, a few streams plus a gallery of
+     * thumbnails left every new request queued behind them, so the laptop page
+     * and the phone's own checks hung. Workers are now created on demand up to
+     * a hard cap; past the cap a request gets an immediate 503 instead of
+     * waiting forever.
      */
     private static ExecutorService newClientPool() {
-        ThreadPoolExecutor pool = new ThreadPoolExecutor(16, 16, 30L, TimeUnit.SECONDS,
-                new LinkedBlockingQueue<>(512),
+        ThreadPoolExecutor pool = new ThreadPoolExecutor(8, MAX_CLIENT_THREADS, 30L, TimeUnit.SECONDS,
+                new java.util.concurrent.SynchronousQueue<>(),
                 runnable -> {
                     Thread thread = new Thread(runnable, "PocketBridge-http-client");
                     thread.setDaemon(true);
@@ -128,10 +142,11 @@ final class MediaHttpServer {
                     // Keep screen-stream latency bounded when a phone hotspot is slow.
                     // A large TCP queue makes the viewer show frames several seconds late.
                     socket.setSendBufferSize(128 * 1024);
+                    openSockets.add(socket);
                     try {
                         clients.execute(() -> handle(socket));
                     } catch (RejectedExecutionException rejected) {
-                        try { socket.close(); } catch (IOException ignoredClose) { }
+                        rejectBusy(socket);
                     }
                 } catch (Exception error) {
                     if (running.get()) android.util.Log.e("PocketBridge", "HTTP accept failed", error);
@@ -139,17 +154,72 @@ final class MediaHttpServer {
             }
         }, "PocketBridge-http");
         acceptThread.start();
+        watchdogThread = new Thread(this::watchStreams, "PocketBridge-stream-watchdog");
+        watchdogThread.setDaemon(true);
+        watchdogThread.start();
     }
+
+    /** Every worker is busy: answer at once rather than leave the browser hanging. */
+    private void rejectBusy(Socket socket) {
+        try (Socket closing = socket) {
+            closing.setSoTimeout(1000);
+            OutputStream output = closing.getOutputStream();
+            respond(output, 503, "application/json; charset=utf-8",
+                    "{\"error\":\"The phone is busy with other transfers. Try again in a moment.\"}", "Retry-After: 2\r\n");
+        } catch (Exception ignored) {
+        } finally {
+            openSockets.remove(socket);
+        }
+    }
+
+    /**
+     * A screen viewer that stops reading (a laptop that slept, a closed lid, a
+     * dropped hotspot) leaves the phone blocked in a socket write that has no
+     * timeout. Close any screen stream whose write has been stuck too long so
+     * its worker and its JPEG encoder are released.
+     */
+    private void watchStreams() {
+        while (running.get()) {
+            try { Thread.sleep(2000); } catch (InterruptedException interrupted) { return; }
+            long now = android.os.SystemClock.elapsedRealtime();
+            for (Map.Entry<Socket, Long> entry : streamWrites.entrySet()) {
+                if (now - entry.getValue() > STUCK_STREAM_WRITE_MS) {
+                    android.util.Log.w("PocketBridge", "Closing a screen stream whose viewer stopped reading");
+                    try { entry.getKey().close(); } catch (IOException ignored) { }
+                    streamWrites.remove(entry.getKey());
+                }
+            }
+        }
+    }
+
+    /** Number of client sockets currently open; used by tests to catch leaks. */
+    int openConnectionCount() { return openSockets.size(); }
 
     void stop() {
         running.set(false);
         try { if (serverSocket != null) serverSocket.close(); } catch (Exception ignored) { }
+        // Blocking socket I/O ignores thread interrupts, so a playing video or a
+        // screen stream would outlive the share unless its socket is closed.
+        for (Socket socket : openSockets) {
+            try { socket.close(); } catch (IOException ignored) { }
+        }
+        openSockets.clear();
+        if (watchdogThread != null) watchdogThread.interrupt();
         clients.shutdownNow();
         thumbCache.evictAll();
         previewCache.evictAll();
     }
 
     private void handle(Socket socket) {
+        try {
+            handleRequest(socket);
+        } finally {
+            openSockets.remove(socket);
+            streamWrites.remove(socket);
+        }
+    }
+
+    private void handleRequest(Socket socket) {
         try (Socket ignored = socket;
              BufferedInputStream input = new BufferedInputStream(socket.getInputStream());
              BufferedOutputStream output = new BufferedOutputStream(socket.getOutputStream())) {
@@ -197,19 +267,24 @@ final class MediaHttpServer {
             if (path.equals("/health")) { respond(output, 200, "application/json", "{\"ok\":true}", null); return; }
             if (path.equals("/favicon.ico")) { writeHead(output, 204, "text/plain", 0, null, null); output.flush(); return; }
 
+            // While locked out, no six-digit code is checked at all, not even the
+            // right one; otherwise the lockout only slowed a guesser down without
+            // stopping one. The long token (from the phone's own link) still works.
+            if (looksLikeCodeAttempt(target) && !hasTokenCredential(target, headers) && codesLockedOut()) {
+                respond(output, 429, "application/json; charset=utf-8",
+                        "{\"error\":\"Too many wrong codes. Wait a minute and try again.\"}", "Retry-After: 60\r\n");
+                return;
+            }
             if (!authorized(target, headers)) {
-                if (looksLikeCodeAttempt(target)) {
-                    if (tooManyBadCodes()) {
-                        respond(output, 429, "application/json; charset=utf-8",
-                                "{\"error\":\"Too many wrong codes. Wait a minute and try again.\"}", null);
-                        return;
-                    }
+                if (looksLikeCodeAttempt(target) && registerBadCode()) {
+                    respond(output, 429, "application/json; charset=utf-8",
+                            "{\"error\":\"Too many wrong codes. Wait a minute and try again.\"}", "Retry-After: 60\r\n");
+                    return;
                 }
                 respond(output, 403, "application/json; charset=utf-8",
                         "{\"error\":\"Enter the code shown in PocketBridge on the phone.\"}", null);
                 return;
             }
-            resetBadCodes();
 
             if (path.equals("/api/open-vlc") && method.equals("GET")) {
                 String helper = laptopHelperLink;
@@ -331,7 +406,10 @@ final class MediaHttpServer {
                 }
                 File received = new File(new File(context.getFilesDir(), "received"), id);
                 if (!received.isFile()) { respond(output, 404, "text/plain", "Received file not found", null); return; }
-                streamFile(output, method, headers, received, "application/octet-stream", id.replaceFirst("^[0-9]+-", ""));
+                String receivedName = id.replaceFirst("^[0-9]+-", "");
+                // The real type lets the phone and the laptop open a received photo,
+                // video or PDF directly instead of only offering a download.
+                streamFile(output, method, headers, received, MediaTypeClassifier.mimeType(receivedName, null), receivedName);
                 return;
             }
 
@@ -432,44 +510,23 @@ final class MediaHttpServer {
                     return;
                 }
                 // WebRTC is the low-latency path. Only allocate and encode JPEGs
-                // after the browser has explicitly requested the compatibility path.
-                ScreenCaptureService.prepareMjpegFallback();
-                // Do not stop/start the MediaProjection capture on viewer connection.
-                // Rebuilding its virtual display stalls the first frame on some phones.
-                ScreenCaptureService.JpegFrame frame = ScreenCaptureService.awaitJpegFrame(-1, 6000);
-                if (frame == null) {
-                    respond(output, 503, "application/json; charset=utf-8",
-                            "{\"error\":\"Android did not produce a screen frame. Stop screen sharing on the phone, start it again, and retry.\"}", null);
-                    return;
+                // while a browser is actually reading the compatibility stream.
+                ScreenCaptureService.mjpegViewerStarted();
+                screenStreams.addLast(socket);
+                // One laptop reconnecting must not pile up streams: past the limit
+                // the oldest stream is closed and its worker returns to the pool.
+                while (screenStreams.size() > MAX_SCREEN_STREAMS) {
+                    Socket oldest = screenStreams.pollFirst();
+                    if (oldest == null || oldest == socket) break;
+                    try { oldest.close(); } catch (IOException ignoredClose) { }
                 }
-                writeHead(output, 200, "multipart/x-mixed-replace; boundary=pocketbridge-frame", -1,
-                        "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n", null);
-                writeMjpegFrame(output, frame.bytes);
-                long lastSequence = frame.sequence;
-                byte[] lastBytes = frame.bytes;
-                long lastWrite = android.os.SystemClock.elapsedRealtime();
-                while (running.get() && ScreenCaptureService.isRunning()) {
-                    ScreenCaptureService.JpegFrame next = ScreenCaptureService.awaitJpegFrame(lastSequence, 250);
-                    boolean wrote = false;
-                    if (next != null) {
-                        lastSequence = next.sequence;
-                        lastBytes = next.bytes;
-                        writeMjpegFrame(output, lastBytes);
-                        output.flush();
-                        lastWrite = android.os.SystemClock.elapsedRealtime();
-                        wrote = true;
-                    }
-                    // Android only hands over a frame when the screen changes, so a still
-                    // screen would leave the browser on one frozen picture and could let
-                    // the connection look dead. Repeat the last picture now and then.
-                    if (!wrote && android.os.SystemClock.elapsedRealtime() - lastWrite >= 700) {
-                        writeMjpegFrame(output, lastBytes);
-                        output.flush();
-                        lastWrite = android.os.SystemClock.elapsedRealtime();
-                    }
+                try {
+                    streamScreen(socket, output);
+                } finally {
+                    screenStreams.remove(socket);
+                    streamWrites.remove(socket);
+                    ScreenCaptureService.mjpegViewerEnded();
                 }
-                output.write("--pocketbridge-frame--\r\n".getBytes(StandardCharsets.US_ASCII));
-                output.flush();
                 return;
             }
             if (path.equals("/api/screen/offer") && method.equals("POST")) {
@@ -525,7 +582,15 @@ final class MediaHttpServer {
         return suppliedCode != null && !suppliedCode.trim().isEmpty();
     }
 
-    private boolean tooManyBadCodes() {
+    private boolean hasTokenCredential(Uri target, Map<String, String> headers) {
+        String suppliedToken = target.getQueryParameter("token");
+        if (suppliedToken != null && constantTimeEquals(token, suppliedToken)) return true;
+        String auth = headers.get("authorization");
+        return auth != null && constantTimeEquals("Bearer " + token, auth);
+    }
+
+    /** Counts one wrong code; true when that makes the window go over the limit. */
+    private synchronized boolean registerBadCode() {
         long now = System.currentTimeMillis();
         if (now - badCodeWindowStart > BAD_CODE_WINDOW_MS) {
             badCodeWindowStart = now;
@@ -534,9 +599,15 @@ final class MediaHttpServer {
         return badCodes.incrementAndGet() > MAX_BAD_CODES_PER_WINDOW;
     }
 
-    private void resetBadCodes() {
-        badCodes.set(0);
-        badCodeWindowStart = System.currentTimeMillis();
+    /** True while the wrong-code limit for the current window has been passed. */
+    private synchronized boolean codesLockedOut() {
+        long now = System.currentTimeMillis();
+        if (now - badCodeWindowStart > BAD_CODE_WINDOW_MS) {
+            badCodeWindowStart = now;
+            badCodes.set(0);
+            return false;
+        }
+        return badCodes.get() > MAX_BAD_CODES_PER_WINDOW;
     }
 
     /** Cached JPEG preview so the browser grid never downloads full-size originals. */
@@ -814,6 +885,62 @@ final class MediaHttpServer {
         try (FileInputStream input = new FileInputStream(file)) {
             input.getChannel().position(range.start);
             copyBytes(input, output, length);
+        }
+    }
+
+    /**
+     * Sends the newest JPEG frame whenever one is ready. Frames produced while
+     * a write is still going are skipped, never queued, so a slow link shows a
+     * lower frame rate instead of an ever-growing delay.
+     */
+    private void streamScreen(Socket socket, OutputStream output) throws Exception {
+        // Do not stop/start the MediaProjection capture on viewer connection.
+        // Rebuilding its virtual display stalls the first frame on some phones.
+        ScreenCaptureService.JpegFrame frame = ScreenCaptureService.awaitJpegFrame(-1, 6000);
+        if (frame == null) {
+            respond(output, 503, "application/json; charset=utf-8",
+                    "{\"error\":\"Android did not produce a screen frame. Stop screen sharing on the phone, start it again, and retry.\"}", null);
+            return;
+        }
+        writeHead(output, 200, "multipart/x-mixed-replace; boundary=pocketbridge-frame", -1,
+                "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n", null);
+        long lastSequence = frame.sequence;
+        byte[] lastBytes = frame.bytes;
+        timedFrameWrite(socket, output, lastBytes);
+        long lastWrite = android.os.SystemClock.elapsedRealtime();
+        while (running.get() && ScreenCaptureService.isRunning() && !socket.isClosed()) {
+            ScreenCaptureService.JpegFrame next = ScreenCaptureService.awaitJpegFrame(lastSequence, 250);
+            if (next == null && ScreenCaptureService.mjpegViewers() > 0) {
+                // The encoder can be switched off by a direct WebRTC viewer
+                // connecting; this viewer still needs it.
+                ScreenCaptureService.prepareMjpegFallback();
+            }
+            boolean wrote = false;
+            if (next != null) {
+                lastSequence = next.sequence;
+                lastBytes = next.bytes;
+                timedFrameWrite(socket, output, lastBytes);
+                lastWrite = android.os.SystemClock.elapsedRealtime();
+                wrote = true;
+            }
+            // Android only hands over a frame when the screen changes, so a still
+            // screen would leave the browser on one frozen picture and could let
+            // the connection look dead. Repeat the last picture now and then.
+            if (!wrote && android.os.SystemClock.elapsedRealtime() - lastWrite >= 700) {
+                timedFrameWrite(socket, output, lastBytes);
+                lastWrite = android.os.SystemClock.elapsedRealtime();
+            }
+        }
+        output.write("--pocketbridge-frame--\r\n".getBytes(StandardCharsets.US_ASCII));
+        output.flush();
+    }
+
+    private void timedFrameWrite(Socket socket, OutputStream output, byte[] jpeg) throws IOException {
+        streamWrites.put(socket, android.os.SystemClock.elapsedRealtime());
+        try {
+            writeMjpegFrame(output, jpeg);
+        } finally {
+            streamWrites.remove(socket);
         }
     }
 

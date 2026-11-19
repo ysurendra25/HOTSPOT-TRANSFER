@@ -6,22 +6,34 @@ This optional companion is based on [TaciTech web-remote-desktop](https://github
 
 1. Start **Start local share** in PocketBridge on Android.
 2. Connect Windows to the Wi-Fi name and password PocketBridge shows. Keep Windows connected even if it reports no internet.
-3. Extract `PocketBridge-Windows-Control-0.6.0.3.zip` and double-click `Start-Control.bat`.
+3. Extract `PocketBridge-Windows-Control-<version>.zip` and double-click `Start-Control.bat`.
 4. If Windows Firewall asks, allow access on private networks only.
-5. Open the printed `http://...:7070/?t=...` link on the phone. Use it while the phone is still connected to the PocketBridge hotspot.
+5. Paste one of the printed `http://...:7070/?t=...` links into PocketBridge on the phone (**Connect** → Windows helper link), or open it in the phone's browser. The first link is usually the right one; if the phone cannot reach it, PocketBridge searches its hotspot for the laptop by itself. The links are also saved in `pc-remote-links.txt`, rewritten on every start.
 6. Tap or drag the laptop image to move/click. Use the page's keyboard, scroll, right-click, and trackpad controls.
 7. Press a key in the helper console when finished. Stop the phone's local share separately.
 
-The helper shares the folder configured by `share_dir` in `config.json` (Downloads by default), including nested folders. Keep the helper running while the phone browses files or opens the laptop screen. Its default screen preset is tuned for a local hotspot; the screen settings still let you choose a sharper or lower-bandwidth stream.
+The helper shares the folder configured by `share_dir` in `config.json` (Downloads by default), including nested folders. Very large folders are listed in pages: at most 20,000 files are read, within about four seconds, newest first, and system folders such as AppData, node_modules and $Recycle.Bin are skipped. Pick a smaller folder on the phone to see files beyond that.
 
-## QR Share without a device network
+## QR Share
 
-With the helper running on the laptop, open `http://127.0.0.1:7070/qr.html?t=<helper-token>` in Microsoft Edge on that same laptop. This local page uses the laptop camera to read QR frames shown by the phone, and can display QR frames for a small laptop file or text for the phone to scan. The phone and laptop do not send data to each other over Wi-Fi, hotspot, Bluetooth, or the internet; the file is optically encoded in QR frames. The transfer cap is 128 KiB, so use the normal Wi-Fi/Hotspot share for photos and videos larger than that. Camera scanning needs a browser that supports `BarcodeDetector` (current Edge does).
+Open `http://127.0.0.1:7070/qr.html?t=<helper-code>` in Edge on the laptop. It can display a QR for a small laptop file or text, or scan the phone's QR frames. The phone can also display QR frames for the laptop camera to scan. This is optical transfer only and is capped at 128 KiB; use the hotspot for photos, videos, and other large files. The helper page is served locally by the portable process and does not use the internet.
+
+## Power controls
+
+The phone's **Laptop controls** send `POST /power` with `{"action": "...", "confirm": true}`:
+
+- **Lock laptop** – `LockWorkStation`.
+- **Wake display** – turns the panel on (monitor-power message plus a zero-distance mouse move) and asks Windows to keep it on.
+- **Wake & show sign-in** – wakes the display so the lock screen's PIN or password box is ready. Windows sign-in cannot be bypassed remotely; enter the PIN or password on the laptop.
+- **Sleep** (asks first) – enables the shutdown privilege, releases the helper's keep-awake hold and calls `SetSuspendState`; on Modern Standby laptops without S3 sleep it turns the display off so Windows enters standby.
+- **Shut down** (asks first) – enables the shutdown privilege and calls `ExitWindowsEx`, falling back to `shutdown /s /t 0`.
+
+A laptop that is asleep or shut down cannot be woken over Wi-Fi by the helper. Keep the helper running while the phone browses files or opens the laptop screen. Its default screen preset is tuned for a local hotspot; the screen settings still let you choose a sharper or lower-bandwidth stream.
 
 The helper runs as a portable process; it does not install a Windows service or need a cloud tunnel. Keep the control URL private. Its local HTTP page is protected by a random token, and anyone with that URL and access to the hotspot can control the laptop.
 
 ## Build from source
 
-The upstream MIT-licensed source is included under `upstream-v0.1.0/web-remote-desktop-0.1.0`. Install Go 1.26 or newer, then run `./build.ps1`. The script runs upstream Go tests and produces `dist/pc-remote.exe`. It includes PocketBridge's `/jpeg` handler and browser fallback; the release ZIP includes a prebuilt executable so the laptop does not need Go.
+The upstream MIT-licensed source is included under `upstream-v0.1.0/web-remote-desktop-0.1.0`. Install Go 1.26 or newer (the release build uses Go 1.27), then run `./build.ps1`. The script runs upstream Go tests and produces `dist/pc-remote.exe`. It includes PocketBridge's `/jpeg` handler and browser fallback; the release ZIP includes a prebuilt executable so the laptop does not need Go.
 
 The first run creates `config.json` and `pc-remote.log` beside the executable. The log prints the URL to open. For no-internet use, FFmpeg is optional: PocketBridge's JPEG fallback works without it. FFmpeg enables more bandwidth-efficient H.264/HEVC streaming.

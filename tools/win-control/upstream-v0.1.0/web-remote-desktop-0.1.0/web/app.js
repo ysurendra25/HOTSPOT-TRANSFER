@@ -24,6 +24,22 @@ const TAP_MS = 600;      // press shorter than this (and still) counts as a tap
 const TAP_SLOP = 10;     // px of movement still considered a tap
 const PAD_SPEED = 1.6;   // finger travel -> cursor travel multiplier
 
+// The access code. The helper also sets a cookie, but an embedded viewer (the
+// PocketBridge phone app's WebView) or a browser with strict cookie settings
+// may not send it on sockets and streams. Carry the code from the page URL on
+// every request so the picture and controls never depend on the cookie alone.
+const PCR_TOKEN = (() => {
+  try {
+    const fromUrl = new URLSearchParams(location.search).get('t');
+    if (fromUrl) sessionStorage.setItem('pcr_t', fromUrl);
+    return fromUrl || sessionStorage.getItem('pcr_t') || '';
+  } catch { return ''; }
+})();
+function authed(u) {
+  if (!PCR_TOKEN) return u;
+  return u + (u.includes('?') ? '&' : '?') + 't=' + encodeURIComponent(PCR_TOKEN);
+}
+
 function toast(t) {
   msg.textContent = t;
   msg.style.display = 'block';
@@ -109,7 +125,7 @@ const WS_GIVE_UP_AFTER = 3;
 
 function wsURL() {
   const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
-  return proto + location.host + '/ws';
+  return proto + location.host + authed('/ws');
 }
 
 function connectWS() {
@@ -149,13 +165,13 @@ function sendNow(ev) {
     try { ws.send(payload); return; } catch { wsReady = false; }
   }
   // Fallback for the moments the socket is down (or a proxy blocks WS).
-  fetch('input', {
+  fetch(authed('input'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: payload,
     keepalive: true,
   }).then(res => {
-    if (res.status === 401) location.href = '/';
+    if (res.status === 401) location.href = authed('/');
   }).catch(() => {});
 }
 
@@ -610,7 +626,7 @@ window.addEventListener('orientationchange', () => setTimeout(() => {
   onViewportChange();
   toast(stage.clientWidth > stage.clientHeight ? 'Landscape — full screen' : 'Portrait — fit to width');
 }, 250));
-fetch('screen').then((r) => r.json()).then((s) => {
+fetch(authed('screen')).then((r) => r.json()).then((s) => {
   toast(`${s.width}×${s.height} · display ${s.monitor + 1}/${s.monitors}`);
 }).catch(() => {});
 setMode(mode);
@@ -645,7 +661,7 @@ function markSelected() {
 
 async function loadSettings() {
   try {
-    settings = await (await fetch('settings')).json();
+    settings = await (await fetch(authed('settings'))).json();
     const row = document.getElementById('rowMonitor');
     if (settings.monitors > 1) {
       row.style.display = '';
@@ -663,7 +679,7 @@ async function loadSettings() {
 // stream restarts so the <video> picks up the new dimensions.
 async function patchSettings(patch, refit) {
   try {
-    settings = await (await fetch('settings', {
+    settings = await (await fetch(authed('settings'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
@@ -869,10 +885,15 @@ stage.addEventListener('touchstart', () => { if (openTray) setTray(openTray); },
 let h264ws = null, mediaSource = null, sourceBuffer = null, sbQueue = [];
 
 let jpegActive = false;
+let jpegAbort = null;      // the running multipart reader, if any
+let jpegUrl = null;        // object URL currently shown in the <img>
+
 function jpegStop() {
+  if (jpegAbort) { try { jpegAbort.abort(); } catch {} jpegAbort = null; }
   jpegEl.onload = null;
   jpegEl.onerror = null;
   jpegEl.removeAttribute('src');
+  if (jpegUrl) { URL.revokeObjectURL(jpegUrl); jpegUrl = null; }
   jpegEl.style.display = 'none';
   videoEl.style.display = '';
   jpegActive = false;
@@ -890,15 +911,93 @@ function adoptJpegSize() {
   return true;
 }
 
-function jpegStart() {
+function indexOfBytes(hay, needle, from) {
+  outer: for (let i = from || 0; i <= hay.length - needle.length; i++) {
+    for (let j = 0; j < needle.length; j++) if (hay[i + j] !== needle[j]) continue outer;
+    return i;
+  }
+  return -1;
+}
+const CRLFCRLF = [13, 10, 13, 10];
+
+// Takes one complete part off the front of a multipart/x-mixed-replace buffer.
+// The part's Content-Length says exactly where the JPEG ends; scanning for
+// JPEG end markers instead can cut a frame short, which is what draws a picture
+// with its lower part missing.
+function takeMultipartFrame(buf) {
+  const headEnd = indexOfBytes(buf, CRLFCRLF, 0);
+  if (headEnd < 0) return null;
+  const head = new TextDecoder('ascii').decode(buf.subarray(0, headEnd));
+  const m = /content-length:\s*(\d+)/i.exec(head);
+  if (!m) {
+    // No length: fall back to the JPEG markers.
+    const soi = indexOfBytes(buf, [0xFF, 0xD8], headEnd);
+    if (soi < 0) return null;
+    const eoi = indexOfBytes(buf, [0xFF, 0xD9], soi + 2);
+    if (eoi < 0) return null;
+    return { frame: buf.slice(soi, eoi + 2), rest: buf.subarray(eoi + 2) };
+  }
+  const length = +m[1];
+  const begin = headEnd + 4;
+  if (buf.length < begin + length) return null;
+  return { frame: buf.slice(begin, begin + length), rest: buf.subarray(begin + length) };
+}
+
+// The JPEG fallback reads the multipart stream itself rather than handing it
+// to an <img>: every complete frame raises a load (the watchdog can tell a
+// live stream from a dead one), frames are taken whole by Content-Length, and
+// only the newest frame is decoded when the phone falls behind.
+async function jpegStart() {
   jpegStop();
   jpegActive = true;
   videoEl.style.display = 'none';
   jpegEl.style.display = 'block';
-  jpegEl.onload = () => { lastFrameAt = Date.now(); live = true; setStatus('live'); adoptJpegSize(); };
-  jpegEl.onerror = () => setStatus('offline');
   setStatus('connecting');
-  jpegEl.src = '/jpeg?ts=' + Date.now();
+  graceUntil = Date.now() + CONNECT_GRACE_MS;
+  if (!window.fetch || !window.ReadableStream || !window.TextDecoder) {
+    jpegEl.onload = () => { lastFrameAt = Date.now(); live = true; setStatus('live'); adoptJpegSize(); };
+    jpegEl.onerror = () => setStatus('offline');
+    jpegEl.src = authed('/jpeg?ts=' + Date.now());
+    return;
+  }
+  const controller = new AbortController();
+  jpegAbort = controller;
+  let pending = null, decoding = false;
+  const showLatest = () => {
+    if (decoding || !pending || jpegAbort !== controller) return;
+    decoding = true;
+    const url = URL.createObjectURL(new Blob([pending], { type: 'image/jpeg' }));
+    pending = null;
+    jpegEl.onload = () => {
+      if (jpegUrl && jpegUrl !== url) URL.revokeObjectURL(jpegUrl);
+      jpegUrl = url;
+      lastFrameAt = Date.now(); live = true; setStatus('live'); adoptJpegSize();
+      decoding = false; showLatest();
+    };
+    jpegEl.onerror = () => { URL.revokeObjectURL(url); decoding = false; showLatest(); };
+    jpegEl.src = url;
+  };
+  try {
+    const res = await fetch(authed('/jpeg?ts=' + Date.now()), { cache: 'no-store', signal: controller.signal });
+    if (res.status === 401) { location.href = authed('/'); return; }
+    if (!res.ok || !res.body) throw new Error('HTTP ' + res.status);
+    const reader = res.body.getReader();
+    let buf = new Uint8Array(0);
+    while (jpegAbort === controller) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const merged = new Uint8Array(buf.length + value.length);
+      merged.set(buf, 0); merged.set(value, buf.length);
+      buf = merged;
+      let part;
+      while ((part = takeMultipartFrame(buf))) { pending = part.frame; buf = part.rest; }
+      if (buf.length > 32 * 1024 * 1024) buf = new Uint8Array(0);   // garbage, resync
+      showLatest();
+    }
+  } catch (e) {
+    if (jpegAbort !== controller) return;   // stopped on purpose
+  }
+  if (jpegAbort === controller) { setStatus('offline'); h264Restart(); }
 }
 
 function h264Stop() {
@@ -959,12 +1058,16 @@ function chooseCodec() {
 }
 
 let activeCodec = null;
+let autoplayBlocked = false;
 
 function h264Start() {
   h264Stop();
   graceUntil = Date.now() + CONNECT_GRACE_MS;
   lastFrameAt = Date.now();
   if (settings?.h264 && !settings.h264.available) { jpegStart(); return; }
+  // An embedded viewer that refuses to start video without a tap would sit on
+  // a black picture forever; the JPEG stream needs no playback permission.
+  if (autoplayBlocked) { jpegStart(); return; }
   // iPhone Safari has no plain MediaSource; iOS 17+ exposes ManagedMediaSource
   // instead. Without either (older iOS), H.264 simply can't play here.
   const MS = window.ManagedMediaSource || window.MediaSource;
@@ -1002,7 +1105,7 @@ function h264Start() {
     sourceBuffer.addEventListener('updateend', pumpBuffer);
 
     const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
-    h264ws = new WebSocket(proto + location.host + '/h264?codec=' + activeCodec.family);
+    h264ws = new WebSocket(proto + location.host + authed('/h264?codec=' + activeCodec.family));
     h264ws.binaryType = 'arraybuffer';
     h264ws.onmessage = (ev) => {
       lastFrameAt = Date.now();
@@ -1015,7 +1118,16 @@ function h264Start() {
         if (end - videoEl.currentTime > 1.5) videoEl.currentTime = end - 0.1;
       }
       pumpBuffer();
-      if (videoEl.paused) videoEl.play().catch(() => {});
+      if (videoEl.paused) {
+        videoEl.play().catch((err) => {
+          if (err && err.name === 'NotAllowedError' && !autoplayBlocked) {
+            autoplayBlocked = true;
+            toast('Video playback is blocked here — using the JPEG stream');
+            h264Stop();
+            jpegStart();
+          }
+        });
+      }
     };
     h264ws.onclose = () => { setStatus('offline'); h264Restart(); };
     h264ws.onerror = () => { try { h264ws.close(); } catch {} };

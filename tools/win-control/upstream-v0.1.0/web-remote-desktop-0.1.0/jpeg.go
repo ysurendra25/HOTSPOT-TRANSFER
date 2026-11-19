@@ -21,7 +21,18 @@ func jpegStreamHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "streaming is unavailable", http.StatusInternalServerError)
 		return
 	}
+	// A viewer is watching: wake the panel and hold it on, exactly like the
+	// H.264 path. Without this the JPEG view (the one Android WebView and
+	// FFmpeg-less laptops use) stayed black whenever the display had idled off,
+	// because capture fails on a powered-down panel and nothing woke it.
+	viewerArrived()
+	defer viewerLeft()
+	if _, err := captureAfterWake(liveCfg().Monitor, 5*time.Second); err != nil {
+		http.Error(w, "the laptop screen could not be captured: "+err.Error(), http.StatusServiceUnavailable)
+		return
+	}
 	w.Header().Set("Content-Type", "multipart/x-mixed-replace; boundary=pbframe")
+	w.Header().Set("X-Accel-Buffering", "no")
 	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
 	w.Header().Set("Connection", "keep-alive")
 	flusher.Flush()
@@ -38,6 +49,8 @@ func jpegStreamHandler(w http.ResponseWriter, r *http.Request) {
 		c := liveCfg()
 		frame, changed, err := captureDisplayChanged(c.Monitor)
 		if err != nil {
+			// Secure desktop (UAC, lock screen) or a display switching mode:
+			// keep the connection and try again on the next tick.
 			continue
 		}
 		// A repeated JPEG every two seconds keeps mobile browsers' image load

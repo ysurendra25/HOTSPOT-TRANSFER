@@ -7,12 +7,18 @@ import (
 	"time"
 )
 
+// The phone's laptop controls land here: POST /power {"action": "...",
+// "confirm": true}. Every answer is JSON with a human sentence in "message",
+// so the phone can show exactly what Windows did instead of a bare status.
+
 var powerActionRunner = runPowerAction
 
-var scheduleSleepAction = func() {
+// Sleep and shut down end the network connection the phone is waiting on, so
+// the helper answers first and acts a moment later.
+var schedulePowerAction = func(action string) {
 	time.AfterFunc(700*time.Millisecond, func() {
-		if err := powerActionRunner("sleep"); err != nil {
-			log.Printf("[pc-remote] sleep failed: %v", err)
+		if err := powerActionRunner(action); err != nil {
+			log.Printf("[pc-remote] %s failed: %v", action, err)
 		}
 	})
 }
@@ -22,44 +28,123 @@ type powerRequest struct {
 	Confirm bool   `json:"confirm"`
 }
 
-func supportedPowerAction(action string) bool {
-	switch action {
-	case "lock", "wake-display", "unlock", "sleep", "shutdown", "cancel-shutdown":
-		return true
-	default:
-		return false
+type powerAction struct {
+	ID       string `json:"id"`
+	Label    string `json:"label"`
+	Confirm  bool   `json:"confirm"`
+	Deferred bool   `json:"deferred"`
+	Note     string `json:"note,omitempty"`
+}
+
+var powerCatalog = []powerAction{
+	{ID: "lock", Label: "Lock laptop"},
+	{ID: "wake-display", Label: "Wake display"},
+	{ID: "unlock", Label: "Wake & show sign-in",
+		Note: "Windows sign-in cannot be bypassed: this wakes the display so the PIN or password box is ready on the laptop."},
+	{ID: "sleep", Label: "Sleep", Confirm: true, Deferred: true},
+	{ID: "shutdown", Label: "Shut down", Confirm: true, Deferred: true},
+	{ID: "cancel-shutdown", Label: "Cancel shutdown"},
+}
+
+func powerActions() []powerAction { return powerCatalog }
+
+func findPowerAction(action string) (powerAction, bool) {
+	for _, a := range powerCatalog {
+		if a.ID == action {
+			return a, true
+		}
 	}
+	return powerAction{}, false
+}
+
+func supportedPowerAction(action string) bool {
+	_, ok := findPowerAction(action)
+	return ok
+}
+
+// normalizePowerAction accepts the spellings older phones and pages used.
+func normalizePowerAction(action string) string {
+	switch action {
+	case "wake", "wake_display", "wakeDisplay", "display-on":
+		return "wake-display"
+	case "show-sign-in", "signin", "sign-in":
+		return "unlock"
+	case "suspend":
+		return "sleep"
+	case "poweroff", "power-off", "shut-down":
+		return "shutdown"
+	}
+	return action
+}
+
+func powerMessage(action string) string {
+	switch action {
+	case "lock":
+		return "Laptop locked."
+	case "wake-display":
+		return "Laptop display woken."
+	case "unlock":
+		return "Display woken and sign-in screen shown. Enter the PIN or password on the laptop; Windows does not allow remote sign-in."
+	case "sleep":
+		return "The laptop will sleep in a moment. It disconnects until it wakes."
+	case "shutdown":
+		return "The laptop is shutting down. The connection will end."
+	case "cancel-shutdown":
+		return "Pending shutdown cancelled."
+	}
+	return "Done."
+}
+
+func writePowerJSON(w http.ResponseWriter, status int, body map[string]any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 func powerHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+	switch r.Method {
+	case http.MethodGet, http.MethodHead:
+		writePowerJSON(w, http.StatusOK, map[string]any{"ok": true, "actions": powerActions()})
+		return
+	case http.MethodPost:
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		writePowerJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false, "error": "Use POST to run a power action."})
 		return
 	}
 	var req powerRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2048)).Decode(&req); err != nil {
-		http.Error(w, "bad json", http.StatusBadRequest)
+		// Also accept a plain form post (?action=lock or action=lock in the body).
+		if a := r.URL.Query().Get("action"); a != "" {
+			req.Action = a
+			req.Confirm = r.URL.Query().Get("confirm") == "true" || r.URL.Query().Get("confirm") == "1"
+		} else {
+			writePowerJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "Send JSON like {\"action\":\"lock\"}."})
+			return
+		}
+	}
+	req.Action = normalizePowerAction(req.Action)
+	action, ok := findPowerAction(req.Action)
+	if !ok {
+		writePowerJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "Unsupported power action: " + req.Action})
 		return
 	}
-	if !supportedPowerAction(req.Action) {
-		http.Error(w, "unsupported power action", http.StatusBadRequest)
+	if action.Confirm && !req.Confirm {
+		writePowerJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "Confirm " + action.Label + " on the phone first.", "confirm": true})
 		return
 	}
-	if (req.Action == "sleep" || req.Action == "shutdown") && !req.Confirm {
-		http.Error(w, "confirmation required", http.StatusBadRequest)
+	if action.Deferred {
+		writePowerJSON(w, http.StatusAccepted, map[string]any{"ok": true, "action": action.ID, "scheduled": true, "message": powerMessage(action.ID)})
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		schedulePowerAction(action.ID)
 		return
 	}
-	if req.Action == "sleep" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusAccepted)
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "action": req.Action, "scheduled": true})
-		scheduleSleepAction()
+	if err := powerActionRunner(action.ID); err != nil {
+		writePowerJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "action": action.ID, "error": err.Error()})
 		return
 	}
-	if err := powerActionRunner(req.Action); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "action": req.Action})
+	writePowerJSON(w, http.StatusOK, map[string]any{"ok": true, "action": action.ID, "message": powerMessage(action.ID)})
 }

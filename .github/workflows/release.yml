@@ -1,17 +1,37 @@
 name: Release PocketBridge
 
+# Runs for any version tag (v0.6.0.3, v0.6.0.4, …) and can be started by hand
+# for an existing tag. The release notes file is chosen from the tag, so a new
+# version only needs its RELEASE_NOTES_<tag>.md committed before tagging.
 on:
   push:
-    tags: [ 'v0.6.0.2' ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing version tag to build and publish, for example v0.6.0.3'
+        required: true
+        type: string
 
 permissions:
   contents: read
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 jobs:
   android:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - name: Check the tag, version and release notes agree
+        run: |
+          version="${RELEASE_TAG#v}"
+          notes="RELEASE_NOTES_${RELEASE_TAG}.md"
+          test -f "$notes" || { echo "::error::$notes is missing"; exit 1; }
+          grep -q "versionName = \"$version\"" app/build.gradle.kts || { echo "::error::app/build.gradle.kts versionName is not $version"; exit 1; }
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
@@ -23,11 +43,31 @@ jobs:
         run: |
           python3 tools/check-web-page.py
           bash gradlew testDebugUnitTest lintDebug --console=plain
+      - name: Configure stable Android signing key
+        env:
+          PB_KEYSTORE_BASE64: ${{ secrets.POCKETBRIDGE_SIGNING_KEYSTORE_BASE64 }}
+          PB_STORE_PASSWORD: ${{ secrets.POCKETBRIDGE_SIGNING_STORE_PASSWORD }}
+          PB_KEY_ALIAS: ${{ secrets.POCKETBRIDGE_SIGNING_KEY_ALIAS }}
+          PB_KEY_PASSWORD: ${{ secrets.POCKETBRIDGE_SIGNING_KEY_PASSWORD }}
+        run: |
+          test -n "$PB_KEYSTORE_BASE64" || { echo "::error::Configure the PocketBridge signing secrets before releasing."; exit 1; }
+          test -n "$PB_STORE_PASSWORD" || { echo "::error::PocketBridge signing store password is missing."; exit 1; }
+          test -n "$PB_KEY_ALIAS" || { echo "::error::PocketBridge signing key alias is missing."; exit 1; }
+          test -n "$PB_KEY_PASSWORD" || { echo "::error::PocketBridge signing key password is missing."; exit 1; }
+          printf '%s' "$PB_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/pocketbridge-release.jks"
+          echo "POCKETBRIDGE_SIGNING_STORE_FILE=$RUNNER_TEMP/pocketbridge-release.jks" >> "$GITHUB_ENV"
+          echo "POCKETBRIDGE_SIGNING_STORE_PASSWORD=$PB_STORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "POCKETBRIDGE_SIGNING_KEY_ALIAS=$PB_KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "POCKETBRIDGE_SIGNING_KEY_PASSWORD=$PB_KEY_PASSWORD" >> "$GITHUB_ENV"
       - name: Build universal APK
         run: |
           mkdir -p release-assets
           bash gradlew assembleDebug -PpocketbridgeUniversal=true --console=plain
-          cp app/build/outputs/apk/debug/app-debug.apk release-assets/PocketBridge-${GITHUB_REF_NAME#v}-universal.apk
+          apk="app/build/outputs/apk/debug/app-debug.apk"
+          apksigner="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          test -n "$apksigner"
+          "$apksigner" verify --verbose --print-certs "$apk"
+          cp "$apk" "release-assets/PocketBridge-${RELEASE_TAG#v}-universal.apk"
       - uses: actions/upload-artifact@v7
         with:
           name: android-release
@@ -38,17 +78,25 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - uses: actions/setup-go@v7
         with:
           go-version: '1.27.x'
           cache-dependency-path: tools/win-control/upstream-v0.1.0/web-remote-desktop-0.1.0/go.sum
+      - name: Vet the helper
+        shell: pwsh
+        working-directory: tools/win-control/upstream-v0.1.0/web-remote-desktop-0.1.0
+        run: |
+          go vet ./...
+          if ($LASTEXITCODE -ne 0) { throw 'go vet failed.' }
       - name: Test and build portable helper
         shell: pwsh
         run: ./tools/win-control/build.ps1
       - name: Package portable helper
         shell: pwsh
         run: |
-          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          $version = $env:RELEASE_TAG -replace '^v', ''
           $stage = Join-Path $env:RUNNER_TEMP 'PocketBridge-Windows-Control'
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item tools/win-control/Start-Control.bat, tools/win-control/README.md $stage
@@ -69,6 +117,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - uses: actions/download-artifact@v7
         with:
           path: release-assets
@@ -78,6 +128,7 @@ jobs:
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          name: PocketBridge ${{ github.ref_name }}
-          body_path: RELEASE_NOTES_v0.6.0.2.md
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: PocketBridge ${{ env.RELEASE_TAG }}
+          body_path: RELEASE_NOTES_${{ env.RELEASE_TAG }}.md
           files: release-assets/*
