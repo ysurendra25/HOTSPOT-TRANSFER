@@ -25,6 +25,7 @@ android {
     }
 
     packaging {
+        jniLibs.useLegacyPackaging = true
         resources.excludes += setOf("META-INF/LICENSE*", "META-INF/NOTICE*")
     }
 
