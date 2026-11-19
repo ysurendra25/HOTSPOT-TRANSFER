@@ -113,8 +113,16 @@ public class MainActivityTabsTest {
         List<Button> tabs = buttonsLabelled(root, "Connect", "Screen", "Library", "Chat");
         tabs.get(3).performClick(); // Chat refreshes the list
 
+        // The chat is read on a background thread and drawn back on the main
+        // thread, so wait for both instead of expecting it synchronously.
         List<String> texts = new ArrayList<>();
-        collectText(root, texts);
+        for (int attempt = 0; attempt < 100; attempt++) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper();
+            texts.clear();
+            collectText(root, texts);
+            if (texts.toString().contains("from the phone")) break;
+            try { Thread.sleep(20); } catch (InterruptedException interrupted) { break; }
+        }
         assertTrue("the laptop message should be listed: " + texts, texts.toString().contains("from the laptop"));
         assertTrue("the phone message should be listed: " + texts, texts.toString().contains("from the phone"));
         controller.pause().stop().destroy();

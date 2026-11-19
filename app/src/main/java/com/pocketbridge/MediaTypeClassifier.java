@@ -38,6 +38,18 @@ final class MediaTypeClassifier {
             case "flac": return "audio/flac";
             case "amr": return "audio/amr";
             case "wma": return "audio/x-ms-wma";
+            // Documents, so a received file opens in a viewer instead of only downloading.
+            case "pdf": return "application/pdf";
+            case "txt": case "log": return "text/plain";
+            case "csv": return "text/csv";
+            case "zip": return "application/zip";
+            case "apk": return "application/vnd.android.package-archive";
+            case "doc": return "application/msword";
+            case "docx": return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+            case "xls": return "application/vnd.ms-excel";
+            case "xlsx": return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+            case "ppt": return "application/vnd.ms-powerpoint";
+            case "pptx": return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
             default: return mime.isEmpty() ? "application/octet-stream" : mime;
         }
     }

@@ -21,6 +21,10 @@ final class ChatStore {
     static final int MAX_MESSAGES = 100;
     private static final String FILE_NAME = "share-messages.json";
     private static final Object LOCK = new Object();
+    /** Bumped on every write, so the phone screen can skip re-reading an unchanged chat. */
+    private static final java.util.concurrent.atomic.AtomicLong VERSION = new java.util.concurrent.atomic.AtomicLong();
+
+    static long version() { return VERSION.get(); }
 
     private ChatStore() { }
 
@@ -120,10 +124,28 @@ final class ChatStore {
         }
     }
 
+    /**
+     * Writes to a temporary file and renames it over the old one, so a crash or
+     * a full disk mid-write can never leave a half-written (unreadable) chat.
+     */
     private static void writeFile(Context context, String json) {
         File file = new File(context.getFilesDir(), FILE_NAME);
-        try (FileOutputStream stream = new FileOutputStream(file)) {
+        File temp = new File(context.getFilesDir(), FILE_NAME + ".tmp");
+        try (FileOutputStream stream = new FileOutputStream(temp)) {
             stream.write(json.getBytes(StandardCharsets.UTF_8));
-        } catch (Exception ignored) { }
+            stream.getFD().sync();
+        } catch (Exception failed) {
+            //noinspection ResultOfMethodCallIgnored
+            temp.delete();
+            return;
+        }
+        if (!temp.renameTo(file)) {
+            try (FileOutputStream stream = new FileOutputStream(file)) {
+                stream.write(json.getBytes(StandardCharsets.UTF_8));
+            } catch (Exception ignored) { }
+            //noinspection ResultOfMethodCallIgnored
+            temp.delete();
+        }
+        VERSION.incrementAndGet();
     }
 }

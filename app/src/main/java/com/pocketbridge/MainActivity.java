@@ -27,8 +27,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -128,6 +126,20 @@ public final class MainActivity extends Activity {
         if (screenButton != null) {
             screenButton.setText(ScreenCaptureService.isRunning() ? "Stop screen share" : "Share phone screen");
         }
+    }
+
+    @Override protected void onDestroy() {
+        chatHandler.removeCallbacksAndMessages(null);
+        screenStatusHandler.removeCallbacksAndMessages(null);
+        if (laptopView != null) {
+            laptopView.stopLoading();
+            laptopView.destroy();
+            laptopView = null;
+        }
+        background.shutdownNow();
+        chatWorker.shutdownNow();
+        phoneUploadQueue.shutdown();
+        super.onDestroy();
     }
 
     @Override protected void onStop() {
@@ -307,7 +319,7 @@ public final class MainActivity extends Activity {
         LinearLayout powerControls = new LinearLayout(this);
         powerControls.setOrientation(LinearLayout.VERTICAL);
         String[][] powerActions = {{"Lock laptop", "lock"}, {"Wake display", "wake-display"},
-                {"Unlock / show sign-in", "unlock"}, {"Put laptop to sleep", "sleep"}, {"Shut down laptop", "shutdown"}};
+                {"Wake & show sign-in (PIN needed)", "unlock"}, {"Put laptop to sleep", "sleep"}, {"Shut down laptop", "shutdown"}};
         for (String[] powerAction : powerActions) {
             Button actionButton = button(powerAction[0], ("shutdown".equals(powerAction[1]) || "sleep".equals(powerAction[1])) ? COLOR_SOFT : COLOR_GREEN);
             if ("shutdown".equals(powerAction[1]) || "sleep".equals(powerAction[1])) actionButton.setTextColor(COLOR_INK);
@@ -316,7 +328,7 @@ public final class MainActivity extends Activity {
                 if ("shutdown".equals(action) || "sleep".equals(action)) {
                     boolean shutdown = "shutdown".equals(action);
                     new android.app.AlertDialog.Builder(this).setTitle(shutdown ? "Shut down laptop" : "Put laptop to sleep")
-                            .setMessage(shutdown ? "Schedule Windows shutdown in 15 seconds? The hotspot connection will end."
+                            .setMessage(shutdown ? "Shut down Windows now? Unsaved work on the laptop may be lost and the connection will end."
                                     : "Put Windows to sleep now? The laptop will disconnect until it wakes.")
                             .setNegativeButton("Cancel", null)
                             .setPositiveButton(shutdown ? "Shut down" : "Sleep", (dialog, which) -> postLaptopPowerAction(
@@ -330,7 +342,7 @@ public final class MainActivity extends Activity {
         }
         addCard(content, "LAPTOP CONTROLS", powerControls);
         TextView powerNote = new TextView(this);
-        powerNote.setText("Unlock / show sign-in wakes the display; Windows still requires the laptop PIN or password. Wake works only while the helper and laptop are running.");
+        powerNote.setText("Windows sign-in cannot be done remotely: \u201cWake & show sign-in\u201d only wakes the display so the PIN or password box is ready on the laptop. Wake works only while the laptop is awake enough to run the helper; a sleeping or shut-down laptop cannot be reached over Wi-Fi.");
         powerNote.setTextColor(COLOR_MUTED); powerNote.setTextSize(12);
         powerNote.setPadding(dp(4), 0, dp(4), dp(12)); content.addView(powerNote, matchWrap());
 
@@ -375,15 +387,26 @@ public final class MainActivity extends Activity {
         // Laptop screen on the phone: the Windows helper already streams JPEG over
         // the hotspot, so show its own live page here instead of duplicating it.
         android.webkit.WebView laptopView = new android.webkit.WebView(this);
-        laptopView.getSettings().setJavaScriptEnabled(true);
-        laptopView.getSettings().setDomStorageEnabled(true);
-        laptopView.getSettings().setLoadWithOverviewMode(true);
-        laptopView.getSettings().setUseWideViewPort(true);
+        this.laptopView = laptopView;
+        android.webkit.WebSettings viewerSettings = laptopView.getSettings();
+        viewerSettings.setJavaScriptEnabled(true);
+        viewerSettings.setDomStorageEnabled(true);
+        viewerSettings.setLoadWithOverviewMode(true);
+        viewerSettings.setUseWideViewPort(true);
+        // The helper streams the screen as a muted video. WebView refuses to
+        // start any media without a tap unless told otherwise, which left the
+        // laptop screen black on the phone even though frames were arriving.
+        viewerSettings.setMediaPlaybackRequiresUserGesture(false);
+        viewerSettings.setCacheMode(android.webkit.WebSettings.LOAD_NO_CACHE);
+        viewerSettings.setMixedContentMode(android.webkit.WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
+        // The helper keeps its login in a cookie for the video and input sockets.
+        android.webkit.CookieManager.getInstance().setAcceptCookie(true);
+        android.webkit.CookieManager.getInstance().setAcceptThirdPartyCookies(laptopView, true);
+        laptopView.setWebChromeClient(new android.webkit.WebChromeClient());
         laptopView.setBackgroundColor(Color.BLACK);
         laptopView.setVisibility(View.GONE);
         laptopView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         laptopView.setLayoutParams(new LinearLayout.LayoutParams(-1, dp(380)));
-        final android.os.Handler screenStatusHandler = new android.os.Handler(android.os.Looper.getMainLooper());
         final Runnable[] screenStatusPoll = new Runnable[1];
         screenStatusPoll[0] = () -> {
             if (laptopView.getVisibility() != View.VISIBLE) return;
@@ -418,25 +441,24 @@ public final class MainActivity extends Activity {
                 return;
             }
             laptopScreenStatus.setText("Checking the laptop link…");
-            new Thread(() -> {
+            showLaptop.setEnabled(false);
+            background.execute(() -> {
                 try {
-                    android.net.Uri parsed = android.net.Uri.parse(link);
-                    String token = parsed.getQueryParameter("t");
-                    if (token == null || token.isEmpty() || !"http".equalsIgnoreCase(parsed.getScheme())) {
-                        throw new Exception("Paste the full local http link printed by the Windows helper, including its ?t= code.");
-                    }
-                    String host = parsed.getHost() == null ? "" : parsed.getHost();
-                    boolean loopback = "127.0.0.1".equals(host) || "localhost".equalsIgnoreCase(host) || "::1".equals(host);
-                    android.net.Uri reachable = loopback ? resolveLoopbackHelper(parsed, token, laptopScreenStatus) : parsed;
+                    HelperLink reachable = HelperClient.resolve(link, message -> runOnUiThread(() -> laptopScreenStatus.setText(message)));
                     runOnUiThread(() -> {
-                        laptopScreenStatus.setText("Connecting to the laptop screen…");
+                        showLaptop.setEnabled(true);
+                        if (isFinishing() || this.laptopView == null) return;
+                        laptopScreenStatus.setText("Connecting to the laptop screen at " + reachable.host + "…");
                         laptopView.setVisibility(View.VISIBLE);
-                        laptopView.loadUrl(reachable.toString());
+                        laptopView.loadUrl(reachable.pageUrl());
                     });
-                } catch (Exception error) {
-                    runOnUiThread(() -> laptopScreenStatus.setText("Could not find the laptop helper: " + error.getMessage()));
+                } catch (HelperClient.HelperException error) {
+                    runOnUiThread(() -> {
+                        showLaptop.setEnabled(true);
+                        laptopScreenStatus.setText("Could not open the laptop screen: " + error.getMessage());
+                    });
                 }
-            }, "PocketBridge-laptop-screen-link").start();
+            });
         });
         Button hideLaptop = button("Hide laptop screen", COLOR_SOFT);
         hideLaptop.setTextColor(COLOR_INK);
@@ -470,6 +492,8 @@ public final class MainActivity extends Activity {
         showTab(0);
     }
 
+    private android.webkit.WebView laptopView;
+    private final android.os.Handler screenStatusHandler = new android.os.Handler(android.os.Looper.getMainLooper());
     private ScrollView[] tabViews;
     private Button[] tabButtons;
     private LinearLayout libraryList;
@@ -485,6 +509,25 @@ public final class MainActivity extends Activity {
     private long lastChatNotificationTime;
     private final android.os.Handler chatHandler = new android.os.Handler(android.os.Looper.getMainLooper());
     private final ExecutorService phoneUploadQueue = Executors.newSingleThreadExecutor();
+    /**
+     * Network and disk work started from the UI. Bounded, so tapping a button
+     * repeatedly queues work instead of starting a new thread per tap.
+     */
+    private final ExecutorService background = Executors.newFixedThreadPool(3, runnable -> {
+        Thread thread = new Thread(runnable, "PocketBridge-ui-work");
+        thread.setDaemon(true);
+        return thread;
+    });
+    /** Chat reads run here, one at a time, never on the main thread. */
+    private final ExecutorService chatWorker = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "PocketBridge-chat");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private long shownChatVersion = -1;
+    private boolean chatReadPending;
+    private int libraryGeneration;
+    private int laptopListGeneration;
     private final Runnable chatPoll = new Runnable() {
         @Override public void run() {
             refreshChat();
@@ -778,230 +821,178 @@ public final class MainActivity extends Activity {
         }
     }
 
-    /** Turns a loopback helper link into one the phone can actually reach. */
-    private android.net.Uri resolveLoopbackHelper(android.net.Uri parsed, String token, TextView status) throws Exception {
-        runOnUiThread(() -> status.setText("That is the laptop's own address. Looking for the laptop on this network…"));
-        String found = discoverHelperHost(token);
-        if (found == null) {
-            throw new Exception("That is the laptop's own address (127.0.0.1), so the phone cannot reach it. "
-                    + "Copy the line marked LAN: from the helper window instead, for example http://192.168.43.42:7070/?t=…");
-        }
-        return android.net.Uri.parse(found);
+    /** Remembers the address that answered, so the next action skips the search. */
+    private void adoptResolvedHelper(String pasted, HelperLink resolved) {
+        HelperLink original = HelperLink.tryParse(pasted);
+        if (original == null || original.equals(resolved)) return;
+        runOnUiThread(() -> {
+            String value = resolved.display();
+            getPreferences(MODE_PRIVATE).edit().putString("laptop_helper_link", value).apply();
+            MediaHttpServer.setLaptopHelperLink(value);
+            syncHelperLinkFields();
+        });
     }
+
+    private static final int LAPTOP_PAGE_SIZE = 500;
+    private static final int LAPTOP_MAX_ROWS = 5000;
 
     /**
-     * Finds the Windows helper on this network when the pasted link points at the
-     * laptop's own loopback. Scans the /24 around each local address for port 7070
-     * and keeps the first host that answers with the same token.
+     * Reads the helper's shared folder page by page and fills the Library tab.
+     * Each page is a short request with retries, so a large folder or one slow
+     * moment on the hotspot no longer fails the whole list.
      */
-    private String discoverHelperHost(String token) {
-        java.util.List<String> prefixes = new java.util.ArrayList<>();
-        try {
-            java.util.Enumeration<java.net.NetworkInterface> interfaces = java.net.NetworkInterface.getNetworkInterfaces();
-            while (interfaces.hasMoreElements()) {
-                java.net.NetworkInterface network = interfaces.nextElement();
-                if (!network.isUp() || network.isLoopback()) continue;
-                for (java.net.InterfaceAddress address : network.getInterfaceAddresses()) {
-                    java.net.InetAddress ip = address.getAddress();
-                    if (ip == null || ip.getAddress().length != 4) continue;
-                    String text = ip.getHostAddress();
-                    prefixes.add(text.substring(0, text.lastIndexOf('.') + 1));
-                }
-            }
-        } catch (Exception ignored) { }
-        if (prefixes.isEmpty()) return null;
-
-        java.util.concurrent.atomic.AtomicReference<String> found = new java.util.concurrent.atomic.AtomicReference<>(null);
-        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(24);
-        java.util.List<java.util.concurrent.Future<?>> tasks = new java.util.ArrayList<>();
-        for (String prefix : prefixes) {
-            for (int host = 1; host <= 254 && found.get() == null; host++) {
-                final String encodedToken;
-                try { encodedToken = java.net.URLEncoder.encode(token, "UTF-8"); }
-                catch (Exception ignored) { continue; }
-                final String candidate = "http://" + prefix + host + ":" + 7070 + "/?t=" + encodedToken;
-                tasks.add(pool.submit(() -> {
-                    if (found.get() != null) return;
-                    java.net.HttpURLConnection probe = null;
-                    try {
-                        probe = (java.net.HttpURLConnection) new java.net.URL(candidate.replace("/?t=", "/files?t=")).openConnection();
-                        probe.setConnectTimeout(250);
-                        probe.setReadTimeout(400);
-                        probe.setRequestMethod("GET");
-                        if (probe.getResponseCode() == 200) found.compareAndSet(null, candidate);
-                    } catch (Exception unreachable) {
-                        // Not this host; keep scanning.
-                    } finally {
-                        if (probe != null) probe.disconnect();
-                    }
-                }));
-            }
-        }
-        pool.shutdown();
-        try { pool.awaitTermination(6, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
-        for (java.util.concurrent.Future<?> task : tasks) task.cancel(true);
-        return found.get();
-    }
-
-    /** Reads the helper's file list and fills the Library tab with it. */
     private void fetchLaptopFiles(String link, String requestedPath, LinearLayout rows, TextView status, String initialQuery, Runnable done) {
-        new Thread(() -> {
-            HttpURLConnection connection = null;
+        final int generation = ++laptopListGeneration;
+        background.execute(() -> {
             try {
-                android.net.Uri parsed = android.net.Uri.parse(link.trim());
-                String token = parsed.getQueryParameter("t");
-                if (token == null || !"http".equalsIgnoreCase(parsed.getScheme())) {
-                    throw new Exception("Use the full http link printed by the Windows helper, including the ?t= code.");
-                }
-                String host = parsed.getHost() == null ? "" : parsed.getHost();
-                boolean loopback = "127.0.0.1".equals(host) || "localhost".equalsIgnoreCase(host) || "::1".equals(host);
-                // The helper prints two links: "mo:" is the laptop talking to itself,
-                // "LAN:" is the one a phone can reach. Rather than only refusing the
-                // loopback one, look for the laptop on this network and use it.
-                final android.net.Uri supplied = loopback ? resolveLoopbackHelper(parsed, token, status) : parsed;
+                HelperLink helper = HelperClient.resolve(link, message -> runOnUiThread(() -> status.setText(message)));
+                adoptResolvedHelper(link, helper);
                 if (!requestedPath.isEmpty()) {
-                    HttpURLConnection settingsConnection = null;
-                    try {
-                        android.net.Uri settingsUri = supplied.buildUpon().path("/settings").clearQuery()
-                                .appendQueryParameter("t", token).build();
-                        settingsConnection = (HttpURLConnection) new URL(settingsUri.toString()).openConnection();
-                        settingsConnection.setRequestMethod("POST");
-                        settingsConnection.setConnectTimeout(5000);
-                        settingsConnection.setReadTimeout(10000);
-                        settingsConnection.setDoOutput(true);
-                        settingsConnection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-                        byte[] payload = new JSONObject().put("share_dir", requestedPath).toString()
-                                .getBytes(java.nio.charset.StandardCharsets.UTF_8);
-                        try (java.io.OutputStream output = settingsConnection.getOutputStream()) { output.write(payload); }
-                        int settingsCode = settingsConnection.getResponseCode();
-                        if (settingsCode != 200) {
-                            java.io.InputStream errorStream = settingsConnection.getErrorStream();
-                            String errorBody = "";
-                            if (errorStream != null) {
-                                try (java.io.InputStream input = errorStream; java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream()) {
-                                    byte[] errorBuffer = new byte[2048];
-                                    int errorRead;
-                                    while ((errorRead = input.read(errorBuffer)) != -1 && bytes.size() < 8192) {
-                                        bytes.write(errorBuffer, 0, Math.min(errorRead, 8192 - bytes.size()));
-                                    }
-                                    errorBody = bytes.toString(java.nio.charset.StandardCharsets.UTF_8.name()).trim();
-                                }
-                            }
-                            throw new Exception(errorBody.isEmpty() ? "The laptop rejected that folder or file path (HTTP " + settingsCode + ")." : errorBody);
-                        }
-                    } finally {
-                        if (settingsConnection != null) settingsConnection.disconnect();
-                    }
+                    byte[] payload = new JSONObject().put("share_dir", requestedPath).toString()
+                            .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                    HelperClient.Response chosen = HelperClient.request("POST", helper.url("/settings"), payload,
+                            HelperClient.CONNECT_TIMEOUT_MS, HelperClient.READ_TIMEOUT_MS, 2);
+                    if (!chosen.ok()) throw new HelperClient.HelperException(HelperClient.errorMessage(chosen.status, chosen.body), chosen.status);
                     runOnUiThread(() -> status.setText("Location selected. Loading its files…"));
                 }
-                android.net.Uri filesUri = supplied.buildUpon().path("/files").clearQuery().appendQueryParameter("t", token).build();
-                connection = (HttpURLConnection) new URL(filesUri.toString()).openConnection();
-                connection.setConnectTimeout(5000);
-                connection.setReadTimeout(10000);
-                if (connection.getResponseCode() != 200) throw new Exception("Laptop helper returned HTTP " + connection.getResponseCode());
-                java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
-                byte[] buffer = new byte[8192];
-                int count;
-                try (java.io.InputStream stream = connection.getInputStream()) {
-                    while ((count = stream.read(buffer)) != -1) bytes.write(buffer, 0, count);
+                int offset = 0;
+                int shown = 0;
+                boolean truncated = false;
+                int total = 0;
+                while (shown < LAPTOP_MAX_ROWS) {
+                    HelperClient.Response response = HelperClient.request("GET",
+                            helper.url("/files", "offset", String.valueOf(offset), "limit", String.valueOf(LAPTOP_PAGE_SIZE),
+                                    "refresh", offset == 0 ? "1" : "0"),
+                            null, HelperClient.CONNECT_TIMEOUT_MS, 30000, 3);
+                    if (!response.ok()) throw new HelperClient.HelperException(HelperClient.errorMessage(response.status, response.body), response.status);
+                    HelperClient.FilesPage page = HelperClient.parseFilesPage(response.body, offset);
+                    total = page.total;
+                    truncated = page.truncated;
+                    final List<JSONObject> batch = page.files;
+                    final int loaded = shown + batch.size();
+                    final int expected = total;
+                    runOnUiThread(() -> {
+                        if (generation != laptopListGeneration) return;
+                        addLaptopRows(rows, batch, helper);
+                        status.setText("Loaded " + loaded + (expected > loaded ? " of " + expected : "") + " laptop files…");
+                    });
+                    shown += batch.size();
+                    if (!page.hasMore || batch.isEmpty()) break;
+                    offset = page.nextOffset;
                 }
-                JSONObject data = new JSONObject(new String(bytes.toByteArray(), java.nio.charset.StandardCharsets.UTF_8));
-                JSONArray items = data.optJSONArray("files");
+                final int finalShown = shown;
+                final int finalTotal = total;
+                final boolean finalTruncated = truncated;
                 runOnUiThread(() -> {
-                    if (items == null || items.length() == 0) {
-                        status.setText("No files found in the helper's shared folder.");
+                    if (generation != laptopListGeneration) return;
+                    if (finalShown == 0) {
+                        status.setText("No files found in the helper's shared folder. Enter another laptop folder path above.");
                     } else {
-                        for (int i = 0; i < items.length(); i++) {
-                            JSONObject item = items.optJSONObject(i);
-                            if (item == null) continue;
-                            String name = item.optString("name", "File");
-                            String relative = item.optString("url", "");
-                            String mime = item.optString("mime", "");
-                            if (mime.isEmpty()) {
-                                String ext = android.webkit.MimeTypeMap.getFileExtensionFromUrl(name);
-                                mime = ext.isEmpty() ? "application/octet-stream"
-                                        : valueOr(android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext.toLowerCase(java.util.Locale.ROOT)), "application/octet-stream");
-                            }
-                            String relativePath = item.optString("path", name);
-                            android.net.Uri fileUri = supplied.buildUpon().encodedPath(relative).clearQuery().appendQueryParameter("t", token).build();
-                            String kindLabel = mime.startsWith("video/") ? "VIDEO · CHOOSE PLAYER"
-                                    : mime.startsWith("audio/") ? "AUDIO · TAP TO PLAY"
-                                    : mime.startsWith("image/") ? "PHOTO · TAP TO VIEW"
-                                    : "FILE · TAP TO OPEN";
-                            Button row = button(kindLabel + "\n" + name + "\n" + relativePath + " · "
-                                    + android.text.format.Formatter.formatShortFileSize(this, item.optLong("size")), COLOR_SURFACE);
-                            row.setTextColor(COLOR_INK);
-                            row.setTextSize(13);
-                            row.setAllCaps(false);
-                            row.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-                            row.setTag(new String[]{name, mime, relativePath});
-                            final String openMime = mime;
-                            row.setOnClickListener(open -> {
-                                if (openMime.startsWith("video/")) {
-                                    openVideoWithChoice(fileUri, openMime, 0);
-                                    return;
-                                }
-                                Intent view = new Intent(Intent.ACTION_VIEW);
-                                view.setDataAndType(fileUri, openMime);
-                                try { startActivity(view); }
-                                catch (Exception error) { Toast.makeText(this, "No installed app can open this file type.", Toast.LENGTH_SHORT).show(); }
-                            });
-                            LinearLayout.LayoutParams lp = matchWrap();
-                            lp.topMargin = dp(4);
-                            rows.addView(row, lp);
-                        }
-                        status.setText(items.length() + " laptop files loaded from the helper’s shared folder.");
                         filterLaptopRows();
+                        String more = finalTotal > finalShown ? " Showing the newest " + finalShown + " of " + finalTotal + "." : "";
+                        String partial = finalTruncated ? " The folder is very large, so only part of it was read; enter a smaller folder path to see the rest." : "";
+                        if (!more.isEmpty() || !partial.isEmpty()) status.setText(status.getText() + more + partial);
                     }
                     done.run();
                 });
+            } catch (HelperClient.HelperException error) {
+                failLaptopList(generation, status, error.getMessage(), done);
+            } catch (java.io.IOException error) {
+                failLaptopList(generation, status, HelperClient.networkMessage(error), done);
             } catch (Exception error) {
-                runOnUiThread(() -> {
-                    status.setText("Could not read the laptop folder: " + error.getMessage());
-                    done.run();
-                });
-            } finally {
-                if (connection != null) connection.disconnect();
+                failLaptopList(generation, status, error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage(), done);
             }
-        }, "PocketBridge-library-laptop").start();
+        });
+    }
+
+    private void failLaptopList(int generation, TextView status, String message, Runnable done) {
+        runOnUiThread(() -> {
+            if (generation == laptopListGeneration) status.setText("Could not read the laptop folder: " + message);
+            done.run();
+        });
+    }
+
+    private void addLaptopRows(LinearLayout rows, List<JSONObject> items, HelperLink helper) {
+        for (JSONObject item : items) {
+            String name = item.optString("name", "File");
+            String relative = item.optString("url", "");
+            String mime = item.optString("mime", "");
+            if (mime.isEmpty()) mime = MediaTypeClassifier.mimeType(name, null);
+            String relativePath = item.optString("path", name);
+            // The helper already escaped each path segment (spaces, %, unicode),
+            // so it is used as is and only the access code is added.
+            android.net.Uri fileUri = android.net.Uri.parse(helper.url(relative));
+            String kindLabel = mime.startsWith("video/") ? "VIDEO · CHOOSE PLAYER"
+                    : mime.startsWith("audio/") ? "AUDIO · TAP TO PLAY"
+                    : mime.startsWith("image/") ? "PHOTO · TAP TO VIEW"
+                    : "FILE · TAP TO OPEN";
+            Button row = button(kindLabel + "\n" + name + "\n" + relativePath + " · "
+                    + android.text.format.Formatter.formatShortFileSize(this, item.optLong("size")), COLOR_SURFACE);
+            row.setTextColor(COLOR_INK);
+            row.setTextSize(13);
+            row.setAllCaps(false);
+            row.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+            row.setTag(new String[]{name, mime, relativePath});
+            final String openMime = mime;
+            row.setOnClickListener(open -> openLaptopFile(fileUri, openMime));
+            LinearLayout.LayoutParams lp = matchWrap();
+            lp.topMargin = dp(4);
+            rows.addView(row, lp);
+        }
+        filterLaptopRows();
+    }
+
+    /** Opens a laptop file in an app that can stream it from the helper. */
+    private void openLaptopFile(android.net.Uri fileUri, String mime) {
+        if (mime.startsWith("video/") || mime.startsWith("audio/")) {
+            openVideoWithChoice(fileUri, mime, 0);
+            return;
+        }
+        Intent view = new Intent(Intent.ACTION_VIEW);
+        view.setDataAndType(fileUri, mime);
+        try {
+            startActivity(Intent.createChooser(view, "Open with"));
+        } catch (Exception noTypedViewer) {
+            // Many viewers only take content:// files; a browser can open any http link.
+            try { startActivity(new Intent(Intent.ACTION_VIEW, fileUri)); }
+            catch (Exception error) { Toast.makeText(this, "No installed app can open this file type.", Toast.LENGTH_SHORT).show(); }
+        }
     }
 
     private void postLaptopPowerAction(String link, String action, boolean confirmed, TextView status) {
-        new Thread(() -> {
-            HttpURLConnection connection = null;
+        status.setText("Sending to the laptop…");
+        background.execute(() -> {
             try {
-                android.net.Uri supplied = android.net.Uri.parse(link);
-                String token = supplied.getQueryParameter("t");
-                if (token == null || !"http".equalsIgnoreCase(supplied.getScheme()))
-                    throw new Exception("Paste the running Windows helper link in the Screen tab first.");
-                android.net.Uri powerUri = supplied.buildUpon().path("/power").clearQuery()
-                        .appendQueryParameter("t", token).build();
-                connection = (HttpURLConnection) new URL(powerUri.toString()).openConnection();
-                connection.setRequestMethod("POST");
-                connection.setConnectTimeout(5000);
-                connection.setReadTimeout(7000);
-                connection.setDoOutput(true);
-                connection.setRequestProperty("Content-Type", "application/json");
+                HelperLink helper = HelperClient.resolve(link, message -> runOnUiThread(() -> status.setText(message)));
+                adoptResolvedHelper(link, helper);
                 byte[] payload = new JSONObject().put("action", action).put("confirm", confirmed).toString()
                         .getBytes(java.nio.charset.StandardCharsets.UTF_8);
-                try (java.io.OutputStream output = connection.getOutputStream()) { output.write(payload); }
-                int response = connection.getResponseCode();
-                if (response < 200 || response >= 300) throw new Exception("Windows helper returned HTTP " + response + ". Check that it is running and the link is current.");
-                runOnUiThread(() -> status.setText("Windows command sent: " + action + "."));
+                // Never retry a power action automatically: a lost reply does not
+                // mean the laptop ignored it, and a second shutdown is not wanted.
+                HelperClient.Response response = HelperClient.request("POST", helper.url("/power"), payload,
+                        HelperClient.CONNECT_TIMEOUT_MS, 10000, 1);
+                if (!response.ok()) throw new HelperClient.HelperException(HelperClient.errorMessage(response.status, response.body), response.status);
+                String message = response.json().optString("message", "Windows command sent: " + action + ".");
+                runOnUiThread(() -> status.setText(message));
+            } catch (HelperClient.HelperException error) {
+                runOnUiThread(() -> status.setText("Laptop control failed: " + error.getMessage()));
+            } catch (java.io.IOException error) {
+                runOnUiThread(() -> status.setText("Laptop control failed: " + HelperClient.networkMessage(error)));
             } catch (Exception error) {
                 runOnUiThread(() -> status.setText("Laptop control failed: " + error.getMessage()));
-            } finally {
-                if (connection != null) connection.disconnect();
             }
-        }, "PocketBridge-laptop-power").start();
+        });
     }
 
     private void refreshLibrary() {
         if (libraryList == null) return;
         final String kind = libraryFilter;
+        // Only the newest request may fill the list; switching filters quickly
+        // used to let two slower reads both add their rows.
+        final int generation = ++libraryGeneration;
         libraryList.removeAllViews();
         libraryStatus.setText("Reading your media…");
-        new Thread(() -> {
+        background.execute(() -> {
             List<MediaRepository.Item> items = new ArrayList<>();
             String message;
             try {
@@ -1017,6 +1008,8 @@ public final class MainActivity extends Activity {
             }
             final String status = message;
             runOnUiThread(() -> {
+                if (generation != libraryGeneration || isFinishing()) return;
+                libraryList.removeAllViews();
                 libraryStatus.setText(status);
                 for (MediaRepository.Item item : items) {
                     Button row = button(item.name + "\n" + android.text.format.Formatter.formatShortFileSize(this, item.size), COLOR_SURFACE);
@@ -1031,7 +1024,7 @@ public final class MainActivity extends Activity {
                     libraryList.addView(row, lp);
                 }
             });
-        }, "PocketBridge-library").start();
+        });
     }
 
     private void openMedia(MediaRepository.Item item) {
@@ -1076,9 +1069,11 @@ public final class MainActivity extends Activity {
         send.setOnClickListener(v -> {
             String text = chatInput.getText().toString().trim();
             if (text.isEmpty()) return;
-            ChatStore.append(this, text, "phone");
             chatInput.setText("");
-            refreshChat();
+            chatWorker.execute(() -> {
+                ChatStore.append(this, text, "phone");
+                runOnUiThread(this::refreshChat);
+            });
         });
         LinearLayout.LayoutParams sendGap = matchWrap();
         sendGap.topMargin = dp(4);
@@ -1093,15 +1088,42 @@ public final class MainActivity extends Activity {
 
         Button clear = button("Clear conversation", COLOR_SOFT);
         clear.setTextColor(COLOR_INK);
-        clear.setOnClickListener(v -> { ChatStore.clear(this); refreshChat(); });
+        clear.setOnClickListener(v -> chatWorker.execute(() -> {
+            ChatStore.clear(this);
+            runOnUiThread(this::refreshChat);
+        }));
         LinearLayout.LayoutParams clearGap = matchWrap();
         clearGap.topMargin = dp(8);
         parent.addView(clear, clearGap);
     }
 
+    /**
+     * Reads the conversation off the main thread and redraws only when it
+     * changed. Reading and rebuilding every message on the main thread every
+     * 2.5 seconds, while server threads held the same file lock, was one of
+     * the ways the app froze.
+     */
     private void refreshChat() {
+        if (chatList == null || chatReadPending) return;
+        chatReadPending = true;
+        try {
+            chatWorker.execute(() -> {
+                long version = ChatStore.version();
+                org.json.JSONArray messages = version == shownChatVersion ? null : ChatStore.read(this);
+                runOnUiThread(() -> {
+                    chatReadPending = false;
+                    if (messages == null || isFinishing()) return;
+                    shownChatVersion = version;
+                    renderChat(messages);
+                });
+            });
+        } catch (java.util.concurrent.RejectedExecutionException closed) {
+            chatReadPending = false;
+        }
+    }
+
+    private void renderChat(org.json.JSONArray messages) {
         if (chatList == null) return;
-        org.json.JSONArray messages = ChatStore.read(this);
         long newestTime = 0;
         JSONObject newestLaptopAttachment = null;
         List<String> newLaptopFileNames = new ArrayList<>();
@@ -1256,8 +1278,13 @@ public final class MainActivity extends Activity {
             openVideoWithChoice(android.net.Uri.parse(url), mime, 0);
             return;
         }
-        try { startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))); }
-        catch (Exception ignored) { Toast.makeText(this, "Could not open the shared file.", Toast.LENGTH_SHORT).show(); }
+        Intent view = new Intent(Intent.ACTION_VIEW);
+        view.setDataAndType(android.net.Uri.parse(url), mime);
+        try { startActivity(Intent.createChooser(view, "Open with")); }
+        catch (Exception typed) {
+            try { startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))); }
+            catch (Exception ignored) { Toast.makeText(this, "Could not open the shared file.", Toast.LENGTH_SHORT).show(); }
+        }
     }
 
     /** Always show Android's resolver so the user can choose any compatible installed player. */
