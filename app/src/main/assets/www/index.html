@@ -295,7 +295,7 @@
     <section class="grid" id="inboxGrid"><div class="loading">Checking received files…</div></section>
     <section class="library-head" id="chatSection"><div><span class="section-title">Share chat</span><span class="count">Messages stay on this phone</span></div></section>
     <section class="card" id="chatCard" style="padding:14px;gap:10px">
-      <div id="chatMessages" aria-live="polite" style="max-height:220px;overflow:auto;white-space:pre-wrap">Loading messages…</div>
+      <div id="chatMessages" aria-live="polite" style="height:min(420px,55vh);overflow-y:auto;overscroll-behavior:contain;white-space:pre-wrap">Loading messages…</div>
       <textarea id="chatInput" maxlength="2000" rows="2" placeholder="Write a message for this share session" style="width:100%;box-sizing:border-box;padding:10px;border:1px solid var(--line);border-radius:10px;font:inherit"></textarea>
       <div class="chat-attach-row">
         <label class="btn btn-soft" for="chatFile">＋ Attach photos, videos or files</label>
@@ -388,7 +388,9 @@
       <input class="seek" id="seek" type="range" min="0" max="1000" value="0" aria-label="Seek">
       <span class="time" id="time">0:00 / 0:00</span>
       <button class="ctrl" id="fullscreen" type="button" title="Fullscreen">⛶</button>
-      <select id="aspectRatio" class="toolbar-select" aria-label="Video aspect ratio"><option value="original">Original</option><option value="16-9">16:9</option><option value="4-3">4:3</option><option value="1-1">1:1</option></select>
+      <select id="aspectRatio" class="toolbar-select" aria-label="Video aspect ratio"><option value="original">Original</option><option value="16-9">16:9</option><option value="21-9">21:9</option><option value="9-16">9:16</option><option value="4-3">4:3</option><option value="3-2">3:2</option><option value="1-1">1:1</option></select>
+      <select id="playbackRate" class="toolbar-select" aria-label="Playback speed"><option value="0.5">0.5x</option><option value="0.75">0.75x</option><option value="1" selected>1x</option><option value="1.25">1.25x</option><option value="1.5">1.5x</option><option value="2">2x</option></select>
+      <input id="playerVolume" type="range" min="0" max="1" step="0.05" value="1" aria-label="Video volume" title="Volume">
     </div>
   </div>
 </div>
@@ -877,7 +879,7 @@
     if (file.kind === 'video') {
       const ratioSelect = document.getElementById('aspectRatio');
       ratioSelect.value = 'original';
-      stage.classList.remove('ratio-16-9','ratio-4-3','ratio-1-1');
+      stage.classList.remove('ratio-16-9','ratio-21-9','ratio-9-16','ratio-4-3','ratio-3-2','ratio-1-1');
       stage.classList.add('video-stage');
       media = document.createElement('video');
       media.src = url;
@@ -971,9 +973,18 @@
     };
     const fsButton = document.getElementById('fullscreen');
     const ratioSelect = document.getElementById('aspectRatio');
+    const playbackRate = document.getElementById('playbackRate');
+    const playerVolume = document.getElementById('playerVolume');
+    playbackRate.style.display = kind === 'video' ? 'inline-flex' : 'none';
+    playerVolume.style.display = kind === 'video' ? 'inline-block' : 'none';
+    playbackRate.value = '1';
+    playerVolume.value = String(element.volume ?? 1);
+    element.playbackRate = 1;
+    playbackRate.onchange = () => { element.playbackRate = Number(playbackRate.value) || 1; };
+    playerVolume.oninput = () => { element.volume = Number(playerVolume.value); };
     ratioSelect.style.display = kind === 'video' ? 'inline-flex' : 'none';
     ratioSelect.onchange = () => {
-      stage.classList.remove('ratio-16-9','ratio-4-3','ratio-1-1');
+      stage.classList.remove('ratio-16-9','ratio-21-9','ratio-9-16','ratio-4-3','ratio-3-2','ratio-1-1');
       if (ratioSelect.value !== 'original') stage.classList.add('ratio-' + ratioSelect.value);
       // Preserve the complete source frame for Original. Other choices crop to
       // the selected display ratio by design.
@@ -1407,19 +1418,8 @@
       const messages = data.messages || [];
       const newestTime = messages.reduce((latest, item) => Math.max(latest, Number(item.time) || 0), 0);
       if (chatMessagesPrimed) {
-        const incoming = [];
-        for (const item of messages) {
-          const time = Number(item.time) || 0;
-          if (time <= lastChatMessageTime || item.from !== 'phone' || !item.attachment) continue;
-          incoming.push(item.attachment);
-        }
-        if (incoming.length) {
-          const names = incoming.slice(0, 4).map(file => file.name || 'file').join('\n');
-          const more = incoming.length > 4 ? '\n… and ' + (incoming.length - 4) + ' more' : '';
-          if (confirm('Your phone shared ' + incoming.length + ' file' + (incoming.length === 1 ? '' : 's') + ':\n' + names + more + '\n\nDownload all to this laptop now?')) {
-            for (const attachment of incoming) downloadChatAttachment(attachment);
-          }
-        }
+        // Incoming phone files are never downloaded or opened automatically.
+      // The laptop user chooses Download or Play/View on each attachment card.
       }
       chatMessagesPrimed = true;
       lastChatMessageTime = Math.max(lastChatMessageTime, newestTime);

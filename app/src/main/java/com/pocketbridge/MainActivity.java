@@ -1361,20 +1361,12 @@ public final class MainActivity extends Activity {
     private void renderChat(org.json.JSONArray messages) {
         if (chatList == null) return;
         long newestTime = 0;
-        JSONObject newestLaptopAttachment = null;
-        List<String> newLaptopFileNames = new ArrayList<>();
         for (int i = 0; i < messages.length(); i++) {
             JSONObject item = messages.optJSONObject(i);
             if (item == null) continue;
             long time = item.optLong("time", 0);
             newestTime = Math.max(newestTime, time);
-            if (chatNotificationsPrimed && "laptop".equals(item.optString("from"))
-                    && item.optJSONObject("attachment") != null && time > lastChatNotificationTime) {
-                newestLaptopAttachment = item.optJSONObject("attachment");
-                newLaptopFileNames.add(newestLaptopAttachment.optString("name", "a file"));
-            }
         }
-        boolean showIncomingFileAlert = chatNotificationsPrimed && newestLaptopAttachment != null;
         chatNotificationsPrimed = true;
         lastChatNotificationTime = Math.max(lastChatNotificationTime, newestTime);
         chatList.removeAllViews();
@@ -1478,21 +1470,12 @@ public final class MainActivity extends Activity {
             lp.rightMargin = mine ? 0 : dp(36);
             chatList.addView(row, lp);
         }
-        if (showIncomingFileAlert && !isFinishing()) {
-            JSONObject attachment = newestLaptopAttachment;
-            StringBuilder names = new StringBuilder();
-            for (int i = 0; i < Math.min(newLaptopFileNames.size(), 4); i++) {
-                if (i > 0) names.append("\n");
-                names.append("• ").append(newLaptopFileNames.get(i));
-            }
-            if (newLaptopFileNames.size() > 4) names.append("\n… and ").append(newLaptopFileNames.size() - 4).append(" more");
-            new android.app.AlertDialog.Builder(this)
-                    .setTitle(newLaptopFileNames.size() == 1 ? "File received in chat" : newLaptopFileNames.size() + " files received in chat")
-                    .setMessage("From the laptop:\n" + names + "\n\nOpen the latest file now, or choose any item in the chat.")
-                    .setNegativeButton("Later", null)
-                    .setPositiveButton("Open latest", (dialog, which) -> openChatAttachment(attachment))
-                    .show();
-        }
+        // Received laptop files remain in the chat list. They are never opened
+        // or downloaded automatically; the user taps the desired file card.
+        chatList.post(() -> {
+            android.view.ViewParent parent = chatList.getParent();
+            if (parent instanceof ScrollView) ((ScrollView) parent).fullScroll(View.FOCUS_DOWN);
+        });
     }
 
     private void choosePhoneFileForLaptop() {
