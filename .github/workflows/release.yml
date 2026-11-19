@@ -2,7 +2,7 @@ name: Release PocketBridge
 
 on:
   push:
-    tags: [ 'v0.5.9.9' ]
+    tags: [ 'v0.6.0.1' ]
 
 permissions:
   contents: read
@@ -79,5 +79,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: PocketBridge ${{ github.ref_name }}
-          body_path: RELEASE_NOTES_v0.5.9.9.md
+          body_path: RELEASE_NOTES_v0.6.0.1.md
           files: release-assets/*

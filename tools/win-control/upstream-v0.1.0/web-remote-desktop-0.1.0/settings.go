@@ -24,10 +24,11 @@ func liveCfg() Config {
 
 // settingsPatch carries only what the UI can change; nil fields stay as they are.
 type settingsPatch struct {
-	Monitor *int `json:"monitor"`
-	FPS     *int `json:"fps"`
-	Quality *int `json:"quality"`
-	MaxW    *int `json:"max_width"`
+	Monitor  *int    `json:"monitor"`
+	FPS      *int    `json:"fps"`
+	Quality  *int    `json:"quality"`
+	MaxW     *int    `json:"max_width"`
+	ShareDir *string `json:"share_dir"`
 }
 
 func clampInt(v, lo, hi int) int {
@@ -67,6 +68,15 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 				cfg.MaxW = 0
 			}
 		}
+		if p.ShareDir != nil {
+			shareDir, err := resolveShareDirectory(*p.ShareDir)
+			if err != nil {
+				cfgMu.Unlock()
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			cfg.ShareDir = shareDir
+		}
 		saved := cfg
 		cfgMu.Unlock()
 
@@ -91,10 +101,11 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 		"max_width": c.MaxW,
 		// Tap-ready links with the token already in them, regenerated from the
 		// current addresses so DHCP moving the machine doesn't strand anyone.
-		"lan_urls": lanURLs(listenPort(c), c.Token),
-		"h264":     h264Info(),
-		"width":    b.Dx(),
-		"height":   b.Dy(),
+		"lan_urls":  lanURLs(listenPort(c), c.Token),
+		"h264":      h264Info(),
+		"width":     b.Dx(),
+		"height":    b.Dy(),
+		"share_dir": c.ShareDir,
 	})
 }
 

@@ -302,12 +302,11 @@ public final class ScreenCaptureService extends Service {
         if (sender != null) {
             try {
                 RtpParameters parameters = sender.getParameters();
-                // Default to source-sized capture and give the encoder enough
-                // headroom for crisp motion. The device/network encoder may still
-                // reduce the actual rate to avoid accumulating a multi-second queue.
+                // Keep native capture dimensions, but cap the hotspot stream so
+                // WebRTC has less data to queue while the phone screen is moving.
                 for (RtpParameters.Encoding encoding : parameters.encodings) {
-                    encoding.maxBitrateBps = 8_000_000;
-                    encoding.maxFramerate = 30;
+                    encoding.maxBitrateBps = 6_000_000;
+                    encoding.maxFramerate = 24;
                 }
                 sender.setParameters(parameters);
             } catch (Exception ignored) { }

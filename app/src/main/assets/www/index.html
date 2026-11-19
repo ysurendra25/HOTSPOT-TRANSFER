@@ -157,8 +157,8 @@
   .modal-top strong{font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .modal-top .btn{background:#1d3038;color:#dfeeeb}
   .stage{background:#000;display:flex;align-items:center;justify-content:center;flex:1;min-height:0;max-height:min(72vh,calc(100dvh - 190px));overflow:hidden}
-  .stage.video-stage{flex:1 1 auto;width:100%;height:100%;max-width:100%;margin:auto}
-  .stage.video-stage video{width:100%;height:100%;object-fit:contain}
+  .stage.video-stage{flex:0 1 auto;width:auto;height:auto;max-width:100%;margin:auto}
+  .stage.video-stage video{width:100%;height:100%;object-fit:cover;object-position:center}
   .stage video,.stage img{width:100%;height:100%;max-height:100%;display:block;object-fit:contain;background:#000}
   .stage.ratio-16-9{aspect-ratio:16/9}.stage.ratio-4-3{aspect-ratio:4/3}.stage.ratio-1-1{aspect-ratio:1/1}.stage.ratio-original{aspect-ratio:auto}
   .music-layout{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(300px,.9fr);gap:18px;align-items:start}
@@ -595,9 +595,6 @@
         ? '<button class="btn btn-soft" data-preview="' + safe(file.id) + '" type="button">' +
           (playable ? 'Play' : 'View') + '</button>'
         : '';
-      const vlcBtn = (file.kind === 'video' || file.kind === 'audio')
-        ? '<a class="btn btn-outline" target="_blank" rel="noopener" href="' + safe(endpoint('/api/open-with?url=' + encodeURIComponent(new URL(endpoint(file.url), location.href).href))) + '">Open with</a>'
-        : '';
       const isSelected = selected.has(file.id);
       return heading + '<article class="card' + (isSelected ? ' selected' : '') + '" data-card="' + safe(file.id) + '">' +
         '<button class="pick" type="button" data-pick="' + safe(file.id) + '" aria-label="Select ' + safe(file.name) + '">' + (isSelected ? '✓' : '') + '</button>' +
@@ -605,7 +602,7 @@
         '<div class="meta">' +
           '<div class="name" title="' + safe(file.name) + '">' + safe(file.name) + '</div>' +
           '<div class="submeta">' + formatSize(file.size) + ' · ' + labelForKind(file.kind) + '</div>' +
-          '<div class="actions">' + previewBtn + vlcBtn +
+          '<div class="actions">' + previewBtn +
             '<a class="btn btn-outline" href="' + safe(endpoint(file.url)) + '" download="' + safe(file.name) + '">Download</a>' +
           '</div>' +
         '</div></article>';
@@ -962,7 +959,7 @@
       stage.classList.remove('ratio-16-9','ratio-4-3','ratio-1-1');
       if (ratioSelect.value !== 'original') stage.classList.add('ratio-' + ratioSelect.value);
       // Preserve the complete source frame even when a display ratio is chosen.
-      element.style.objectFit = 'contain';
+      element.style.objectFit = 'cover';
       fitVideoStage();
     };
     fsButton.style.display = kind === 'video' ? 'inline-flex' : 'none';
@@ -1302,7 +1299,14 @@
       const response = await fetch(endpoint('/api/upload?name=' + encodeURIComponent(file.name)), {method:'POST', headers:{'Content-Type':'application/octet-stream'}, body:file});
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Transfer failed');
-      status.textContent = 'Sent: ' + result.name;
+      status.textContent = 'Sent: ' + result.name + ' · ';
+      const chatLink = document.createElement('button');
+      chatLink.type = 'button';
+      chatLink.className = 'btn btn-outline';
+      chatLink.textContent = 'View in Chat';
+      chatLink.addEventListener('click', () => document.querySelector('[data-tab="chat"]').click());
+      status.appendChild(chatLink);
+      await refreshMessages();
       loadInbox();
       return true;
     } catch (error) { status.textContent = error.message || 'Transfer failed. Check the connection.'; return false; }
@@ -1396,13 +1400,6 @@
               viewIndex = 0; modal.classList.add('open'); showCurrent();
             });
             actions.appendChild(play);
-          }
-          if (mediaKind === 'video' || mediaKind === 'audio') {
-            const vlc = document.createElement('a'); vlc.className = 'btn btn-outline';
-            vlc.textContent = 'Open with'; vlc.target = '_blank'; vlc.rel = 'noopener';
-            const mediaUrl = new URL(endpoint('/api/inbox/' + encodeURIComponent(attachment.id)), location.href).href;
-            vlc.href = endpoint('/api/open-with?url=' + encodeURIComponent(mediaUrl));
-            actions.appendChild(vlc);
           }
           const download = document.createElement('button');
           download.type = 'button';

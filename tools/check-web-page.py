@@ -63,6 +63,7 @@ def main():
         "dark theme and persisted theme control": "pocketbridge_theme",
         "video aspect ratio recalculation": "function fitVideoStage()",
         "aspect ratio selection resizes the viewer": "fitVideoStage();",
+        "transfer immediately refreshes chat": "await refreshMessages();",
         "chat file picker": 'id="chatFile"',
         "music play control": 'id="musicPlayPause"',
         "music queue repeat control": 'id="musicRepeat"',
@@ -70,6 +71,8 @@ def main():
     for feature, marker in required_page_features.items():
         if marker not in html:
             problems += fail("missing " + feature)
+    if "Open with" in html:
+        problems += fail("the removed Open with action is still in the browser UI")
 
     # 4. The inline script must parse. node is optional, so skip when absent.
     scripts = re.findall(r"<script>(.*?)</script>", html, re.S)

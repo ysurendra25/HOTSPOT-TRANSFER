@@ -58,6 +58,7 @@ public final class MainActivity extends Activity {
     private Button screenButton;
     private EditText screenHelperLink;
     private EditText libraryHelperLink;
+    private EditText laptopFolderPath;
     private boolean syncingHelperLinks;
     private Button phoneLibrarySourceButton;
     private Button laptopLibrarySourceButton;
@@ -416,9 +417,26 @@ public final class MainActivity extends Activity {
                 laptopScreenStatus.setText("Start PocketBridge Windows Control on the laptop, then paste its printed link above.");
                 return;
             }
-            laptopScreenStatus.setText("Connecting to the laptop screen…");
-            laptopView.setVisibility(View.VISIBLE);
-            laptopView.loadUrl(link);
+            laptopScreenStatus.setText("Checking the laptop link…");
+            new Thread(() -> {
+                try {
+                    android.net.Uri parsed = android.net.Uri.parse(link);
+                    String token = parsed.getQueryParameter("t");
+                    if (token == null || token.isEmpty() || !"http".equalsIgnoreCase(parsed.getScheme())) {
+                        throw new Exception("Paste the full local http link printed by the Windows helper, including its ?t= code.");
+                    }
+                    String host = parsed.getHost() == null ? "" : parsed.getHost();
+                    boolean loopback = "127.0.0.1".equals(host) || "localhost".equalsIgnoreCase(host) || "::1".equals(host);
+                    android.net.Uri reachable = loopback ? resolveLoopbackHelper(parsed, token, laptopScreenStatus) : parsed;
+                    runOnUiThread(() -> {
+                        laptopScreenStatus.setText("Connecting to the laptop screen…");
+                        laptopView.setVisibility(View.VISIBLE);
+                        laptopView.loadUrl(reachable.toString());
+                    });
+                } catch (Exception error) {
+                    runOnUiThread(() -> laptopScreenStatus.setText("Could not find the laptop helper: " + error.getMessage()));
+                }
+            }, "PocketBridge-laptop-screen-link").start();
         });
         Button hideLaptop = button("Hide laptop screen", COLOR_SOFT);
         hideLaptop.setTextColor(COLOR_INK);
@@ -590,7 +608,7 @@ public final class MainActivity extends Activity {
         addCard(phoneLibrarySection, "PHONE FILES", libraryList);
 
         TextView laptopIntro = new TextView(this);
-        laptopIntro.setText("Browse and play files from the laptop’s shared folder. Start PocketBridge Windows Control on the laptop and paste its printed link once; both tabs will use it.");
+        laptopIntro.setText("Browse files on the laptop. Paste the helper link once, then enter a laptop folder or file path to choose what the phone can browse. A file path opens its containing folder.");
         laptopIntro.setTextColor(COLOR_MUTED);
         laptopIntro.setTextSize(13);
         laptopIntro.setLineSpacing(dp(3), 1f);
@@ -603,6 +621,12 @@ public final class MainActivity extends Activity {
         libraryHelperLink.setText(getSavedHelperLink());
         watchHelperLink(libraryHelperLink);
         addCard(laptopLibrarySection, "LAPTOP HELPER LINK", libraryHelperLink);
+
+        laptopFolderPath = new EditText(this);
+        laptopFolderPath.setSingleLine(true);
+        laptopFolderPath.setTextSize(14);
+        laptopFolderPath.setHint("Optional Windows folder or file path · C:\\Users\\…\\Videos");
+        addCard(laptopLibrarySection, "LAPTOP FOLDER OR FILE PATH", laptopFolderPath);
 
         EditText laptopSearchField = new EditText(this);
         laptopSearchField.setSingleLine(true);
@@ -629,7 +653,7 @@ public final class MainActivity extends Activity {
         addCard(laptopLibrarySection, "FILE TYPE", laptopKinds);
 
         TextView laptopStatusView = new TextView(this);
-        laptopStatusView.setText("Start the portable laptop helper, paste its link, then load files.");
+        laptopStatusView.setText("The helper shares Downloads by default. Enter another folder or file path above to switch locations.");
         laptopStatusView.setTextColor(COLOR_MUTED);
         laptopStatusView.setTextSize(12);
         laptopStatusView.setPadding(dp(4), 0, dp(4), dp(10));
@@ -646,10 +670,11 @@ public final class MainActivity extends Activity {
                 laptopStatusView.setText("Start the Windows helper and paste the local link it prints.");
                 return;
             }
-            laptopStatusView.setText("Reading the laptop folder…");
+            String requestedPath = laptopFolderPath.getText().toString().trim();
+            laptopStatusView.setText(requestedPath.isEmpty() ? "Reading the laptop folder…" : "Switching to that laptop location…");
             laptopRows.removeAllViews();
             loadLaptop.setEnabled(false);
-            fetchLaptopFiles(link, laptopRows, laptopStatusView, laptopSearchField.getText().toString().trim(), () -> loadLaptop.setEnabled(true));
+            fetchLaptopFiles(link, requestedPath, laptopRows, laptopStatusView, laptopSearchField.getText().toString().trim(), () -> loadLaptop.setEnabled(true));
         });
         LinearLayout.LayoutParams loadGap = matchWrap();
         loadGap.topMargin = dp(2);
@@ -819,7 +844,7 @@ public final class MainActivity extends Activity {
     }
 
     /** Reads the helper's file list and fills the Library tab with it. */
-    private void fetchLaptopFiles(String link, LinearLayout rows, TextView status, String initialQuery, Runnable done) {
+    private void fetchLaptopFiles(String link, String requestedPath, LinearLayout rows, TextView status, String initialQuery, Runnable done) {
         new Thread(() -> {
             HttpURLConnection connection = null;
             try {
@@ -834,6 +859,41 @@ public final class MainActivity extends Activity {
                 // "LAN:" is the one a phone can reach. Rather than only refusing the
                 // loopback one, look for the laptop on this network and use it.
                 final android.net.Uri supplied = loopback ? resolveLoopbackHelper(parsed, token, status) : parsed;
+                if (!requestedPath.isEmpty()) {
+                    HttpURLConnection settingsConnection = null;
+                    try {
+                        android.net.Uri settingsUri = supplied.buildUpon().path("/settings").clearQuery()
+                                .appendQueryParameter("t", token).build();
+                        settingsConnection = (HttpURLConnection) new URL(settingsUri.toString()).openConnection();
+                        settingsConnection.setRequestMethod("POST");
+                        settingsConnection.setConnectTimeout(5000);
+                        settingsConnection.setReadTimeout(10000);
+                        settingsConnection.setDoOutput(true);
+                        settingsConnection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+                        byte[] payload = new JSONObject().put("share_dir", requestedPath).toString()
+                                .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                        try (java.io.OutputStream output = settingsConnection.getOutputStream()) { output.write(payload); }
+                        int settingsCode = settingsConnection.getResponseCode();
+                        if (settingsCode != 200) {
+                            java.io.InputStream errorStream = settingsConnection.getErrorStream();
+                            String errorBody = "";
+                            if (errorStream != null) {
+                                try (java.io.InputStream input = errorStream; java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream()) {
+                                    byte[] errorBuffer = new byte[2048];
+                                    int errorRead;
+                                    while ((errorRead = input.read(errorBuffer)) != -1 && bytes.size() < 8192) {
+                                        bytes.write(errorBuffer, 0, Math.min(errorRead, 8192 - bytes.size()));
+                                    }
+                                    errorBody = bytes.toString(java.nio.charset.StandardCharsets.UTF_8.name()).trim();
+                                }
+                            }
+                            throw new Exception(errorBody.isEmpty() ? "The laptop rejected that folder or file path (HTTP " + settingsCode + ")." : errorBody);
+                        }
+                    } finally {
+                        if (settingsConnection != null) settingsConnection.disconnect();
+                    }
+                    runOnUiThread(() -> status.setText("Location selected. Loading its files…"));
+                }
                 android.net.Uri filesUri = supplied.buildUpon().path("/files").clearQuery().appendQueryParameter("t", token).build();
                 connection = (HttpURLConnection) new URL(filesUri.toString()).openConnection();
                 connection.setConnectTimeout(5000);

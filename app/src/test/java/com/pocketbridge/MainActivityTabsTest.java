@@ -172,6 +172,7 @@ public class MainActivityTabsTest {
         collectText(root, texts);
         assertTrue("the laptop section switch should be there", !buttonsLabelled(root, "Files on the laptop").isEmpty());
         assertTrue("the laptop search should be there", editHints(root).contains("Search laptop files"));
+        assertTrue("the mobile app should accept a precise laptop folder or file path", editHints(root).stream().anyMatch(hint -> hint.contains("Windows folder or file path")));
         assertNotNull(buttonsLabelled(root, "Load laptop files"));
         controller.pause().stop().destroy();
     }
