@@ -207,6 +207,15 @@ public class ServerFunctionalTest {
 
     // ---------------------------------------------------------------- chat
 
+    @Test public void browserAssetsExposeScrollableChatAndExpandedVideoControls() throws Exception {
+        Response page = send("GET", "/", null, null);
+        assertEquals(200, page.status);
+        assertTrue("chat should be scrollable", page.body.contains("#chatMessages{max-height:min(58vh,560px)") && page.body.contains("overscroll-behavior:contain"));
+        assertTrue("video controls should include speed and volume", page.body.contains("playbackSpeed") && page.body.contains("videoVolume"));
+        assertTrue("expanded aspect ratios should be present", page.body.contains("21-9") && page.body.contains("16-10") && page.body.contains("9-16") && page.body.contains("3-2"));
+        assertFalse("incoming files must not trigger an automatic download prompt", page.body.contains("Download all to this laptop now?"));
+    }
+
     @Test public void chatWorksFromBothSides() throws Exception {
         Response empty = send("GET", withCode("/api/messages"), null, null);
         assertEquals(200, empty.status);
