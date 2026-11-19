@@ -67,24 +67,7 @@ func main() {
 		cfg.Monitor = 0
 	}
 
-	mux := http.NewServeMux()
-	sub, err := fs.Sub(webFS, "web")
-	if err != nil {
-		log.Fatalf("[pc-remote] embed web: %v", err)
-	}
-	mux.Handle("/", auth(http.FileServer(http.FS(sub))))
-	mux.Handle("/input", auth(http.HandlerFunc(inputHandler)))
-	mux.Handle("/screen", auth(http.HandlerFunc(screenHandler)))
-	mux.Handle("/settings", auth(http.HandlerFunc(settingsHandler)))
-	mux.Handle("/ws", auth(http.HandlerFunc(wsInputHandler)))
-	mux.Handle("/jpeg", auth(http.HandlerFunc(jpegStreamHandler)))
-	mux.Handle("/h264", auth(http.HandlerFunc(h264StreamHandler)))
-	mux.Handle("/files", auth(http.HandlerFunc(filesHandler)))
-	mux.Handle("/file/", auth(http.HandlerFunc(fileHandler)))
-	mux.Handle("/power", auth(http.HandlerFunc(powerHandler)))
-	mux.Handle("/open-vlc", auth(http.HandlerFunc(openVLCHandler)))
-	mux.Handle("/open-with", auth(http.HandlerFunc(openWithHandler)))
-	mux.Handle("/open-player", auth(http.HandlerFunc(openPlayerHandler)))
+	mux := newMux()
 
 	// Keep the tunnel alive for as long as the server runs.
 	go superviseTunnel(context.Background())
@@ -95,9 +78,11 @@ func main() {
 	addr := listenAddr(cfg)
 	log.Printf("[pc-remote] listening on %s | monitor=%d fps=%d q=%d maxw=%d", addr, cfg.Monitor, cfg.FPS, cfg.Quality, cfg.MaxW)
 	log.Printf("[pc-remote] mo:  http://127.0.0.1:%d/?t=%s", listenPort(cfg), cfg.Token)
-	for _, u := range lanURLs(listenPort(cfg), cfg.Token) {
+	links := lanURLs(listenPort(cfg), cfg.Token)
+	for _, u := range links {
 		log.Printf("[pc-remote] LAN: %s", u)
 	}
+	writeLinkFile(links)
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		if isAddrInUse(err) {
 			// Another copy already holds the port — that one is doing the job.
@@ -106,6 +91,85 @@ func main() {
 		}
 		log.Fatalf("[pc-remote] listen: %v", err)
 	}
+}
+
+// newMux wires every helper route. It is a function of its own so the routing
+// (paths, methods, auth and CORS) is covered by tests instead of only by a
+// running Windows machine.
+func newMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	sub, err := fs.Sub(webFS, "web")
+	if err != nil {
+		log.Fatalf("[pc-remote] embed web: %v", err)
+	}
+	protect := func(h http.Handler) http.Handler { return cors(auth(h)) }
+	mux.Handle("/", protect(http.FileServer(http.FS(sub))))
+	mux.Handle("/ping", protect(http.HandlerFunc(pingHandler)))
+	mux.Handle("/input", protect(http.HandlerFunc(inputHandler)))
+	mux.Handle("/screen", protect(http.HandlerFunc(screenHandler)))
+	mux.Handle("/settings", protect(http.HandlerFunc(settingsHandler)))
+	mux.Handle("/ws", protect(http.HandlerFunc(wsInputHandler)))
+	mux.Handle("/jpeg", protect(http.HandlerFunc(jpegStreamHandler)))
+	mux.Handle("/h264", protect(http.HandlerFunc(h264StreamHandler)))
+	mux.Handle("/files", protect(http.HandlerFunc(filesHandler)))
+	mux.Handle("/file/", protect(http.HandlerFunc(fileHandler)))
+	mux.Handle("/power", protect(http.HandlerFunc(powerHandler)))
+	mux.Handle("/open-vlc", protect(http.HandlerFunc(openVLCHandler)))
+	mux.Handle("/open-with", protect(http.HandlerFunc(openWithHandler)))
+	mux.Handle("/open-player", protect(http.HandlerFunc(openPlayerHandler)))
+	return mux
+}
+
+// helperVersion is reported by /ping so the phone can show which helper answered.
+const helperVersion = "0.6.0.3"
+
+// pingHandler is the cheap reachability check the phone uses to find the
+// helper and to tell "wrong link" from "laptop asleep". It touches no disk and
+// no display, so it answers instantly even while a capture is starting.
+func pingHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":      true,
+		"app":     "PocketBridge Windows Control",
+		"version": helperVersion,
+		"power":   powerActions(),
+	})
+}
+
+// cors lets a page served from another local origin (the PocketBridge page on
+// the phone, for example) call the helper with the token in ?t= or X-Token.
+// Preflight requests carry no token, so they are answered before auth; the
+// real request still has to authenticate. Credentials (the cookie) are never
+// allowed cross-origin, so a foreign page cannot ride an existing login.
+func cors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if origin := r.Header.Get("Origin"); origin != "" {
+			h := w.Header()
+			h.Set("Access-Control-Allow-Origin", "*")
+			h.Set("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS")
+			h.Set("Access-Control-Allow-Headers", "Content-Type, X-Token, Range")
+			h.Set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
+			h.Set("Access-Control-Max-Age", "600")
+			// Chrome's Private Network Access preflight for LAN targets.
+			if r.Header.Get("Access-Control-Request-Private-Network") == "true" {
+				h.Set("Access-Control-Allow-Private-Network", "true")
+			}
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// writeLinkFile records this run's phone links in a file that is replaced on
+// every start, so Start-Control.bat shows the current links and never a stale
+// one from an earlier run still sitting in the appended log.
+func writeLinkFile(links []string) {
+	p := filepath.Join(exeDir(), "pc-remote-links.txt")
+	_ = os.WriteFile(p, []byte(strings.Join(links, "\r\n")+"\r\n"), 0600)
 }
 
 // isAddrInUse reports whether a listen failed purely because the port is taken.
@@ -228,7 +292,7 @@ func wantsHTML(r *http.Request) bool {
 		return false
 	}
 	switch r.URL.Path {
-	case "/input", "/screen", "/settings", "/ws", "/h264":
+	case "/input", "/screen", "/settings", "/ws", "/h264", "/jpeg", "/ping", "/files", "/power":
 		return false
 	}
 	return strings.Contains(r.Header.Get("Accept"), "text/html")
