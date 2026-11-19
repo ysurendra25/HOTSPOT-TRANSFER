@@ -3,11 +3,16 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestResolveShareDirectoryAcceptsFolderAndFilePaths(t *testing.T) {
 	root := t.TempDir()
+	expectedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	file := filepath.Join(root, "movie file.mp4")
 	if err := os.WriteFile(file, []byte("video"), 0600); err != nil {
 		t.Fatal(err)
@@ -17,8 +22,8 @@ func TestResolveShareDirectoryAcceptsFolderAndFilePaths(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolveShareDirectory(%q): %v", requested, err)
 		}
-		if got != root {
-			t.Errorf("resolveShareDirectory(%q) = %q, want %q", requested, got, root)
+		if !strings.EqualFold(filepath.Clean(got), filepath.Clean(expectedRoot)) {
+			t.Errorf("resolveShareDirectory(%q) = %q, want %q", requested, got, expectedRoot)
 		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -16,6 +17,10 @@ func TestSettingsHandlerUpdatesThePhoneSelectedSharedFolder(t *testing.T) {
 	t.Cleanup(func() { cfgMu.Lock(); cfg = previous; cfgMu.Unlock() })
 
 	root := t.TempDir()
+	expectedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	requestBody, err := json.Marshal(map[string]string{"share_dir": root})
 	if err != nil {
 		t.Fatal(err)
@@ -26,8 +31,8 @@ func TestSettingsHandlerUpdatesThePhoneSelectedSharedFolder(t *testing.T) {
 	if response.Code != 200 {
 		t.Fatalf("status %d: %s", response.Code, response.Body.String())
 	}
-	if got := liveCfg().ShareDir; got != root {
-		t.Fatalf("share folder = %q, want %q", got, root)
+	if got := liveCfg().ShareDir; !strings.EqualFold(filepath.Clean(got), filepath.Clean(expectedRoot)) {
+		t.Fatalf("share folder = %q, want %q", got, expectedRoot)
 	}
 	if err := os.Remove(configPath()); err != nil && !os.IsNotExist(err) {
 		t.Fatalf("remove temporary helper config: %v", err)

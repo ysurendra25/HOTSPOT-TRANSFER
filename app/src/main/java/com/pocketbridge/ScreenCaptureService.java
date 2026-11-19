@@ -42,7 +42,11 @@ import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.util.Collections;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class ScreenCaptureService extends Service {
     static final String EXTRA_RESULT_CODE = "projection_result_code";
@@ -205,20 +209,12 @@ public final class ScreenCaptureService extends Service {
         videoTrack.setEnabled(true);
     }
 
-    /** Capture the display at its reported pixel size; the encoder adapts to hotspot capacity. */
+    /** Keep the native display size for the direct WebRTC stream. The JPEG fallback scales separately. */
     private int[] captureSize() {
         WindowManager windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         DisplayMetrics metrics = new DisplayMetrics();
         windowManager.getDefaultDisplay().getRealMetrics(metrics);
-        int width = metrics.widthPixels;
-        int height = metrics.heightPixels;
-        // Capture at the size the encoder actually sends (1280 on the long side).
-        // Capturing at full native resolution and scaling afterwards wasted a lot of
-        // work per frame, which is what made the stream lag behind the phone.
-        float scale = Math.min(1f, 1280f / Math.max(width, height));
-        width = Math.max(2, Math.round(width * scale / 2f) * 2);
-        height = Math.max(2, Math.round(height * scale / 2f) * 2);
-        return new int[]{width, height};
+        return boundedCaptureSize(metrics.widthPixels, metrics.heightPixels);
     }
 
     private void resizeCaptureForContent(int contentWidth, int contentHeight) {
@@ -236,9 +232,10 @@ public final class ScreenCaptureService extends Service {
     }
 
     private int[] boundedCaptureSize(int width, int height) {
-        int boundedWidth = Math.max(2, width / 2 * 2);
-        int boundedHeight = Math.max(2, height / 2 * 2);
-        return new int[]{boundedWidth, boundedHeight};
+        // WebRTC needs even dimensions for the native YUV encoder, but should
+        // retain the display's original pixel size. The compatibility JPEG
+        // sink applies its own cap so it does not add a full-resolution CPU cost.
+        return ScreenCaptureSizing.evenSize(width, height);
     }
 
     /** JPEG is CPU-heavy, so reserve it for old browsers or a failed WebRTC link. */
@@ -250,10 +247,12 @@ public final class ScreenCaptureService extends Service {
 
     private synchronized void disableJpegFallback() {
         if (jpegSink == null) return;
+        JpegSink sink = jpegSink;
         if (videoTrack != null) {
-            try { videoTrack.removeSink(jpegSink); } catch (Exception ignored) { }
+            try { videoTrack.removeSink(sink); } catch (Exception ignored) { }
         }
         jpegSink = null;
+        sink.close();
     }
 
     private String acceptOffer(String offerSdp) {
@@ -378,22 +377,63 @@ public final class ScreenCaptureService extends Service {
         private static final int MAX_EDGE = 1280;
         private static final long MIN_FRAME_NS = 50_000_000L;
         private final Object frameLock = new Object();
+        private final AtomicBoolean encoding = new AtomicBoolean();
+        private final ExecutorService encoder = Executors.newSingleThreadExecutor(task -> {
+            Thread thread = new Thread(task, "PocketBridge-JPEG");
+            thread.setPriority(Thread.NORM_PRIORITY - 1);
+            thread.setDaemon(true);
+            return thread;
+        });
         private volatile JpegFrame latest;
         private long sequence;
         private long lastFrameNs;
         private volatile long lastFrameAtMs;
 
-        @Override public synchronized void onFrame(VideoFrame frame) {
+        @Override public void onFrame(VideoFrame frame) {
+            // Convert at most one frame at a time on a worker. If conversion is
+            // still busy, drop this frame instead of blocking WebRTC's capture
+            // thread or building a queue of stale frames.
+            if (!encoding.compareAndSet(false, true)) return;
             long now = android.os.SystemClock.elapsedRealtimeNanos();
-            if (now - lastFrameNs < MIN_FRAME_NS) return;
+            if (now - lastFrameNs < MIN_FRAME_NS) {
+                encoding.set(false);
+                return;
+            }
             lastFrameNs = now;
-            byte[] jpeg = encode(frame);
-            if (jpeg == null) return;
+            try {
+                frame.retain();
+            } catch (RuntimeException error) {
+                encoding.set(false);
+                android.util.Log.w("PocketBridge", "Could not retain a screen frame for JPEG fallback", error);
+                return;
+            }
+            try {
+                encoder.execute(() -> {
+                    try {
+                        byte[] jpeg = encode(frame);
+                        if (jpeg != null) publish(jpeg);
+                    } finally {
+                        try { frame.release(); }
+                        finally { encoding.set(false); }
+                    }
+                });
+            } catch (RejectedExecutionException rejected) {
+                frame.release();
+                encoding.set(false);
+            }
+        }
+
+        private void publish(byte[] jpeg) {
             synchronized (frameLock) {
                 latest = new JpegFrame(++sequence, jpeg);
                 lastFrameAtMs = android.os.SystemClock.elapsedRealtime();
                 frameLock.notifyAll();
             }
+        }
+
+        void close() {
+            encoder.shutdown();
+            synchronized (frameLock) { frameLock.notifyAll(); }
         }
 
         JpegFrame awaitAfter(long afterSequence, long timeoutMs) {
@@ -413,9 +453,9 @@ public final class ScreenCaptureService extends Service {
             VideoFrame.Buffer source = frame.getBuffer();
             int sourceWidth = source.getWidth();
             int sourceHeight = source.getHeight();
-            float scale = Math.min(1f, (float) MAX_EDGE / Math.max(sourceWidth, sourceHeight));
-            int width = Math.max(2, ((int) (sourceWidth * scale) / 2) * 2);
-            int height = Math.max(2, ((int) (sourceHeight * scale) / 2) * 2);
+            int[] targetSize = ScreenCaptureSizing.fitWithinMaxEdge(sourceWidth, sourceHeight, MAX_EDGE);
+            int width = targetSize[0];
+            int height = targetSize[1];
             VideoFrame.Buffer scaled = width != sourceWidth || height != sourceHeight
                     ? source.cropAndScale(0, 0, sourceWidth, sourceHeight, width, height)
                     : source;
@@ -464,8 +504,11 @@ public final class ScreenCaptureService extends Service {
 
     @Override public void onDestroy() {
         closePeer();
-        if (jpegSink != null && videoTrack != null) {
-            try { videoTrack.removeSink(jpegSink); } catch (Exception ignored) { }
+        if (jpegSink != null) {
+            if (videoTrack != null) {
+                try { videoTrack.removeSink(jpegSink); } catch (Exception ignored) { }
+            }
+            jpegSink.close();
             jpegSink = null;
         }
         try { if (capturer != null) { capturer.stopCapture(); capturer.dispose(); } } catch (Exception ignored) { }

@@ -98,7 +98,7 @@
   .modal:fullscreen{padding:0;background:#000}
   .modal:fullscreen .modal-box{max-width:none;width:100vw;height:100vh;height:100dvh;max-height:none;min-height:0;border-radius:0;display:flex;flex-direction:column}
   .modal:fullscreen .stage{min-height:0;max-height:none;aspect-ratio:auto!important}
-  .modal:fullscreen .stage.video-stage{flex:0 0 auto}
+  .modal:fullscreen .stage.video-stage{flex:1 1 auto;width:100%;height:auto;max-width:none;max-height:none;margin:0;min-width:0}
   .modal:fullscreen .stage:not(.video-stage){flex:1}
   .modal:fullscreen .stage video{width:100%;height:100%;max-height:none;object-fit:contain}
   .modal:fullscreen .controls{padding:7px 12px;gap:6px}
@@ -158,7 +158,7 @@
   .modal-top .btn{background:#1d3038;color:#dfeeeb}
   .stage{background:#000;display:flex;align-items:center;justify-content:center;flex:1;min-height:0;max-height:min(72vh,calc(100dvh - 190px));overflow:hidden}
   .stage.video-stage{flex:0 1 auto;width:auto;height:auto;max-width:100%;margin:auto}
-  .stage.video-stage video{width:100%;height:100%;object-fit:cover;object-position:center}
+  .stage.video-stage video{width:100%;height:100%;object-fit:contain;object-position:center}
   .stage video,.stage img{width:100%;height:100%;max-height:100%;display:block;object-fit:contain;background:#000}
   .stage.ratio-16-9{aspect-ratio:16/9}.stage.ratio-4-3{aspect-ratio:4/3}.stage.ratio-1-1{aspect-ratio:1/1}.stage.ratio-original{aspect-ratio:auto}
   .music-layout{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(300px,.9fr);gap:18px;align-items:start}
@@ -804,10 +804,17 @@
 
   function fitVideoStage() {
     if (!(media instanceof HTMLVideoElement) || !modal.classList.contains('open')) return;
+    const fullscreen = document.fullscreenElement === modal;
+    if (fullscreen) {
+      // Let flexbox fill the whole fullscreen viewport. Keep the source frame
+      // inside that area with contain so no part of the video is cropped.
+      stage.style.removeProperty('width');
+      stage.style.removeProperty('height');
+      return;
+    }
     const ratioControl = document.getElementById('aspectRatio');
     const naturalRatio = media.videoWidth > 0 && media.videoHeight > 0 ? media.videoWidth / media.videoHeight : 16 / 9;
     const ratio = ratioControl.value === 'original' ? naturalRatio : ({'16-9':16/9,'4-3':4/3,'1-1':1}[ratioControl.value] || naturalRatio);
-    const fullscreen = document.fullscreenElement === modal;
     const box = modal.querySelector('.modal-box');
     const topHeight = modal.querySelector('.modal-top').getBoundingClientRect().height || 52;
     const controlHeight = controls.getBoundingClientRect().height || 54;
@@ -958,8 +965,9 @@
     ratioSelect.onchange = () => {
       stage.classList.remove('ratio-16-9','ratio-4-3','ratio-1-1');
       if (ratioSelect.value !== 'original') stage.classList.add('ratio-' + ratioSelect.value);
-      // Preserve the complete source frame even when a display ratio is chosen.
-      element.style.objectFit = 'cover';
+      // Preserve the complete source frame for Original. Other choices crop to
+      // the selected display ratio by design.
+      element.style.objectFit = ratioSelect.value === 'original' ? 'contain' : 'cover';
       fitVideoStage();
     };
     fsButton.style.display = kind === 'video' ? 'inline-flex' : 'none';
@@ -1025,7 +1033,8 @@
   let screenFrames = 0;
   let latestScreenJpeg = null;
   let decodingScreenFrame = false;
-  let screenPathLabel = 'Compatibility JPEG · up to 2560px / 12 fps';
+  let screenPathLabel = 'Compatibility JPEG · up to 1280px · max 20 fps';
+  let screenFallbackReason = '';
 
   async function watchScreen() {
     const screenView = document.getElementById('screenView');
@@ -1037,10 +1046,11 @@
     clearTimeout(screenFrameTimer);
     screenWanted = true;
     screenRetries = 0;
+    screenFallbackReason = '';
     watchButton.disabled = true;
     screenView.classList.add('active');
     state.textContent = 'Connecting · showing the first available frame…';
-    screenPathLabel = 'Compatibility JPEG · up to 2560px / 12 fps';
+    screenPathLabel = 'Compatibility JPEG · up to 1280px · max 20 fps';
     video.hidden = true;
     canvas.hidden = false;
     // Start the local preview immediately. JPEG remains visible only until the
@@ -1054,10 +1064,12 @@
       await closeScreenPeer();
       video.pause();
       video.srcObject = null;
+      video.style.visibility = '';
       video.hidden = true;
       canvas.hidden = false;
-      screenPathLabel = 'Compatibility JPEG · up to 2560px / 12 fps · direct link unavailable';
-      state.textContent = screenPathLabel + ' (' + (error.message || 'connection failed') + ')';
+      screenFallbackReason = error.message || 'connection failed';
+      screenPathLabel = 'Compatibility JPEG · up to 1280px · max 20 fps · direct link unavailable';
+      state.textContent = screenPathLabel + ' (' + screenFallbackReason + ')';
     }
   }
 
@@ -1069,18 +1081,16 @@
     peer.ontrack = event => {
       const stream = event.streams && event.streams[0] ? event.streams[0] : new MediaStream([event.track]);
       video.srcObject = stream;
+      // Keep drawing the JPEG fallback until the direct stream has decoded a
+      // real frame. ICE can report connected before the first video frame is
+      // available, and switching on ICE alone left some Edge sessions frozen.
+      video.hidden = false;
+      video.style.visibility = 'hidden';
       video.play().catch(() => {});
     };
     peer.oniceconnectionstatechange = () => {
       if (peer.iceConnectionState === 'connected' || peer.iceConnectionState === 'completed') {
-        screenPathLabel = 'Direct WebRTC · source resolution';
-        state.textContent = screenPathLabel;
-        if (screenAbort) { try { screenAbort.abort(); } catch (e) {} screenAbort = null; }
-        if (screenReader) { try { screenReader.cancel(); } catch (e) {} screenReader = null; }
-        document.getElementById('screenCanvas').hidden = true;
-        video.hidden = false;
-        document.getElementById('screenHint').textContent = 'Your phone screen is streaming directly over the local network.';
-        document.getElementById('screenViewHint').textContent = 'Live screen from your phone.';
+        state.textContent = 'Direct WebRTC connected · waiting for the first video frame…';
       }
     };
     const offer = await peer.createOffer();
@@ -1103,9 +1113,42 @@
       clearTimeout(signalTimeout);
       if (screenSignalAbort === controller) screenSignalAbort = null;
     }
-    await waitForIceConnection(peer, 8000);
-    if (!video.srcObject) throw new Error('The phone connected without a video track');
-    await video.play();
+    // Give hotspot peers the same negotiation window as the phone's signaling
+    // endpoint; the JPEG fallback remains visible while ICE is still trying.
+    await waitForIceConnection(peer, 20000);
+    await waitForVideoFrame(video, 5000);
+    video.style.visibility = '';
+    screenPathLabel = 'Direct WebRTC · source resolution';
+    screenFallbackReason = '';
+    state.textContent = screenPathLabel;
+    if (screenAbort) { try { screenAbort.abort(); } catch (e) {} screenAbort = null; }
+    if (screenReader) { try { screenReader.cancel(); } catch (e) {} screenReader = null; }
+    document.getElementById('screenCanvas').hidden = true;
+    video.hidden = false;
+    document.getElementById('screenHint').textContent = 'Your phone screen is streaming directly over the local network.';
+    document.getElementById('screenViewHint').textContent = 'Live screen from your phone.';
+  }
+
+  function waitForVideoFrame(video, timeoutMs) {
+    if (video.srcObject && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0 && video.videoHeight > 0) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      let finished = false;
+      const finish = error => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        video.removeEventListener('loadeddata', check);
+        video.removeEventListener('playing', check);
+        error ? reject(error) : resolve();
+      };
+      const check = () => {
+        if (video.srcObject && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0 && video.videoHeight > 0) finish();
+      };
+      const timer = setTimeout(() => finish(new Error('The direct link connected but no screen frame arrived')), timeoutMs);
+      video.addEventListener('loadeddata', check);
+      video.addEventListener('playing', check);
+      check();
+    });
   }
 
   function waitForIceGathering(peer, timeoutMs) {
@@ -1230,7 +1273,7 @@
             document.getElementById('screenHint').textContent = 'Your phone screen is streaming over the local Wi-Fi connection.';
             document.getElementById('screenViewHint').textContent = 'Live screen from your phone.';
           }
-          state.textContent = screenPathLabel + ' · ' + screenFrames + ' frames shown';
+          state.textContent = screenPathLabel + (screenFallbackReason ? ' (' + screenFallbackReason + ')' : '') + ' · ' + screenFrames + ' frames shown';
         }
         if (bitmap.close) bitmap.close();
       }

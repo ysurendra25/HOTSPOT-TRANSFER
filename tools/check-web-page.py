@@ -59,7 +59,12 @@ def main():
     required_page_features = {
         "direct local WebRTC screen path": "endpoint('/api/screen/offer')",
         "MJPEG latest-frame fallback": "function drawLatestScreenFrame",
+        "WebRTC screen waits for decoded video": "function waitForVideoFrame(video, timeoutMs)",
+        "hotspot ICE gets time to connect while fallback stays visible": "await waitForIceConnection(peer, 20000);",
         "screen fullscreen video sizing": ".screen-view:fullscreen video",
+        "fullscreen player fills the stage": ".modal:fullscreen .stage.video-stage{flex:1 1 auto;width:100%",
+        "fullscreen player releases aspect-sized inline dimensions": "stage.style.removeProperty('height');",
+        "fallback screen status matches the encoder cap": "Compatibility JPEG · up to 1280px · max 20 fps",
         "dark theme and persisted theme control": "pocketbridge_theme",
         "video aspect ratio recalculation": "function fitVideoStage()",
         "aspect ratio selection resizes the viewer": "fitVideoStage();",
@@ -73,6 +78,8 @@ def main():
             problems += fail("missing " + feature)
     if "Open with" in html:
         problems += fail("the removed Open with action is still in the browser UI")
+    if "2560px / 12 fps" in html:
+        problems += fail("the screen-share fallback label does not match the phone encoder limits")
 
     # 4. The inline script must parse. node is optional, so skip when absent.
     scripts = re.findall(r"<script>(.*?)</script>", html, re.S)
