@@ -4,6 +4,15 @@ PocketBridge is an open-source Android app for sharing phone media and the phone
 
 See the illustrated [quick-start guide](docs/QUICK_START_GUIDE.md) for connecting, browsing, and screen sharing.
 
+## Version 0.6.0.3
+
+- **No more freezes from busy connections.** The phone's server creates workers as needed (up to 64) and answers "busy" instead of queueing, closes stuck screen viewers and all connections when sharing stops, and the screen stream no longer spins the CPU. Chat and other disk/network work moved off the main thread.
+- **Laptop files load reliably.** The helper pages its file list with a time budget and skips system folders; the phone loads it page by page with retries, finds the laptop on the hotspot when the pasted address does not answer, and shows the helper's own error messages.
+- **Full-frame, original-quality screen sharing.** Fixed the picture that showed in half the viewer, cut JPEG frames by Content-Length, follow rotation on every Android version, and stream WebRTC at native resolution with up to 25 Mbps and minimal delay. The JPEG fallback is native resolution too.
+- **Laptop power controls work.** Sleep and shut down enable the Windows shutdown privilege, power buttons find the laptop like files and screen do, and every result is reported on the phone. "Wake & show sign-in" wakes the display; Windows still needs the PIN or password on the laptop.
+- **The laptop screen shows on the phone.** The viewer may start muted video without a tap, the helper sends its access code with every request, falls back to its JPEG stream when video is refused, and wakes the display for the JPEG stream.
+- **A real wrong-code lockout**, typed received files, and a release workflow that works for any version tag. See [RELEASE_NOTES_v0.6.0.3.md](RELEASE_NOTES_v0.6.0.3.md).
+
 ## Version 0.5.9.6
 
 - **Phone and laptop files are separate library views.** Laptop files no longer sit below the phone's long media list. The phone view now has device tabs, laptop search, and type filters.
