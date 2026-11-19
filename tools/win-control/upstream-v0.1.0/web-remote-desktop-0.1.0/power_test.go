@@ -8,10 +8,10 @@ import (
 )
 
 func TestSleepAcknowledgesBeforeLaptopSuspends(t *testing.T) {
-	previous := scheduleSleepAction
-	defer func() { scheduleSleepAction = previous }()
+	previous := schedulePowerAction
+	defer func() { schedulePowerAction = previous }()
 	called := false
-	scheduleSleepAction = func() { called = true }
+	schedulePowerAction = func(action string) { called = action == "sleep" }
 	req := httptest.NewRequest("POST", "/power", strings.NewReader(`{"action":"sleep","confirm":true}`))
 	res := httptest.NewRecorder()
 	powerHandler(res, req)

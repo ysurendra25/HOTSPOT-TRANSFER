@@ -160,7 +160,41 @@ func keepAwake(policy func() string) {
 		}
 	}
 	apply()
-	for range time.Tick(keepAwakeInterval) {
-		apply()
+	ticker := time.NewTicker(keepAwakeInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			apply()
+		case d := <-holdPause:
+			// Sleep or shutdown was asked for from the phone: let go of the
+			// hold for a while so Windows is free to act on it.
+			if held {
+				wkProcSetThreadExecSt.Call(wkEsContinuous)
+				held = false
+			}
+			pausedUntil := time.Now().Add(d)
+			for time.Now().Before(pausedUntil) {
+				select {
+				case <-time.After(time.Until(pausedUntil)):
+				case more := <-holdPause:
+					pausedUntil = time.Now().Add(more)
+				}
+			}
+			apply()
+		}
 	}
+}
+
+// holdPause carries "release the system hold for this long" requests to the
+// keepAwake goroutine, which owns the thread the hold lives on.
+var holdPause = make(chan time.Duration, 1)
+
+func releaseSystemHoldFor(d time.Duration) {
+	select {
+	case holdPause <- d:
+	default:
+	}
+	// Give the hold owner a moment to drop the execution state.
+	time.Sleep(150 * time.Millisecond)
 }
