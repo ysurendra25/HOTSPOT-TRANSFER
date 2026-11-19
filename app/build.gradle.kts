@@ -10,8 +10,8 @@ android {
         applicationId = "com.pocketbridge"
         minSdk = 26
         targetSdk = 35
-        versionCode = 26
-        versionName = "0.6.0.2"
+        versionCode = 27
+        versionName = "0.6.0.3"
         if (project.findProperty("pocketbridgeUniversal") != "true") {
             ndk {
                 abiFilters += "arm64-v8a"
@@ -54,6 +54,7 @@ tasks.withType<Test>().configureEach {
 dependencies {
     implementation("io.github.webrtc-sdk:android:150.7871.04")
     implementation("dev.ffmpegkit-maintained:ffmpeg-kit-video:8.1.7")
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     testImplementation("junit:junit:4.13.2")
     // A real org.json on the unit-test classpath: the Android stub throws unless mocked.
     testImplementation("org.json:json:20240303")

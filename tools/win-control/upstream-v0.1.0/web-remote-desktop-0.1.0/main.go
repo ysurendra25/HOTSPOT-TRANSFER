@@ -82,6 +82,7 @@ func main() {
 	mux.Handle("/files", auth(http.HandlerFunc(filesHandler)))
 	mux.Handle("/file/", auth(http.HandlerFunc(fileHandler)))
 	mux.Handle("/power", auth(http.HandlerFunc(powerHandler)))
+	mux.Handle("/qr.png", auth(http.HandlerFunc(qrImageHandler)))
 	mux.Handle("/open-vlc", auth(http.HandlerFunc(openVLCHandler)))
 	mux.Handle("/open-with", auth(http.HandlerFunc(openWithHandler)))
 	mux.Handle("/open-player", auth(http.HandlerFunc(openPlayerHandler)))

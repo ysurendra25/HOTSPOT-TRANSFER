@@ -12,6 +12,13 @@ import (
 // phone can list that file and use the existing path search.
 func resolveShareDirectory(requested string) (string, error) {
 	requested = strings.Trim(strings.TrimSpace(requested), `"'`)
+	if strings.EqualFold(requested, "@home") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("could not find the Windows user folder")
+		}
+		requested = home
+	}
 	if requested == "" {
 		return "", fmt.Errorf("enter a laptop folder or file path")
 	}

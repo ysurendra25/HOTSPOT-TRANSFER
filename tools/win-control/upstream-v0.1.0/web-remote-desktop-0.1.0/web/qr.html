@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PocketBridge · QR Share</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0a1217;--panel:#112025;--line:#2b3f47;--ink:#e8f1f4;--muted:#9db2bb;--green:#28b18c}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,Segoe UI,sans-serif}
+    main{max-width:1040px;margin:auto;padding:24px}h1{margin:0 0 8px;font-size:28px}p{color:var(--muted)}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:18px}
+    label{display:block;font-weight:700;margin:14px 0 6px}input,textarea,button{font:inherit;color:var(--ink)}input,textarea{width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;background:#0b161b}textarea{min-height:100px;resize:vertical}
+    button{border:0;border-radius:10px;background:var(--green);padding:12px 16px;font-weight:700;cursor:pointer;margin:8px 6px 0 0}button.secondary{background:#203942}button:disabled{opacity:.55}
+    #qr{display:block;width:min(100%,520px);height:auto;margin:16px auto;background:white;border:12px solid white;border-radius:8px;image-rendering:pixelated}
+    #video{width:100%;max-height:60vh;background:#000;border-radius:12px}#status{min-height:3em;color:var(--green);white-space:pre-wrap}.small{font-size:13px}progress{width:100%;accent-color:var(--green)}
+  </style>
+</head>
+<body><main>
+  <h1>PocketBridge QR Share</h1>
+  <p>Optical transfer only: this page does not send the file to the phone over Wi‑Fi, hotspot, Bluetooth, or the internet. Show a QR on one screen and scan it with the other device. Use Wi‑Fi/Hotspot for large videos; QR is intentionally capped at 128 KiB.</p>
+  <div class="grid">
+    <section class="card">
+      <h2>Show QR on this laptop</h2>
+      <label for="text">Text</label><textarea id="text" placeholder="Type text to show as one or more QR frames"></textarea>
+      <button id="textButton">Show text QR</button>
+      <label for="file">Or choose a file (max 128 KiB)</label><input id="file" type="file">
+      <button id="fileButton">Show file QR</button>
+      <button id="stopShow" class="secondary" disabled>Stop sequence</button>
+      <img id="qr" alt="QR share payload" hidden>
+      <div id="showInfo" class="small"></div>
+    </section>
+    <section class="card">
+      <h2>Scan phone QR with this laptop</h2>
+      <p class="small">Allow camera access, then point the laptop camera at the QR shown in PocketBridge. Keep the phone steady while the frames advance.</p>
+      <video id="video" autoplay playsinline muted></video>
+      <button id="startScan">Start camera scan</button><button id="stopScan" class="secondary" disabled>Stop camera</button>
+      <progress id="progress" value="0" max="1"></progress>
+      <div id="status" role="status">Ready.</div>
+      <div id="received"></div>
+    </section>
+  </div>
+</main>
+<script>
+(() => {
+  'use strict';
+  const MAX_BYTES = 128 * 1024, CHUNK_BYTES = 1000;
+  const token = new URLSearchParams(location.search).get('t') || '';
+  const qr = document.querySelector('#qr'), status = document.querySelector('#status');
+  const video = document.querySelector('#video'), progress = document.querySelector('#progress');
+  const showInfo = document.querySelector('#showInfo'), received = document.querySelector('#received');
+  let frames = [], frameIndex = 0, showTimer = 0, camera = null, detector = null, scanTimer = 0, scanBusy = false;
+  const assemblies = new Map();
+  const id = () => crypto.getRandomValues(new Uint32Array(2)).join('').slice(0, 14);
+  const b64 = bytes => { let raw=''; for(let i=0;i<bytes.length;i+=0x8000) raw += String.fromCharCode(...bytes.subarray(i,i+0x8000)); return btoa(raw).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); };
+  const unb64 = text => { const s=text.replace(/-/g,'+').replace(/_/g,'/'); const raw=atob(s+'='.repeat((4-s.length%4)%4)); const out=new Uint8Array(raw.length); for(let i=0;i<raw.length;i++)out[i]=raw.charCodeAt(i); return out; };
+  const textB64 = text => b64(new TextEncoder().encode(text));
+  function encodeText(text) { const bytes=new TextEncoder().encode(text); const key=id(), chunks=[]; for(let i=0;i<bytes.length;i+=CHUNK_BYTES) chunks.push(b64(bytes.slice(i,i+CHUNK_BYTES))); if(!chunks.length)chunks.push(''); return chunks.map((chunk,i)=>`PBQ1|T|${key}|${i}|${chunks.length}|${chunk}`); }
+  function encodeFile(file) { return file.arrayBuffer().then(buffer => { const bytes=new Uint8Array(buffer); if(bytes.length>MAX_BYTES) throw new Error('This file is over 128 KiB. Use the normal Wi‑Fi/Hotspot transfer for photos and videos of that size.'); const key=id(), name=textB64(file.name), mime=textB64(file.type||'application/octet-stream'), chunks=[]; for(let i=0;i<bytes.length;i+=CHUNK_BYTES) chunks.push(b64(bytes.slice(i,i+CHUNK_BYTES))); if(!chunks.length)chunks.push(''); return chunks.map((chunk,i)=>`PBQ1|F|${key}|${i}|${chunks.length}|${name}|${mime}|${chunk}`); }); }
+  function showSequence(list,label) { if(!token){status.textContent='Open this page with the laptop helper link that includes ?t=…';return;} stopSequence(); frames=list; frameIndex=0; qr.hidden=false; document.querySelector('#stopShow').disabled=false; showInfo.textContent=`${label} · ${frames.length} QR frame(s). Keep the other device scanning until complete.`; paintFrame(); if(frames.length>1) showTimer=setInterval(()=>{frameIndex=(frameIndex+1)%frames.length;paintFrame();},850); }
+  function paintFrame(){ const payload=frames[frameIndex]; qr.src=`/qr.png?t=${encodeURIComponent(token)}&data=${encodeURIComponent(payload)}&n=${Date.now()}`; showInfo.textContent=showInfo.textContent.split(' · frame ')[0]+` · frame ${frameIndex+1}/${frames.length}`; }
+  function stopSequence(){clearInterval(showTimer);showTimer=0;frames=[];document.querySelector('#stopShow').disabled=true;}
+  document.querySelector('#textButton').onclick=()=>{const value=document.querySelector('#text').value;if(!value){status.textContent='Enter text first.';return;}showSequence(encodeText(value),'Text');};
+  document.querySelector('#fileButton').onclick=async()=>{const file=document.querySelector('#file').files[0];if(!file){status.textContent='Choose a file first.';return;}try{showSequence(await encodeFile(file),file.name);}catch(e){status.textContent=e.message;}};
+  document.querySelector('#stopShow').onclick=()=>{stopSequence();qr.hidden=true;showInfo.textContent='QR sequence stopped.';};
+  function parse(value){const p=value.split('|');if(p[0]!=='PBQ1'||(p[1]!=='T'&&p[1]!=='F'))return null;const n=Number(p[4]),i=Number(p[3]);if(!Number.isInteger(n)||!Number.isInteger(i)||n<1||n>132||i<0||i>=n)return null;const part=p[1]==='T'?{kind:'T',id:p[2],i,n,chunk:p[5]||''}:{kind:'F',id:p[2],i,n,name:p[5],mime:p[6],chunk:p[7]||''};try{if(unb64(part.chunk).length>1000)return null;}catch{return null;}return part;}
+  function saveFile(name,mime,bytes){received.replaceChildren();const a=document.createElement('a'),url=URL.createObjectURL(new Blob([bytes],{type:mime||'application/octet-stream'}));a.href=url;a.download=name||'pocketbridge-file';a.textContent=`Download ${a.download}`;a.className='download';received.appendChild(a);}
+  function accept(value){const part=parse(value);if(!part)return;let a=assemblies.get(part.id);if(!a){a={kind:part.kind,n:part.n,parts:new Array(part.n),count:0,name:part.name||'',mime:part.mime||''};assemblies.set(part.id,a);}if(a.n!==part.n||a.kind!==part.kind)return;if(!a.parts[part.i]){a.parts[part.i]=part.chunk;a.count++;}progress.value=a.count/a.n;status.textContent=`Receiving ${part.kind==='F'?decodeText(a.name):'text'} · ${a.count}/${a.n} frames`;
+    if(a.count===a.n){const chunks=a.parts.map(unb64),size=chunks.reduce((s,c)=>s+c.length,0);assemblies.delete(part.id);if(size>MAX_BYTES){status.textContent='QR transfer exceeds the 128 KiB limit.';return;}const bytes=new Uint8Array(size);let offset=0;for(const c of chunks){bytes.set(c,offset);offset+=c.length;}progress.value=1;if(a.kind==='T'){const text=new TextDecoder().decode(bytes);status.textContent='Text received.';received.textContent=text;const copy=document.createElement('button');copy.textContent='Copy received text';copy.onclick=()=>navigator.clipboard.writeText(text);received.appendChild(copy);}else{const name=decodeText(a.name)||'pocketbridge-file',mime=decodeText(a.mime)||'application/octet-stream';saveFile(name,mime,bytes);status.textContent=`Received ${name} (${bytes.length.toLocaleString()} bytes).`;}}
+  }
+  function decodeText(value){try{return new TextDecoder().decode(unb64(value||''));}catch{return '';}}
+  async function scanFrame(){if(!detector||!video.videoWidth||scanBusy)return;scanBusy=true;try{for(const result of await detector.detect(video))accept(result.rawValue);}catch(e){status.textContent=`Camera scan error: ${e.message||e}`;}finally{scanBusy=false;}}
+  document.querySelector('#startScan').onclick=async()=>{try{if(!('BarcodeDetector'in window))throw new Error('This browser does not provide QR scanning. Open /qr.html in current Microsoft Edge.');detector=new BarcodeDetector({formats:['qr_code']});camera=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'},audio:false});video.srcObject=camera;await video.play();scanTimer=setInterval(scanFrame,220);document.querySelector('#startScan').disabled=true;document.querySelector('#stopScan').disabled=false;status.textContent='Camera is ready. Point it at the phone QR.';}catch(e){status.textContent=`Could not start QR camera: ${e.message||e}`;}};
+  document.querySelector('#stopScan').onclick=()=>{clearInterval(scanTimer);scanTimer=0;if(camera){for(const track of camera.getTracks())track.stop();camera=null;}video.srcObject=null;document.querySelector('#startScan').disabled=false;document.querySelector('#stopScan').disabled=true;};
+})();
+</script>
+</body></html>

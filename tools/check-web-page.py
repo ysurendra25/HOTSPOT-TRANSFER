@@ -19,6 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PAGE = ROOT / "app/src/main/assets/www/index.html"
+QR_PAGE = ROOT / "tools/win-control/upstream-v0.1.0/web-remote-desktop-0.1.0/web/qr.html"
 SERVER = ROOT / "app/src/main/java/com/pocketbridge/MediaHttpServer.java"
 
 
@@ -30,6 +31,7 @@ def fail(message):
 def main():
     problems = 0
     html = PAGE.read_text(encoding="utf-8")
+    qr_html = QR_PAGE.read_text(encoding="utf-8")
     server = SERVER.read_text(encoding="utf-8")
 
     # 1. Routes the page asks for must exist in the server.
@@ -82,19 +84,24 @@ def main():
         problems += fail("the screen-share fallback label does not match the phone encoder limits")
 
     # 4. The inline script must parse. node is optional, so skip when absent.
-    scripts = re.findall(r"<script>(.*?)</script>", html, re.S)
-    if not scripts:
-        problems += fail("no inline script found in the page")
-    else:
+    for name, page in (("sharing page", html), ("QR share page", qr_html)):
+        scripts = re.findall(r"<script>(.*?)</script>", page, re.S)
+        if not scripts:
+            problems += fail("no inline script found in " + name)
+            continue
         try:
             with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as handle:
                 handle.write("\n".join(scripts))
                 path = handle.name
             result = subprocess.run(["node", "--check", path], capture_output=True, text=True)
             if result.returncode != 0:
-                problems += fail("the page's JavaScript does not parse:\n" + result.stderr.strip())
+                problems += fail(name + " JavaScript does not parse:\n" + result.stderr.strip())
         except FileNotFoundError:
-            print("note: node is not installed, skipping the syntax check")
+            print("note: node is not installed, skipping JavaScript syntax checks")
+            break
+    for marker in ("PBQ1|F|", "PBQ1|T|", "128 KiB", "BarcodeDetector", "/qr.png"):
+        if marker not in qr_html:
+            problems += fail("QR share page is missing " + marker)
 
     if problems == 0:
         print("OK: " + str(len(requested)) + " routes, " + str(len(ids_used)) + " element ids and the script all check out")

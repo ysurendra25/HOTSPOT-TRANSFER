@@ -301,11 +301,12 @@ public final class ScreenCaptureService extends Service {
         if (sender != null) {
             try {
                 RtpParameters parameters = sender.getParameters();
-                // Keep native capture dimensions, but cap the hotspot stream so
-                // WebRTC has less data to queue while the phone screen is moving.
+                // Preserve native capture dimensions and give WebRTC room for the
+                // capturer's full 30 fps. This is a ceiling: WebRTC's congestion
+                // controller can lower the actual send rate when the hotspot is busy.
                 for (RtpParameters.Encoding encoding : parameters.encodings) {
-                    encoding.maxBitrateBps = 6_000_000;
-                    encoding.maxFramerate = 24;
+                    encoding.maxBitrateBps = 8_000_000;
+                    encoding.maxFramerate = 30;
                 }
                 sender.setParameters(parameters);
             } catch (Exception ignored) { }

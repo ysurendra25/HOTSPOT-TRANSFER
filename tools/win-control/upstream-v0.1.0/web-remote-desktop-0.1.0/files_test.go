@@ -38,6 +38,23 @@ func TestFilesHandlerListsNestedMedia(t *testing.T) {
 	}
 }
 
+func TestFilesHandlerSearchesNamesAndRelativePaths(t *testing.T) {
+	root := t.TempDir()
+	withShareDir(t, root)
+	if err := os.Mkdir(filepath.Join(root, "Movies"), 0700); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(filepath.Join(root, "Movies", "Mandaadi.mp4"), []byte("video"), 0600); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(filepath.Join(root, "other.txt"), []byte("text"), 0600); err != nil { t.Fatal(err) }
+	req := httptest.NewRequest("GET", "/files?q=mandaadi", nil)
+	res := httptest.NewRecorder()
+	filesHandler(res, req)
+	if res.Code != 200 { t.Fatalf("status %d: %s", res.Code, res.Body.String()) }
+	var body struct { Files []sharedFile `json:"files"`; Query string `json:"query"` }
+	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil { t.Fatal(err) }
+	if len(body.Files) != 1 || body.Files[0].Name != "Mandaadi.mp4" || body.Query != "mandaadi" {
+		t.Fatalf("unexpected search result: %+v (query %q)", body.Files, body.Query)
+	}
+}
+
 func TestFileHandlerStreamsMediaWithRange(t *testing.T) {
 	root := t.TempDir()
 	withShareDir(t, root)

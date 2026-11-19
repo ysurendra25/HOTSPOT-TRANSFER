@@ -16,6 +16,8 @@ import android.os.Build;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
+import android.view.ViewParent;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -36,6 +38,9 @@ public final class MainActivity extends Activity {
     private static final int REQUEST_PERMISSIONS = 40;
     private static final int REQUEST_SCREEN_CAPTURE = 41;
     private static final int REQUEST_SEND_FILE = 42;
+    private static final int REQUEST_QR_SEND_FILE = 43;
+    private static final int REQUEST_QR_RECEIVE_SAVE = 45;
+    private static final int REQUEST_QR_CAMERA_PERMISSION = 46;
     private static final int COLOR_INK = Color.rgb(232, 241, 244);
     private static final int COLOR_MUTED = Color.rgb(157, 178, 187);
     private static final int COLOR_GREEN = Color.rgb(40, 177, 140);
@@ -59,12 +64,43 @@ public final class MainActivity extends Activity {
     private EditText screenHelperLink;
     private EditText libraryHelperLink;
     private EditText laptopFolderPath;
+    private EditText laptopFilter;
+    private Button laptopLoadButton;
     private boolean syncingHelperLinks;
-    private Button phoneLibrarySourceButton;
-    private Button laptopLibrarySourceButton;
     private Button[] laptopKindButtons;
+    private LinearLayout laptopLibrarySection;
+    private LinearLayout laptopRowHolder;
+    private TextView laptopStatus;
+    private TextView laptopScreenStatus;
+    private TextView laptopScreenViewerStatus;
+    private EditText qrTextInput;
+    private byte[] pendingQrFile;
+    private String pendingQrName;
+    private String pendingQrMime;
+    private final java.util.Map<String, QrAssembly> qrAssemblies = new java.util.HashMap<>();
+    private final android.os.Handler qrHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private android.app.Dialog qrScannerDialog;
+    private com.journeyapps.barcodescanner.DecoratedBarcodeView qrScannerView;
+    private TextView qrScannerStatus;
+    private final java.util.Set<String> seenQrFrames = new java.util.HashSet<>();
+    private android.webkit.WebView laptopScreenView;
+    private ViewGroup laptopScreenParent;
+    private ViewGroup.LayoutParams laptopScreenOriginalLayout;
+    private int laptopScreenOriginalIndex = -1;
+    private android.app.Dialog laptopScreenDialog;
     private boolean receiverRegistered;
     private boolean sharing;
+
+    private static final class QrAssembly {
+        final boolean text;
+        final String name;
+        final String mime;
+        final byte[][] chunks;
+        int received;
+        QrAssembly(QrTransferCodec.Frame frame) {
+            text = frame.text; name = frame.name; mime = frame.mime; chunks = new byte[frame.total][];
+        }
+    }
 
     private final BroadcastReceiver statusReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
@@ -132,6 +168,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onStop() {
         chatHandler.removeCallbacks(chatPoll);
+        closeQrScanner();
         if (receiverRegistered) {
             unregisterReceiver(statusReceiver);
             receiverRegistered = false;
@@ -187,14 +224,19 @@ public final class MainActivity extends Activity {
         ScrollView chatScroll = new ScrollView(this);
         LinearLayout chatContent = tabColumn();
         chatScroll.addView(chatContent);
+        ScrollView cloneScroll = new ScrollView(this);
+        LinearLayout cloneContent = tabColumn();
+        cloneScroll.addView(cloneContent);
         tabHost.addView(connectScroll);
         tabHost.addView(screenScroll);
         tabHost.addView(libraryScroll);
         tabHost.addView(chatScroll);
+        tabHost.addView(cloneScroll);
         screenScroll.setVisibility(View.GONE);
         libraryScroll.setVisibility(View.GONE);
         chatScroll.setVisibility(View.GONE);
-        this.tabViews = new ScrollView[]{connectScroll, screenScroll, libraryScroll, chatScroll};
+        cloneScroll.setVisibility(View.GONE);
+        this.tabViews = new ScrollView[]{connectScroll, screenScroll, libraryScroll, chatScroll, cloneScroll};
 
         statusText = new TextView(this);
         statusText.setText("Ready when you are");
@@ -289,6 +331,43 @@ public final class MainActivity extends Activity {
         sendFromPhone.setOnClickListener(v -> choosePhoneFileForLaptop());
         content.addView(sendFromPhone, matchWrap());
 
+        LinearLayout qrCard = new LinearLayout(this);
+        qrCard.setOrientation(LinearLayout.VERTICAL);
+        TextView qrIntro = new TextView(this);
+        qrIntro.setText("QR Share uses only the screen and camera; the phone and laptop do not connect by Wi-Fi, hotspot, Bluetooth, or internet. Large files are too slow for QR, so this path is capped at 128 KiB.");
+        qrIntro.setTextColor(COLOR_MUTED);
+        qrIntro.setTextSize(13);
+        qrIntro.setLineSpacing(dp(3), 1f);
+        qrCard.addView(qrIntro, matchWrap());
+        qrTextInput = new EditText(this);
+        qrTextInput.setHint("Text to show as QR frames");
+        qrTextInput.setMinLines(2);
+        qrTextInput.setMaxLines(4);
+        qrCard.addView(qrTextInput, matchWrap());
+        Button textQr = button("Display text as QR", COLOR_GREEN);
+        textQr.setOnClickListener(v -> {
+            String text = qrTextInput.getText().toString();
+            if (text.isEmpty()) { Toast.makeText(this, "Enter text to share.", Toast.LENGTH_SHORT).show(); return; }
+            try { showQrFrames(QrTransferCodec.textFrames(randomQrId(), text), "Text"); }
+            catch (Exception error) { Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show(); }
+        });
+        qrCard.addView(textQr, matchWrap());
+        Button fileQr = button("Choose a small file for QR Share", COLOR_SOFT);
+        fileQr.setTextColor(COLOR_INK);
+        fileQr.setOnClickListener(v -> chooseQrFile());
+        qrCard.addView(fileQr, matchWrap());
+        Button scanQr = button("Scan QR from laptop", COLOR_SOFT);
+        scanQr.setTextColor(COLOR_INK);
+        scanQr.setOnClickListener(v -> scanQrFromCamera());
+        qrCard.addView(scanQr, matchWrap());
+        TextView qrHelp = new TextView(this);
+        qrHelp.setText("For laptop ↔ phone QR transfer, open the Windows helper’s local page on the laptop: http://127.0.0.1:7070/qr.html?t=<helper code>. It uses the laptop camera to receive phone QR frames and can display file/text QR frames for this phone to scan.");
+        qrHelp.setTextColor(COLOR_MUTED);
+        qrHelp.setTextSize(12);
+        qrHelp.setPadding(0, dp(8), 0, 0);
+        qrCard.addView(qrHelp, matchWrap());
+        addCard(content, "QR SHARE · CAMERA ONLY", qrCard);
+
         screenHelperLink = new EditText(this);
         screenHelperLink.setSingleLine(true);
         screenHelperLink.setHint("http://laptop-address:7070/?t=code");
@@ -297,7 +376,7 @@ public final class MainActivity extends Activity {
         MediaHttpServer.setLaptopHelperLink(getSavedHelperLink());
         watchHelperLink(screenHelperLink);
         addCard(content, "WINDOWS HELPER LINK · PASTE ONCE", screenHelperLink);
-        TextView laptopScreenStatus = new TextView(this);
+        laptopScreenStatus = new TextView(this);
         laptopScreenStatus.setText("Start the portable Windows helper, then paste its local link here. Keep the laptop awake for screen sharing.");
         laptopScreenStatus.setTextColor(COLOR_MUTED);
         laptopScreenStatus.setTextSize(13);
@@ -307,7 +386,7 @@ public final class MainActivity extends Activity {
         LinearLayout powerControls = new LinearLayout(this);
         powerControls.setOrientation(LinearLayout.VERTICAL);
         String[][] powerActions = {{"Lock laptop", "lock"}, {"Wake display", "wake-display"},
-                {"Unlock / show sign-in", "unlock"}, {"Put laptop to sleep", "sleep"}, {"Shut down laptop", "shutdown"}};
+                {"Show sign-in screen", "unlock"}, {"Put laptop to sleep", "sleep"}, {"Shut down laptop", "shutdown"}};
         for (String[] powerAction : powerActions) {
             Button actionButton = button(powerAction[0], ("shutdown".equals(powerAction[1]) || "sleep".equals(powerAction[1])) ? COLOR_SOFT : COLOR_GREEN);
             if ("shutdown".equals(powerAction[1]) || "sleep".equals(powerAction[1])) actionButton.setTextColor(COLOR_INK);
@@ -330,7 +409,7 @@ public final class MainActivity extends Activity {
         }
         addCard(content, "LAPTOP CONTROLS", powerControls);
         TextView powerNote = new TextView(this);
-        powerNote.setText("Unlock / show sign-in wakes the display; Windows still requires the laptop PIN or password. Wake works only while the helper and laptop are running.");
+        powerNote.setText("Windows cannot be remotely unlocked; Show sign-in wakes the panel and leaves PIN/password entry on the laptop. Wake display works only while the helper is running and the laptop is awake. Wi-Fi cannot wake a fully sleeping or shut-down PC unless Wake-on-LAN is separately enabled in its firmware and network adapter.");
         powerNote.setTextColor(COLOR_MUTED); powerNote.setTextSize(12);
         powerNote.setPadding(dp(4), 0, dp(4), dp(12)); content.addView(powerNote, matchWrap());
 
@@ -375,6 +454,7 @@ public final class MainActivity extends Activity {
         // Laptop screen on the phone: the Windows helper already streams JPEG over
         // the hotspot, so show its own live page here instead of duplicating it.
         android.webkit.WebView laptopView = new android.webkit.WebView(this);
+        laptopScreenView = laptopView;
         laptopView.getSettings().setJavaScriptEnabled(true);
         laptopView.getSettings().setDomStorageEnabled(true);
         laptopView.getSettings().setLoadWithOverviewMode(true);
@@ -389,23 +469,23 @@ public final class MainActivity extends Activity {
             if (laptopView.getVisibility() != View.VISIBLE) return;
             laptopView.evaluateJavascript("(function(){var d=document.getElementById('dot');var v=document.getElementById('screenv');var i=document.getElementById('screenj');var s=d?d.className:'offline';var w=v&&v.videoWidth?v.videoWidth:(i?i.naturalWidth:0);var h=v&&v.videoHeight?v.videoHeight:(i?i.naturalHeight:0);return s+'|'+w+'x'+h})()", result -> {
                 String state = result == null ? "" : result.replace("\\\"", "").replace("\"", "");
-                if (state.startsWith("live|")) laptopScreenStatus.setText("Laptop screen live · " + state.substring(5));
-                else if (state.startsWith("connecting|")) laptopScreenStatus.setText("Connecting to the laptop screen…");
-                else if (state.startsWith("offline|")) laptopScreenStatus.setText("No screen frames received. Confirm Windows is awake, the helper is running, and the helper link is current.");
+                if (state.startsWith("live|")) setLaptopViewerStatus("Laptop screen live · " + state.substring(5));
+                else if (state.startsWith("connecting|")) setLaptopViewerStatus("Connecting to the laptop screen…");
+                else if (state.startsWith("offline|")) setLaptopViewerStatus("No screen frames received. Confirm Windows is awake, the helper is running, and the helper link is current.");
             });
             screenStatusHandler.postDelayed(screenStatusPoll[0], 1000);
         };
         laptopView.setWebViewClient(new android.webkit.WebViewClient() {
             @Override public void onPageFinished(android.webkit.WebView view, String url) {
-                laptopScreenStatus.setText("Viewer loaded · waiting for laptop frames…");
+                setLaptopViewerStatus("Viewer loaded · waiting for laptop frames…");
                 screenStatusHandler.removeCallbacks(screenStatusPoll[0]);
                 screenStatusHandler.post(screenStatusPoll[0]);
             }
             @Override public void onReceivedError(android.webkit.WebView view, android.webkit.WebResourceRequest request, android.webkit.WebResourceError error) {
-                if (request.isForMainFrame()) laptopScreenStatus.setText("Could not reach the laptop helper. Keep both devices on the same hotspot and confirm Windows Firewall allows PocketBridge on private networks.");
+                if (request.isForMainFrame()) setLaptopViewerStatus("Could not reach the laptop helper. Keep both devices on the same hotspot and confirm Windows Firewall allows PocketBridge on private networks.");
             }
             @Override public void onReceivedHttpError(android.webkit.WebView view, android.webkit.WebResourceRequest request, android.webkit.WebResourceResponse response) {
-                if (request.isForMainFrame()) laptopScreenStatus.setText(response.getStatusCode() == 401
+                if (request.isForMainFrame()) setLaptopViewerStatus(response.getStatusCode() == 401
                         ? "The helper link was rejected. Copy a fresh link from the running Windows helper and paste it again."
                         : "The laptop helper returned HTTP " + response.getStatusCode() + ". Check the helper and try again.");
             }
@@ -414,10 +494,10 @@ public final class MainActivity extends Activity {
         showLaptop.setOnClickListener(v -> {
             String link = screenHelperLink.getText().toString().trim();
             if (link.isEmpty()) {
-                laptopScreenStatus.setText("Start PocketBridge Windows Control on the laptop, then paste its printed link above.");
+                setLaptopViewerStatus("Start PocketBridge Windows Control on the laptop, then paste its printed link on Connect.");
                 return;
             }
-            laptopScreenStatus.setText("Checking the laptop link…");
+            setLaptopViewerStatus("Checking the laptop link…");
             new Thread(() -> {
                 try {
                     android.net.Uri parsed = android.net.Uri.parse(link);
@@ -429,18 +509,27 @@ public final class MainActivity extends Activity {
                     boolean loopback = "127.0.0.1".equals(host) || "localhost".equalsIgnoreCase(host) || "::1".equals(host);
                     android.net.Uri reachable = loopback ? resolveLoopbackHelper(parsed, token, laptopScreenStatus) : parsed;
                     runOnUiThread(() -> {
-                        laptopScreenStatus.setText("Connecting to the laptop screen…");
+                        setLaptopViewerStatus("Connecting to the laptop screen…");
                         laptopView.setVisibility(View.VISIBLE);
                         laptopView.loadUrl(reachable.toString());
                     });
                 } catch (Exception error) {
-                    runOnUiThread(() -> laptopScreenStatus.setText("Could not find the laptop helper: " + error.getMessage()));
+                    runOnUiThread(() -> setLaptopViewerStatus("Could not find the laptop helper: " + error.getMessage()));
                 }
             }, "PocketBridge-laptop-screen-link").start();
         });
         Button hideLaptop = button("Hide laptop screen", COLOR_SOFT);
         hideLaptop.setTextColor(COLOR_INK);
-        hideLaptop.setOnClickListener(v -> { screenStatusHandler.removeCallbacks(screenStatusPoll[0]); laptopView.setVisibility(View.GONE); laptopView.loadUrl("about:blank"); });
+        hideLaptop.setOnClickListener(v -> {
+            if (laptopScreenDialog != null) laptopScreenDialog.dismiss();
+            screenStatusHandler.removeCallbacks(screenStatusPoll[0]);
+            laptopView.setVisibility(View.GONE);
+            laptopView.loadUrl("about:blank");
+            setLaptopViewerStatus("Laptop screen hidden.");
+        });
+        Button fullLaptop = button("Full screen", COLOR_SOFT);
+        fullLaptop.setTextColor(COLOR_INK);
+        fullLaptop.setOnClickListener(v -> showLaptopScreenFullscreen());
         LinearLayout liveRow = new LinearLayout(this);
         liveRow.setOrientation(LinearLayout.HORIZONTAL);
         LinearLayout.LayoutParams liveLeft = new LinearLayout.LayoutParams(0, -2, 1f);
@@ -450,7 +539,17 @@ public final class MainActivity extends Activity {
         liveRow.addView(showLaptop, liveLeft);
         liveRow.addView(hideLaptop, liveRight);
         addCard(content, "LAPTOP SCREEN ON THIS PHONE", liveRow);
-        content.addView(laptopView, matchWrap());
+        content.addView(fullLaptop, matchWrap());
+        laptopScreenViewerStatus = new TextView(this);
+        laptopScreenViewerStatus.setText("Laptop screen is not connected yet. Paste the Windows helper link on Connect, then tap Show laptop screen here.");
+        laptopScreenViewerStatus.setTextColor(COLOR_MUTED);
+        laptopScreenViewerStatus.setTextSize(13);
+        laptopScreenViewerStatus.setPadding(dp(4), dp(8), dp(4), dp(8));
+        content.addView(laptopScreenViewerStatus, matchWrap());
+        content.addView(laptopView, new LinearLayout.LayoutParams(-1, dp(380)));
+        laptopScreenOriginalLayout = laptopView.getLayoutParams();
+        laptopScreenParent = (ViewGroup) laptopView.getParent();
+        laptopScreenOriginalIndex = laptopScreenParent.indexOfChild(laptopView);
 
         TextView note = new TextView(this);
         note.setText("The code keeps the link private. Anyone who joins the network still needs it to see your files. Android asks for screen-capture approval each time.");
@@ -463,6 +562,7 @@ public final class MainActivity extends Activity {
         buildLibraryTab(content);
         content = chatContent;
         buildChatTab(content);
+        buildCloneTab(cloneContent);
 
         page.addView(tabHost, new LinearLayout.LayoutParams(-1, 0, 1f));
         page.addView(buildBottomBar(), new LinearLayout.LayoutParams(-1, -2));
@@ -470,13 +570,62 @@ public final class MainActivity extends Activity {
         showTab(0);
     }
 
+    private void setLaptopViewerStatus(String message) {
+        if (laptopScreenStatus != null) laptopScreenStatus.setText(message);
+        if (laptopScreenViewerStatus != null) laptopScreenViewerStatus.setText(message);
+    }
+
+    /** Reparents the live laptop viewer into a real immersive, edge-to-edge dialog. */
+    private void showLaptopScreenFullscreen() {
+        if (laptopScreenView == null || laptopScreenView.getVisibility() != View.VISIBLE) {
+            Toast.makeText(this, "Connect to the laptop screen first.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (laptopScreenDialog != null && laptopScreenDialog.isShowing()) return;
+        if (laptopScreenParent == null || laptopScreenView.getParent() != laptopScreenParent) {
+            Toast.makeText(this, "The laptop screen viewer is not ready yet.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        laptopScreenParent.removeView(laptopScreenView);
+        android.widget.FrameLayout fullscreen = new android.widget.FrameLayout(this);
+        fullscreen.setBackgroundColor(Color.BLACK);
+        fullscreen.addView(laptopScreenView, new android.widget.FrameLayout.LayoutParams(-1, -1));
+        Button close = button("Exit full screen", COLOR_SOFT);
+        close.setTextColor(COLOR_INK);
+        android.widget.FrameLayout.LayoutParams closeParams = new android.widget.FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.END);
+        closeParams.setMargins(0, dp(12), dp(12), 0);
+        fullscreen.addView(close, closeParams);
+
+        android.app.Dialog dialog = new android.app.Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+        laptopScreenDialog = dialog;
+        dialog.setContentView(fullscreen);
+        dialog.setCancelable(true);
+        close.setOnClickListener(v -> dialog.dismiss());
+        dialog.setOnDismissListener(ignored -> {
+            ViewParent parent = laptopScreenView.getParent();
+            if (parent instanceof ViewGroup) ((ViewGroup) parent).removeView(laptopScreenView);
+            if (laptopScreenParent != null && laptopScreenView.getParent() == null) {
+                int index = laptopScreenOriginalIndex < 0 ? laptopScreenParent.getChildCount()
+                        : Math.min(laptopScreenOriginalIndex, laptopScreenParent.getChildCount());
+                laptopScreenParent.addView(laptopScreenView, index, laptopScreenOriginalLayout);
+            }
+            laptopScreenDialog = null;
+        });
+        dialog.show();
+        android.view.Window window = dialog.getWindow();
+        if (window != null) {
+            window.setLayout(-1, -1);
+            window.setFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN,
+                    android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN);
+            window.getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                            | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
+        }
+    }
+
     private ScrollView[] tabViews;
     private Button[] tabButtons;
-    private LinearLayout libraryList;
-    private TextView libraryStatus;
-    private String libraryFilter = "all";
-    private LinearLayout phoneLibrarySection;
-    private LinearLayout laptopLibrarySection;
     private String laptopFilterKind = "all";
     private LinearLayout chatList;
     private TextView chatStatus;
@@ -499,15 +648,15 @@ public final class MainActivity extends Activity {
         return column;
     }
 
-    /** The bottom bar real apps use: four icons, the chosen one highlighted. */
+    /** The bottom bar real apps use: five sections, the chosen one highlighted. */
     private View buildBottomBar() {
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setBackgroundColor(COLOR_SURFACE);
         bar.setPadding(dp(4), dp(8), dp(4), dp(10));
         bar.setElevation(dp(8));
-        int[] icons = {R.drawable.ic_tab_connect, R.drawable.ic_tab_screen, R.drawable.ic_tab_library, R.drawable.ic_tab_chat};
-        String[] labels = {"Connect", "Screen", "Library", "Chat"};
+        int[] icons = {R.drawable.ic_tab_connect, R.drawable.ic_tab_screen, R.drawable.ic_tab_library, R.drawable.ic_tab_chat, android.R.drawable.ic_menu_manage};
+        String[] labels = {"Connect", "Screen", "Library", "Chat", "Clone"};
         tabButtons = new Button[labels.length];
         for (int i = 0; i < labels.length; i++) {
             final int index = i;
@@ -540,7 +689,7 @@ public final class MainActivity extends Activity {
                 tabButtons[i].setCompoundDrawableTintList(android.content.res.ColorStateList.valueOf(tint));
             }
         }
-        if (index == 2) refreshLibrary();
+        if (index == 2) loadLaptopFilesIfConfigured();
         if (index == 1 || index == 2) syncHelperLinkFields();
         if (index == 3) {
             refreshChat();
@@ -550,65 +699,172 @@ public final class MainActivity extends Activity {
             chatHandler.removeCallbacks(chatPoll);
         }
         if (index == 1) refreshScreenButton();
+        if (index == 4) refreshCloneTab();
     }
 
-    /** Library tab: what is on this phone, newest first, tap to open. */
-    private void buildLibraryTab(LinearLayout parent) {
-        LinearLayout sourceTabs = new LinearLayout(this);
-        sourceTabs.setOrientation(LinearLayout.HORIZONTAL);
-        Button phoneSource = button("Files on this phone", COLOR_GREEN);
-        Button laptopSource = button("Files on the laptop", COLOR_SOFT);
-        laptopSource.setTextColor(COLOR_INK);
-        LinearLayout.LayoutParams sourceLp = new LinearLayout.LayoutParams(0, -2, 1f);
-        sourceLp.rightMargin = dp(4);
-        sourceTabs.addView(phoneSource, sourceLp);
-        LinearLayout.LayoutParams remoteLp = new LinearLayout.LayoutParams(0, -2, 1f);
-        remoteLp.leftMargin = dp(4);
-        sourceTabs.addView(laptopSource, remoteLp);
-        addCard(parent, "CHOOSE A DEVICE", sourceTabs);
+    private TextView cloneStatus;
+    private LinearLayout cloneApps;
 
-        phoneLibrarySection = new LinearLayout(this);
-        phoneLibrarySection.setOrientation(LinearLayout.VERTICAL);
-        parent.addView(phoneLibrarySection, matchWrap());
+    private void buildCloneTab(LinearLayout parent) {
+        TextView intro = new TextView(this);
+        intro.setText("Create an Android Work profile for separate app installs and accounts. This is the supported, user-controlled way to keep a second app instance on Android.");
+        intro.setTextColor(COLOR_MUTED);
+        intro.setTextSize(14);
+        intro.setLineSpacing(dp(3), 1f);
+        addCard(parent, "PRIVATE APP SPACE", intro);
+
+        cloneStatus = new TextView(this);
+        cloneStatus.setTextColor(COLOR_INK);
+        cloneStatus.setTextSize(14);
+        cloneStatus.setLineSpacing(dp(3), 1f);
+        addCard(parent, "STATUS", cloneStatus);
+
+        Button setup = button("Create private app space", COLOR_GREEN);
+        setup.setOnClickListener(v -> startCloneProfileSetup());
+        parent.addView(setup, matchWrap());
+        Button open = button("Open private app space", COLOR_SOFT);
+        open.setTextColor(COLOR_INK);
+        open.setOnClickListener(v -> openCloneProfile());
+        parent.addView(open, matchWrap());
+
+        cloneApps = new LinearLayout(this);
+        cloneApps.setOrientation(LinearLayout.VERTICAL);
+        addCard(parent, "APPS AVAILABLE TO ADD", cloneApps);
+
+        TextView limitations = new TextView(this);
+        limitations.setText("PocketBridge cannot bypass Android’s app sandbox, copy private app data, or remove ads. Install a second app copy from the Work Play Store; some apps block Work profiles or are not available there. Installing the second copy requires Play Store access. Android/OEM policy may disable profile creation.");
+        limitations.setTextColor(COLOR_MUTED);
+        limitations.setTextSize(12);
+        limitations.setPadding(dp(4), dp(12), dp(4), 0);
+        parent.addView(limitations, matchWrap());
+    }
+
+    private void refreshCloneTab() {
+        if (cloneStatus == null) return;
+        try {
+            android.app.admin.DevicePolicyManager policy = (android.app.admin.DevicePolicyManager)
+                    getSystemService(DEVICE_POLICY_SERVICE);
+            if (policy != null && policy.isProfileOwnerApp(getPackageName())) {
+                cloneStatus.setText("This PocketBridge instance is inside the private Work profile. Use the app’s Play Store listing below to install a separate copy here.");
+                loadCloneCandidatesInProfile();
+                return;
+            }
+            if (hasCloneProfile()) {
+                cloneStatus.setText("Private app space is ready. Open it, then choose apps to add.");
+            } else {
+                cloneStatus.setText("No private app space is set up. Android will ask you to approve a separate Work profile.");
+            }
+            if (cloneApps != null) {
+                cloneApps.removeAllViews();
+                TextView help = new TextView(this);
+                help.setText("After setup, open PocketBridge from the Work profile to choose apps.");
+                help.setTextColor(COLOR_MUTED);
+                help.setPadding(dp(8), dp(8), dp(8), dp(8));
+                cloneApps.addView(help);
+            }
+        } catch (Exception error) {
+            cloneStatus.setText("Android did not allow the profile status to be read: " + error.getMessage());
+        }
+    }
+
+    private boolean hasCloneProfile() {
+        try {
+            android.content.pm.LauncherApps launcher = (android.content.pm.LauncherApps) getSystemService(LAUNCHER_APPS_SERVICE);
+            if (launcher == null) return false;
+            for (android.os.UserHandle profile : launcher.getProfiles()) {
+                if (!profile.equals(android.os.Process.myUserHandle())
+                        && !launcher.getActivityList(getPackageName(), profile).isEmpty()) return true;
+            }
+        } catch (Exception ignored) { }
+        return false;
+    }
+
+    private void startCloneProfileSetup() {
+        android.app.admin.DevicePolicyManager policy = (android.app.admin.DevicePolicyManager)
+                getSystemService(DEVICE_POLICY_SERVICE);
+        if (policy == null || !policy.isProvisioningAllowed(android.app.admin.DevicePolicyManager.ACTION_PROVISION_MANAGED_PROFILE)) {
+            cloneStatus.setText("Android cannot create another Work profile on this phone. Check whether a Work profile already exists or the device administrator has disabled it.");
+            return;
+        }
+        Intent provision = new Intent(android.app.admin.DevicePolicyManager.ACTION_PROVISION_MANAGED_PROFILE);
+        provision.putExtra(android.app.admin.DevicePolicyManager.EXTRA_PROVISIONING_DEVICE_ADMIN_COMPONENT_NAME,
+                new android.content.ComponentName(this, CloneAdminReceiver.class));
+        if (Build.VERSION.SDK_INT >= 33) {
+            provision.putExtra(android.app.admin.DevicePolicyManager.EXTRA_PROVISIONING_ALLOW_OFFLINE, true);
+        }
+        try {
+            startActivityForResult(provision, REQUEST_CLONE_PROFILE);
+        } catch (Exception error) {
+            cloneStatus.setText("Android could not open Work profile setup: " + error.getMessage());
+        }
+    }
+
+    private static final int REQUEST_CLONE_PROFILE = 44;
+
+    private void openCloneProfile() {
+        try {
+            android.content.pm.LauncherApps launcher = (android.content.pm.LauncherApps) getSystemService(LAUNCHER_APPS_SERVICE);
+            if (launcher == null) throw new IllegalStateException("Android app launcher is unavailable.");
+            for (android.os.UserHandle profile : launcher.getProfiles()) {
+                if (profile.equals(android.os.Process.myUserHandle())) continue;
+                java.util.List<android.content.pm.LauncherActivityInfo> activities = launcher.getActivityList(getPackageName(), profile);
+                if (!activities.isEmpty()) {
+                    launcher.startMainActivity(activities.get(0).getComponentName(), profile, null, null);
+                    return;
+                }
+            }
+            cloneStatus.setText("The private profile’s PocketBridge copy is not available yet. Finish Android’s Work profile setup, then try again.");
+        } catch (Exception error) {
+            cloneStatus.setText("Could not open the private app space: " + error.getMessage());
+        }
+    }
+
+    private void loadCloneCandidatesInProfile() {
+        if (cloneApps == null) return;
+        cloneApps.removeAllViews();
+        TextView instruction = new TextView(this);
+        instruction.setText("Enter the app’s package name (for example, com.example.app). Play Store installs its second instance inside this Work profile.");
+        instruction.setTextColor(COLOR_MUTED);
+        instruction.setPadding(dp(8), dp(8), dp(8), dp(8));
+        cloneApps.addView(instruction, matchWrap());
+        EditText packageField = new EditText(this);
+        packageField.setSingleLine(true);
+        packageField.setHint("App package name");
+        cloneApps.addView(packageField, matchWrap());
+        Button openStore = button("Open app in Work Play Store", COLOR_SOFT);
+        openStore.setTextColor(COLOR_INK);
+        openStore.setOnClickListener(v -> {
+            String packageName = packageField.getText().toString().trim();
+            if (!packageName.matches("[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)+")) {
+                Toast.makeText(this, "Enter a valid app package name.", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            android.net.Uri listing = android.net.Uri.parse("market://details?id=" + android.net.Uri.encode(packageName));
+            try { startActivity(new Intent(Intent.ACTION_VIEW, listing).setPackage("com.android.vending")); }
+            catch (Exception error) {
+                try { startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://play.google.com/store/apps/details?id=" + android.net.Uri.encode(packageName)))); }
+                catch (Exception unavailable) { Toast.makeText(this, "The Work profile Play Store is not available on this phone.", Toast.LENGTH_LONG).show(); }
+            }
+        });
+        cloneApps.addView(openStore, matchWrap());
+        Button browseStore = button("Browse Work Play Store", COLOR_SOFT);
+        browseStore.setTextColor(COLOR_INK);
+        browseStore.setOnClickListener(v -> {
+            try { startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse("market://search?q="))
+                    .setPackage("com.android.vending")); }
+            catch (Exception error) { Toast.makeText(this, "The Work profile Play Store is not available on this phone.", Toast.LENGTH_LONG).show(); }
+        });
+        cloneApps.addView(browseStore, matchWrap());
+    }
+
+    /** The library on the phone is dedicated to files shared by the laptop. */
+    private void buildLibraryTab(LinearLayout parent) {
         laptopLibrarySection = new LinearLayout(this);
         laptopLibrarySection.setOrientation(LinearLayout.VERTICAL);
-        laptopLibrarySection.setVisibility(View.GONE);
         parent.addView(laptopLibrarySection, matchWrap());
-        phoneSource.setOnClickListener(v -> showLibrarySource(false));
-        laptopSource.setOnClickListener(v -> showLibrarySource(true));
-        phoneLibrarySourceButton = phoneSource;
-        laptopLibrarySourceButton = laptopSource;
-
-        libraryStatus = new TextView(this);
-        libraryStatus.setText("Reading your media…");
-        libraryStatus.setTextColor(COLOR_INK);
-        libraryStatus.setTextSize(14);
-        libraryStatus.setLineSpacing(dp(3), 1f);
-        addCard(phoneLibrarySection, "ON THIS PHONE", libraryStatus);
-
-        LinearLayout filters = new LinearLayout(this);
-        filters.setOrientation(LinearLayout.HORIZONTAL);
-        String[] kinds = {"all", "image", "video", "audio", "file"};
-        String[] labels = {"All", "Photos", "Videos", "Audio", "Files"};
-        for (int i = 0; i < kinds.length; i++) {
-            final String kind = kinds[i];
-            Button chip = button(labels[i], "all".equals(kind) ? COLOR_GREEN : COLOR_SOFT);
-            if (!"all".equals(kind)) chip.setTextColor(COLOR_INK);
-            chip.setTextSize(12);
-            chip.setMinHeight(dp(40));
-            chip.setOnClickListener(v -> { libraryFilter = kind; refreshLibrary(); });
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -2, 1f);
-            if (i > 0) lp.leftMargin = dp(4);
-            filters.addView(chip, lp);
-        }
-        addCard(phoneLibrarySection, "SHOW", filters);
-
-        libraryList = new LinearLayout(this);
-        libraryList.setOrientation(LinearLayout.VERTICAL);
-        addCard(phoneLibrarySection, "PHONE FILES", libraryList);
 
         TextView laptopIntro = new TextView(this);
-        laptopIntro.setText("Browse files on the laptop. Paste the helper link once, then enter a laptop folder or file path to choose what the phone can browse. A file path opens its containing folder.");
+        laptopIntro.setText("Browse the laptop from this phone. Leave the path empty to search your Windows user folders, or paste a folder or file path. Searching happens on the laptop and returns matching files only.");
         laptopIntro.setTextColor(COLOR_MUTED);
         laptopIntro.setTextSize(13);
         laptopIntro.setLineSpacing(dp(3), 1f);
@@ -653,7 +909,7 @@ public final class MainActivity extends Activity {
         addCard(laptopLibrarySection, "FILE TYPE", laptopKinds);
 
         TextView laptopStatusView = new TextView(this);
-        laptopStatusView.setText("The helper shares Downloads by default. Enter another folder or file path above to switch locations.");
+        laptopStatusView.setText("Paste the Windows helper link on Connect. Empty path searches the Windows user folders; use an exact path to narrow access to one folder.");
         laptopStatusView.setTextColor(COLOR_MUTED);
         laptopStatusView.setTextSize(12);
         laptopStatusView.setPadding(dp(4), 0, dp(4), dp(10));
@@ -664,18 +920,8 @@ public final class MainActivity extends Activity {
         addCard(laptopLibrarySection, "LAPTOP FILES", laptopRows);
 
         Button loadLaptop = button("Load laptop files", COLOR_GREEN);
-        loadLaptop.setOnClickListener(v -> {
-            String link = libraryHelperLink.getText().toString().trim();
-            if (link.isEmpty()) {
-                laptopStatusView.setText("Start the Windows helper and paste the local link it prints.");
-                return;
-            }
-            String requestedPath = laptopFolderPath.getText().toString().trim();
-            laptopStatusView.setText(requestedPath.isEmpty() ? "Reading the laptop folder…" : "Switching to that laptop location…");
-            laptopRows.removeAllViews();
-            loadLaptop.setEnabled(false);
-            fetchLaptopFiles(link, requestedPath, laptopRows, laptopStatusView, laptopSearchField.getText().toString().trim(), () -> loadLaptop.setEnabled(true));
-        });
+        laptopLoadButton = loadLaptop;
+        loadLaptop.setOnClickListener(v -> loadLaptopFiles());
         LinearLayout.LayoutParams loadGap = matchWrap();
         loadGap.topMargin = dp(2);
         laptopLibrarySection.addView(loadLaptop, loadGap);
@@ -687,25 +933,6 @@ public final class MainActivity extends Activity {
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) { filterLaptopRows(); }
             @Override public void afterTextChanged(android.text.Editable s) { }
         });
-    }
-
-    private EditText laptopFilter;
-    private LinearLayout laptopRowHolder;
-    private TextView laptopStatus;
-
-    private void showLibrarySource(boolean laptop) {
-        if (phoneLibrarySection == null || laptopLibrarySection == null) return;
-        phoneLibrarySection.setVisibility(laptop ? View.GONE : View.VISIBLE);
-        laptopLibrarySection.setVisibility(laptop ? View.VISIBLE : View.GONE);
-        if (phoneLibrarySourceButton != null) {
-            phoneLibrarySourceButton.setBackgroundColor(laptop ? COLOR_SOFT : COLOR_GREEN);
-            phoneLibrarySourceButton.setTextColor(laptop ? COLOR_INK : Color.WHITE);
-        }
-        if (laptopLibrarySourceButton != null) {
-            laptopLibrarySourceButton.setBackgroundColor(laptop ? COLOR_GREEN : COLOR_SOFT);
-            laptopLibrarySourceButton.setTextColor(laptop ? Color.WHITE : COLOR_INK);
-        }
-        syncHelperLinkFields();
     }
 
     private void setLaptopFilterKind(String kind) {
@@ -776,6 +1003,31 @@ public final class MainActivity extends Activity {
             laptopStatus.setText(shown + " of " + laptopRowHolder.getChildCount()
                     + " laptop files shown. Photos open to view, videos/audio open to play, other files open in a compatible app.");
         }
+    }
+
+    private void loadLaptopFilesIfConfigured() {
+        if (laptopLoadButton != null && !getSavedHelperLink().trim().isEmpty()
+                && laptopRowHolder != null && laptopRowHolder.getChildCount() == 0) {
+            loadLaptopFiles();
+        }
+    }
+
+    private void loadLaptopFiles() {
+        if (libraryHelperLink == null || laptopStatus == null || laptopRowHolder == null) return;
+        String link = libraryHelperLink.getText().toString().trim();
+        if (link.isEmpty()) {
+            laptopStatus.setText("Start the Windows helper, then paste its LAN link on Connect.");
+            return;
+        }
+        String requestedPath = laptopFolderPath.getText().toString().trim();
+        String query = laptopFilter == null ? "" : laptopFilter.getText().toString().trim();
+        laptopStatus.setText(requestedPath.isEmpty()
+                ? (query.isEmpty() ? "Loading recent files from your Windows user folders…" : "Searching your Windows user folders for “" + query + "”…")
+                : "Loading “" + requestedPath + "”…");
+        laptopRowHolder.removeAllViews();
+        if (laptopLoadButton != null) laptopLoadButton.setEnabled(false);
+        fetchLaptopFiles(link, requestedPath, laptopRowHolder, laptopStatus, query,
+                () -> { if (laptopLoadButton != null) laptopLoadButton.setEnabled(true); });
     }
 
     /** Turns a loopback helper link into one the phone can actually reach. */
@@ -859,7 +1111,7 @@ public final class MainActivity extends Activity {
                 // "LAN:" is the one a phone can reach. Rather than only refusing the
                 // loopback one, look for the laptop on this network and use it.
                 final android.net.Uri supplied = loopback ? resolveLoopbackHelper(parsed, token, status) : parsed;
-                if (!requestedPath.isEmpty()) {
+                {
                     HttpURLConnection settingsConnection = null;
                     try {
                         android.net.Uri settingsUri = supplied.buildUpon().path("/settings").clearQuery()
@@ -870,7 +1122,8 @@ public final class MainActivity extends Activity {
                         settingsConnection.setReadTimeout(10000);
                         settingsConnection.setDoOutput(true);
                         settingsConnection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-                        byte[] payload = new JSONObject().put("share_dir", requestedPath).toString()
+                        String selectedRoot = requestedPath.isEmpty() ? "@home" : requestedPath;
+                        byte[] payload = new JSONObject().put("share_dir", selectedRoot).toString()
                                 .getBytes(java.nio.charset.StandardCharsets.UTF_8);
                         try (java.io.OutputStream output = settingsConnection.getOutputStream()) { output.write(payload); }
                         int settingsCode = settingsConnection.getResponseCode();
@@ -892,9 +1145,12 @@ public final class MainActivity extends Activity {
                     } finally {
                         if (settingsConnection != null) settingsConnection.disconnect();
                     }
-                    runOnUiThread(() -> status.setText("Location selected. Loading its files…"));
+                    runOnUiThread(() -> status.setText(requestedPath.isEmpty()
+                            ? "Searching Windows user folders…" : "Location selected. Loading its files…"));
                 }
-                android.net.Uri filesUri = supplied.buildUpon().path("/files").clearQuery().appendQueryParameter("t", token).build();
+                android.net.Uri.Builder filesBuilder = supplied.buildUpon().path("/files").clearQuery().appendQueryParameter("t", token);
+                if (initialQuery != null && !initialQuery.trim().isEmpty()) filesBuilder.appendQueryParameter("q", initialQuery.trim());
+                android.net.Uri filesUri = filesBuilder.build();
                 connection = (HttpURLConnection) new URL(filesUri.toString()).openConnection();
                 connection.setConnectTimeout(5000);
                 connection.setReadTimeout(10000);
@@ -907,9 +1163,12 @@ public final class MainActivity extends Activity {
                 }
                 JSONObject data = new JSONObject(new String(bytes.toByteArray(), java.nio.charset.StandardCharsets.UTF_8));
                 JSONArray items = data.optJSONArray("files");
+                boolean truncated = data.optBoolean("truncated", false);
                 runOnUiThread(() -> {
                     if (items == null || items.length() == 0) {
-                        status.setText("No files found in the helper's shared folder.");
+                        status.setText(initialQuery == null || initialQuery.trim().isEmpty()
+                                ? "No files were found in the selected laptop folder. Check that the folder path exists."
+                                : "No laptop files matched “" + initialQuery.trim() + "”. Try a shorter word or enter a folder path.");
                     } else {
                         for (int i = 0; i < items.length(); i++) {
                             JSONObject item = items.optJSONObject(i);
@@ -950,7 +1209,9 @@ public final class MainActivity extends Activity {
                             lp.topMargin = dp(4);
                             rows.addView(row, lp);
                         }
-                        status.setText(items.length() + " laptop files loaded from the helper’s shared folder.");
+                        status.setText(items.length() + " laptop file" + (items.length() == 1 ? "" : "s")
+                                + (initialQuery == null || initialQuery.trim().isEmpty() ? " loaded." : " matched “" + initialQuery.trim() + "”.")
+                                + (truncated ? " First 2,000 matches shown; narrow the search." : ""));
                         filterLaptopRows();
                     }
                     done.run();
@@ -970,10 +1231,13 @@ public final class MainActivity extends Activity {
         new Thread(() -> {
             HttpURLConnection connection = null;
             try {
-                android.net.Uri supplied = android.net.Uri.parse(link);
-                String token = supplied.getQueryParameter("t");
-                if (token == null || !"http".equalsIgnoreCase(supplied.getScheme()))
+                android.net.Uri parsed = android.net.Uri.parse(link.trim());
+                String token = parsed.getQueryParameter("t");
+                if (token == null || !"http".equalsIgnoreCase(parsed.getScheme()))
                     throw new Exception("Paste the running Windows helper link in the Screen tab first.");
+                String host = parsed.getHost() == null ? "" : parsed.getHost();
+                boolean loopback = "127.0.0.1".equals(host) || "localhost".equalsIgnoreCase(host) || "::1".equals(host);
+                android.net.Uri supplied = loopback ? resolveLoopbackHelper(parsed, token, status) : parsed;
                 android.net.Uri powerUri = supplied.buildUpon().path("/power").clearQuery()
                         .appendQueryParameter("t", token).build();
                 connection = (HttpURLConnection) new URL(powerUri.toString()).openConnection();
@@ -986,67 +1250,35 @@ public final class MainActivity extends Activity {
                         .getBytes(java.nio.charset.StandardCharsets.UTF_8);
                 try (java.io.OutputStream output = connection.getOutputStream()) { output.write(payload); }
                 int response = connection.getResponseCode();
-                if (response < 200 || response >= 300) throw new Exception("Windows helper returned HTTP " + response + ". Check that it is running and the link is current.");
-                runOnUiThread(() -> status.setText("Windows command sent: " + action + "."));
+                if (response < 200 || response >= 300) {
+                    java.io.InputStream errorStream = connection.getErrorStream();
+                    String detail = "";
+                    if (errorStream != null) {
+                        try (java.io.InputStream input = errorStream; java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream()) {
+                            byte[] buffer = new byte[1024]; int read;
+                            while ((read = input.read(buffer)) != -1 && bytes.size() < 4096) bytes.write(buffer, 0, read);
+                            detail = bytes.toString(java.nio.charset.StandardCharsets.UTF_8.name()).trim();
+                        }
+                    }
+                    throw new Exception(detail.isEmpty() ? "Windows helper returned HTTP " + response + "." : detail);
+                }
+                String message;
+                switch (action) {
+                    case "lock": message = "Windows locked the laptop."; break;
+                    case "wake-display": message = "Wake-display command sent. The laptop must be awake and the helper running."; break;
+                    case "unlock": message = "Windows sign-in screen requested. Enter the PIN or password on the laptop; PocketBridge cannot bypass sign-in."; break;
+                    case "sleep": message = "Windows accepted the sleep request. The helper will disconnect as the laptop sleeps."; break;
+                    case "shutdown": message = "Windows scheduled shutdown in 15 seconds."; break;
+                    default: message = "Windows command sent: " + action + ".";
+                }
+                final String confirmedMessage = message;
+                runOnUiThread(() -> status.setText(confirmedMessage));
             } catch (Exception error) {
                 runOnUiThread(() -> status.setText("Laptop control failed: " + error.getMessage()));
             } finally {
                 if (connection != null) connection.disconnect();
             }
         }, "PocketBridge-laptop-power").start();
-    }
-
-    private void refreshLibrary() {
-        if (libraryList == null) return;
-        final String kind = libraryFilter;
-        libraryList.removeAllViews();
-        libraryStatus.setText("Reading your media…");
-        new Thread(() -> {
-            List<MediaRepository.Item> items = new ArrayList<>();
-            String message;
-            try {
-                MediaRepository repository = new MediaRepository(this);
-                MediaRepository.Page page = repository.listPage(kind, 0, 60);
-                items.addAll(page.items);
-                message = items.isEmpty()
-                        ? "Nothing to show here yet. Allow photo and video access, then start a share."
-                        : items.size() + " item" + (items.size() == 1 ? "" : "s")
-                          + (page.hasMore ? " (first 60 shown)" : "") + " · tap one to open it.";
-            } catch (Exception error) {
-                message = "Could not read the media library: " + error.getMessage();
-            }
-            final String status = message;
-            runOnUiThread(() -> {
-                libraryStatus.setText(status);
-                for (MediaRepository.Item item : items) {
-                    Button row = button(item.name + "\n" + android.text.format.Formatter.formatShortFileSize(this, item.size), COLOR_SURFACE);
-                    row.setTextColor(COLOR_INK);
-                    row.setTextSize(13);
-                    row.setAllCaps(false);
-                    row.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-                    row.setMinHeight(dp(52));
-                    row.setOnClickListener(v -> openMedia(item));
-                    LinearLayout.LayoutParams lp = matchWrap();
-                    lp.topMargin = dp(4);
-                    libraryList.addView(row, lp);
-                }
-            });
-        }, "PocketBridge-library").start();
-    }
-
-    private void openMedia(MediaRepository.Item item) {
-        if (item.mime != null && item.mime.startsWith("video/")) {
-            openVideoWithChoice(item.uri, item.mime, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            return;
-        }
-        try {
-            Intent intent = new Intent(Intent.ACTION_VIEW);
-            intent.setDataAndType(item.uri, item.mime == null || item.mime.isEmpty() ? "*/*" : item.mime);
-            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            startActivity(intent);
-        } catch (Exception error) {
-            Toast.makeText(this, "No app on this phone can open that file.", Toast.LENGTH_SHORT).show();
-        }
     }
 
     /** Chat tab: the same conversation the laptop sees, answered from here. */
@@ -1246,6 +1478,222 @@ public final class MainActivity extends Activity {
         catch (Exception error) { Toast.makeText(this, "Could not open the file picker.", Toast.LENGTH_SHORT).show(); }
     }
 
+    private String randomQrId() {
+        byte[] bytes = new byte[8];
+        new java.security.SecureRandom().nextBytes(bytes);
+        return android.util.Base64.encodeToString(bytes, android.util.Base64.URL_SAFE | android.util.Base64.NO_WRAP | android.util.Base64.NO_PADDING);
+    }
+
+    private void chooseQrFile() {
+        Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        picker.setType("*/*");
+        picker.addCategory(Intent.CATEGORY_OPENABLE);
+        try { startActivityForResult(picker, REQUEST_QR_SEND_FILE); }
+        catch (Exception error) { Toast.makeText(this, "Could not open the file picker.", Toast.LENGTH_SHORT).show(); }
+    }
+
+    private void showQrFrames(List<String> frames, String title) {
+        if (frames == null || frames.isEmpty()) return;
+        android.app.Dialog dialog = new android.app.Dialog(this);
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(dp(16), dp(16), dp(16), dp(12));
+        layout.setBackgroundColor(COLOR_SURFACE);
+        TextView heading = new TextView(this);
+        heading.setText(title + " · scan every frame");
+        heading.setTextColor(COLOR_INK);
+        heading.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        heading.setTextSize(17);
+        layout.addView(heading, matchWrap());
+        android.widget.ImageView image = new android.widget.ImageView(this);
+        image.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
+        LinearLayout.LayoutParams imageLp = new LinearLayout.LayoutParams(-1, dp(300));
+        imageLp.topMargin = dp(10);
+        layout.addView(image, imageLp);
+        TextView progress = new TextView(this);
+        progress.setTextColor(COLOR_MUTED);
+        progress.setGravity(Gravity.CENTER);
+        progress.setPadding(0, dp(6), 0, dp(6));
+        layout.addView(progress, matchWrap());
+        LinearLayout controls = new LinearLayout(this);
+        controls.setOrientation(LinearLayout.HORIZONTAL);
+        Button previous = button("‹ Previous", COLOR_SOFT);
+        previous.setTextColor(COLOR_INK);
+        Button next = button("Next ›", COLOR_GREEN);
+        Button close = button("Close", COLOR_SOFT);
+        close.setTextColor(COLOR_INK);
+        controls.addView(previous, new LinearLayout.LayoutParams(0, -2, 1f));
+        controls.addView(next, new LinearLayout.LayoutParams(0, -2, 1f));
+        controls.addView(close, new LinearLayout.LayoutParams(0, -2, 1f));
+        layout.addView(controls, matchWrap());
+        dialog.setContentView(layout);
+        dialog.setCancelable(true);
+        final int[] selected = {0};
+        Runnable render = () -> {
+            if (!dialog.isShowing()) return;
+            String payload = frames.get(selected[0]);
+            try {
+                java.util.EnumMap<com.google.zxing.EncodeHintType, Object> hints = new java.util.EnumMap<>(com.google.zxing.EncodeHintType.class);
+                hints.put(com.google.zxing.EncodeHintType.ERROR_CORRECTION, com.google.zxing.qrcode.decoder.ErrorCorrectionLevel.M);
+                hints.put(com.google.zxing.EncodeHintType.MARGIN, 2);
+                com.google.zxing.common.BitMatrix matrix = new com.google.zxing.qrcode.QRCodeWriter().encode(
+                        payload, com.google.zxing.BarcodeFormat.QR_CODE, 640, 640, hints);
+                android.graphics.Bitmap bitmap = android.graphics.Bitmap.createBitmap(matrix.getWidth(), matrix.getHeight(), android.graphics.Bitmap.Config.ARGB_8888);
+                for (int y = 0; y < matrix.getHeight(); y++) for (int x = 0; x < matrix.getWidth(); x++)
+                    bitmap.setPixel(x, y, matrix.get(x, y) ? Color.BLACK : Color.WHITE);
+                image.setImageBitmap(bitmap);
+                progress.setText("Frame " + (selected[0] + 1) + " of " + frames.size() + " · scan all frames in order");
+            } catch (Exception error) {
+                progress.setText("Could not render this QR: " + error.getMessage());
+            }
+        };
+        previous.setOnClickListener(v -> { selected[0] = (selected[0] + frames.size() - 1) % frames.size(); render.run(); });
+        next.setOnClickListener(v -> { selected[0] = (selected[0] + 1) % frames.size(); render.run(); });
+        close.setOnClickListener(v -> dialog.dismiss());
+        dialog.show();
+        android.view.Window window = dialog.getWindow();
+        if (window != null) window.setLayout((int) (getResources().getDisplayMetrics().widthPixels * 0.94f), -2);
+        render.run();
+        if (frames.size() > 1) {
+            Runnable advance = new Runnable() {
+                @Override public void run() {
+                    if (!dialog.isShowing()) return;
+                    selected[0] = (selected[0] + 1) % frames.size();
+                    render.run();
+                    qrHandler.postDelayed(this, 900);
+                }
+            };
+            qrHandler.postDelayed(advance, 900);
+            dialog.setOnDismissListener(ignored -> qrHandler.removeCallbacks(advance));
+        }
+    }
+
+    private void scanQrFromCamera() {
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.CAMERA}, REQUEST_QR_CAMERA_PERMISSION);
+            return;
+        }
+        if (qrScannerDialog != null && qrScannerDialog.isShowing()) return;
+        seenQrFrames.clear();
+        android.app.Dialog dialog = new android.app.Dialog(this, android.R.style.Theme_Material_NoActionBar);
+        qrScannerDialog = dialog;
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setBackgroundColor(COLOR_BG);
+        layout.setPadding(dp(12), dp(12), dp(12), dp(12));
+        TextView title = new TextView(this);
+        title.setText("Scan QR transfer");
+        title.setTextColor(COLOR_INK);
+        title.setTextSize(18);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        layout.addView(title, matchWrap());
+        qrScannerStatus = new TextView(this);
+        qrScannerStatus.setText("Hold the phone steady. All QR frames are read automatically.");
+        qrScannerStatus.setTextColor(COLOR_MUTED);
+        qrScannerStatus.setPadding(0, dp(8), 0, dp(8));
+        layout.addView(qrScannerStatus, matchWrap());
+        qrScannerView = new com.journeyapps.barcodescanner.DecoratedBarcodeView(this);
+        qrScannerView.getBarcodeView().setDecoderFactory(new com.journeyapps.barcodescanner.DefaultDecoderFactory(
+                java.util.Collections.singletonList(com.google.zxing.BarcodeFormat.QR_CODE)));
+        layout.addView(qrScannerView, new LinearLayout.LayoutParams(-1, 0, 1f));
+        Button close = button("Stop scanning", COLOR_SOFT);
+        close.setTextColor(COLOR_INK);
+        layout.addView(close, matchWrap());
+        close.setOnClickListener(v -> dialog.dismiss());
+        dialog.setContentView(layout);
+        dialog.setCancelable(true);
+        dialog.setOnDismissListener(ignored -> {
+            if (qrScannerView != null) qrScannerView.pause();
+            qrScannerView = null;
+            qrScannerStatus = null;
+            qrScannerDialog = null;
+            seenQrFrames.clear();
+        });
+        dialog.show();
+        android.view.Window window = dialog.getWindow();
+        if (window != null) window.setLayout(-1, -1);
+        qrScannerView.decodeContinuous(new com.journeyapps.barcodescanner.BarcodeCallback() {
+            @Override public void barcodeResult(com.journeyapps.barcodescanner.BarcodeResult result) {
+                if (result == null || result.getText() == null || !seenQrFrames.add(result.getText())) return;
+                acceptQrPayload(result.getText());
+            }
+            @Override public void possibleResultPoints(java.util.List<com.google.zxing.ResultPoint> points) { }
+        });
+        qrScannerView.resume();
+    }
+
+    private void closeQrScanner() {
+        if (qrScannerDialog != null && qrScannerDialog.isShowing()) qrScannerDialog.dismiss();
+    }
+
+    private void acceptQrPayload(String payload) {
+        QrTransferCodec.Frame frame = QrTransferCodec.parse(payload);
+        if (frame == null) {
+            closeQrScanner();
+            new android.app.AlertDialog.Builder(this).setTitle("QR text")
+                    .setMessage(payload).setNegativeButton("Close", null)
+                    .setPositiveButton("Copy", (d, w) -> {
+                        ClipboardManager clipboard = getSystemService(ClipboardManager.class);
+                        if (clipboard != null) clipboard.setPrimaryClip(ClipData.newPlainText("QR text", payload));
+                    }).show();
+            return;
+        }
+        if (qrAssemblies.size() >= 6 && !qrAssemblies.containsKey(frame.id)) qrAssemblies.clear();
+        QrAssembly assembly = qrAssemblies.get(frame.id);
+        if (assembly == null) {
+            assembly = new QrAssembly(frame);
+            qrAssemblies.put(frame.id, assembly);
+        }
+        if (assembly.text != frame.text || assembly.chunks.length != frame.total
+                || (!frame.text && (!assembly.name.equals(frame.name) || !assembly.mime.equals(frame.mime)))) {
+            qrAssemblies.remove(frame.id);
+            closeQrScanner();
+            Toast.makeText(this, "QR frames do not belong to the same transfer. Start again from the first frame.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (assembly.chunks[frame.index] == null) {
+            assembly.chunks[frame.index] = frame.bytes;
+            assembly.received++;
+        }
+        if (assembly.received < assembly.chunks.length) {
+            String message = "QR transfer " + assembly.received + "/" + assembly.chunks.length + " frames received. Keep scanning.";
+            if (qrScannerStatus != null) qrScannerStatus.setText(message);
+            else Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        closeQrScanner();
+        java.io.ByteArrayOutputStream joined = new java.io.ByteArrayOutputStream();
+        try {
+            for (byte[] chunk : assembly.chunks) joined.write(chunk);
+        } catch (java.io.IOException impossible) { }
+        qrAssemblies.remove(frame.id);
+        byte[] data = joined.toByteArray();
+        if (data.length > QrTransferCodec.MAX_BYTES) {
+            Toast.makeText(this, "This QR transfer is larger than the 128 KiB limit. Use Wi-Fi or Hotspot.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (assembly.text) {
+            String text = new String(data, java.nio.charset.StandardCharsets.UTF_8);
+            new android.app.AlertDialog.Builder(this).setTitle("Text received by QR")
+                    .setMessage(text).setNegativeButton("Close", null)
+                    .setPositiveButton("Copy", (d, w) -> {
+                        ClipboardManager clipboard = getSystemService(ClipboardManager.class);
+                        if (clipboard != null) clipboard.setPrimaryClip(ClipData.newPlainText("QR text", text));
+                        Toast.makeText(this, "Text copied", Toast.LENGTH_SHORT).show();
+                    }).show();
+            return;
+        }
+        pendingQrFile = data;
+        pendingQrName = assembly.name.isEmpty() ? "PocketBridge-QR-file" : assembly.name;
+        pendingQrMime = assembly.mime.isEmpty() ? "application/octet-stream" : assembly.mime;
+        Intent create = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        create.addCategory(Intent.CATEGORY_OPENABLE);
+        create.setType(pendingQrMime);
+        create.putExtra(Intent.EXTRA_TITLE, pendingQrName);
+        try { startActivityForResult(create, REQUEST_QR_RECEIVE_SAVE); }
+        catch (Exception error) { Toast.makeText(this, "Could not open the save location picker.", Toast.LENGTH_LONG).show(); }
+    }
+
     private void openChatAttachment(JSONObject attachment) {
         String id = attachment.optString("id", "");
         String code = codeText == null ? "" : codeText.getText().toString().replaceAll("\\s", "");
@@ -1336,6 +1784,12 @@ public final class MainActivity extends Activity {
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQUEST_QR_CAMERA_PERMISSION) {
+            boolean granted = checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
+            if (granted) scanQrFromCamera();
+            else Toast.makeText(this, "Allow camera access to scan QR transfers.", Toast.LENGTH_LONG).show();
+            return;
+        }
         if (requestCode == REQUEST_PERMISSIONS) {
             boolean wifiPermissionAllowed = Build.VERSION.SDK_INT >= 33
                     ? checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED
@@ -1349,6 +1803,32 @@ public final class MainActivity extends Activity {
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_QR_SEND_FILE) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) prepareQrFile(data.getData());
+            return;
+        }
+        if (requestCode == REQUEST_QR_RECEIVE_SAVE) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null && pendingQrFile != null) {
+                try (java.io.OutputStream output = getContentResolver().openOutputStream(data.getData(), "w")) {
+                    if (output == null) throw new java.io.IOException("Android did not open the selected destination.");
+                    output.write(pendingQrFile);
+                    Toast.makeText(this, "Saved " + pendingQrName, Toast.LENGTH_LONG).show();
+                } catch (Exception error) {
+                    Toast.makeText(this, "Could not save the QR file: " + error.getMessage(), Toast.LENGTH_LONG).show();
+                }
+            }
+            pendingQrFile = null;
+            pendingQrName = null;
+            pendingQrMime = null;
+            return;
+        }
+        if (requestCode == REQUEST_CLONE_PROFILE) {
+            cloneStatus.setText(resultCode == RESULT_OK
+                    ? "Android accepted Work profile setup. When it finishes, open PocketBridge from the Work profile."
+                    : "Work profile setup was cancelled or blocked by Android. No apps were copied.");
+            cloneStatus.postDelayed(this::refreshCloneTab, 1200);
+            return;
+        }
         if (requestCode == REQUEST_SEND_FILE) {
             if (resultCode == RESULT_OK && data != null) {
                 List<android.net.Uri> selected = new ArrayList<>();
@@ -1374,6 +1854,34 @@ public final class MainActivity extends Activity {
                 screenButton.postDelayed(this::refreshScreenButton, 1500);
                 Toast.makeText(this, "Keep PocketBridge open. Choose Watch screen on the laptop.", Toast.LENGTH_LONG).show();
             } else Toast.makeText(this, "Screen sharing was cancelled", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void prepareQrFile(android.net.Uri uri) {
+        String name = "PocketBridge-QR-file";
+        String mime = getContentResolver().getType(uri);
+        try (android.database.Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int nameColumn = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
+                if (nameColumn >= 0 && cursor.getString(nameColumn) != null) name = cursor.getString(nameColumn);
+            }
+        } catch (Exception ignored) { }
+        java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+        try (java.io.InputStream input = getContentResolver().openInputStream(uri)) {
+            if (input == null) throw new java.io.IOException("Android could not open this file.");
+            byte[] buffer = new byte[8192];
+            int count;
+            while ((count = input.read(buffer)) != -1) {
+                if (bytes.size() + count > QrTransferCodec.MAX_BYTES) {
+                    throw new java.io.IOException("QR Share is limited to 128 KiB. Use Wi-Fi or Hotspot for larger photos and videos.");
+                }
+                bytes.write(buffer, 0, count);
+            }
+            List<String> frames = QrTransferCodec.fileFrames(randomQrId(), name,
+                    valueOr(mime, "application/octet-stream"), bytes.toByteArray());
+            showQrFrames(frames, name);
+        } catch (Exception error) {
+            Toast.makeText(this, error.getMessage() == null ? "Could not read the selected file." : error.getMessage(), Toast.LENGTH_LONG).show();
         }
     }
 

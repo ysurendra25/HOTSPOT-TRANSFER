@@ -33,9 +33,19 @@ func filesHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil { http.Error(w, "invalid share folder", http.StatusInternalServerError); return }
 	if info, statErr := os.Stat(root); statErr != nil || !info.IsDir() { http.Error(w, "share folder unavailable", http.StatusNotFound); return }
 	result := make([]sharedFile, 0, 64)
+	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	const maxResults = 2000
+	// Avoid walking caches and dependency trees in the user home folder. These
+	// directories are not useful media libraries and can contain millions of files.
+	prunedDirs := map[string]bool{
+		"appdata": true, ".cache": true, ".cargo": true, ".codex": true,
+		".gradle": true, ".m2": true, ".npm": true, ".nuget": true,
+		".rustup": true, "node_modules": true, "$recycle.bin": true,
+	}
 	err = filepath.WalkDir(root, func(target string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil { return nil }
 		if target == root { return nil }
+		if entry.IsDir() && prunedDirs[strings.ToLower(entry.Name())] { return filepath.SkipDir }
 		if strings.HasPrefix(entry.Name(), ".") {
 			if entry.IsDir() { return filepath.SkipDir }
 			return nil
@@ -47,16 +57,17 @@ func filesHandler(w http.ResponseWriter, r *http.Request) {
 		relative, relErr := filepath.Rel(root, target)
 		if relErr != nil { return nil }
 		relative = filepath.ToSlash(relative)
+		if query != "" && !strings.Contains(strings.ToLower(entry.Name()+" "+relative), query) { return nil }
 		contentType := contentTypeForName(entry.Name())
 		result = append(result, sharedFile{Name: entry.Name(), Path: relative, Size: info.Size(), Modified: info.ModTime().UnixMilli(), MIME: contentType, URL: "/file/" + urlPathEscape(relative)})
-		if len(result) >= 5000 { return filepath.SkipAll }
+		if len(result) >= maxResults { return filepath.SkipAll }
 		return nil
 	})
 	if err != nil { http.Error(w, "share folder unavailable", http.StatusNotFound); return }
 	sort.SliceStable(result, func(i, j int) bool { return result[i].Modified > result[j].Modified })
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_ = json.NewEncoder(w).Encode(map[string]any{"files": result})
+	_ = json.NewEncoder(w).Encode(map[string]any{"files": result, "truncated": len(result) >= maxResults, "query": query})
 }
 
 func fileHandler(w http.ResponseWriter, r *http.Request) {
