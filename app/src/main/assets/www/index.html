@@ -92,9 +92,14 @@
   .screen-view.focused,.screen-view:fullscreen{position:fixed;inset:0;z-index:1000;margin:0;border-radius:0;display:flex;flex-direction:column;background:#000;width:100vw;height:100vh;height:100dvh;max-width:none;overflow:hidden}
   .screen-toolbar{padding:11px 15px;color:#fff;display:flex;justify-content:space-between;align-items:center;gap:10px}
   .screen-toolbar span{font-size:13px}
-  .screen-view canvas,.screen-view video{display:block;width:100%;height:auto;max-height:72vh;min-height:160px;object-fit:contain;background:#000;image-rendering:auto}
-  .screen-view canvas[hidden],.screen-view video[hidden]{display:none}
-  .screen-view.focused canvas,.screen-view:fullscreen canvas,.screen-view.focused video,.screen-view:fullscreen video{flex:1;min-width:0;min-height:0;max-height:none;width:100%;height:100%;object-fit:contain}
+  /* Video and canvas share one cell of a grid, so while the direct stream is
+     starting (video present but still invisible) the JPEG preview keeps the
+     whole frame. Stacked one above the other they split the space, and the
+     picture showed in only half of the viewer. */
+  .screen-stage{display:grid;place-items:center;width:100%;height:72vh;min-height:160px;background:#000;overflow:hidden}
+  .screen-stage>canvas,.screen-stage>video{grid-area:1/1;display:block;width:100%;height:100%;max-width:100%;max-height:100%;min-width:0;min-height:0;object-fit:contain;background:#000;image-rendering:auto}
+  .screen-stage>canvas[hidden],.screen-stage>video[hidden]{display:none}
+  .screen-view.focused .screen-stage,.screen-view:fullscreen .screen-stage{flex:1;height:auto;min-height:0}
   .modal:fullscreen{padding:0;background:#000}
   .modal:fullscreen .modal-box{max-width:none;width:100vw;height:100vh;height:100dvh;max-height:none;min-height:0;border-radius:0;display:flex;flex-direction:column}
   .modal:fullscreen .stage{min-height:0;max-height:none;aspect-ratio:auto!important}
@@ -306,8 +311,10 @@
         <button class="btn btn-outline" id="screenFullscreen" type="button">Fullscreen</button>
         <button class="btn btn-outline" id="stopWatch" type="button">Stop viewing</button>
       </div>
-      <video id="screenVideo" autoplay muted playsinline aria-label="Live screen from the Android phone" hidden></video>
-      <canvas id="screenCanvas" aria-label="Live screen from the Android phone" hidden></canvas>
+      <div class="screen-stage" id="screenStage">
+        <video id="screenVideo" autoplay muted playsinline aria-label="Live screen from the Android phone" hidden></video>
+        <canvas id="screenCanvas" aria-label="Live screen from the Android phone" hidden></canvas>
+      </div>
       <div class="note" id="screenViewHint">Tap “Share phone screen” in PocketBridge on the phone to begin.</div>
     </section>
 
@@ -453,6 +460,7 @@
   /* ---------- code gate ---------- */
   async function tryCode(candidate) {
     const response = await fetch('/api/session?code=' + encodeURIComponent(candidate), {cache:'no-store'});
+    if (response.status === 429) throw Object.assign(new Error('locked'), {locked: true});
     return response.ok;
   }
   async function unlock(candidate, remember) {
@@ -468,7 +476,9 @@
         return false;
       }
     } catch (error) {
-      document.getElementById('gateError').textContent = 'Could not reach the phone. Keep it sharing and retry.';
+      document.getElementById('gateError').textContent = error && error.locked
+        ? 'Too many wrong codes. Wait a minute, then enter the code shown on the phone.'
+        : 'Could not reach the phone. Keep it sharing and retry.';
       return false;
     }
     code = trimmed;
@@ -1033,7 +1043,7 @@
   let screenFrames = 0;
   let latestScreenJpeg = null;
   let decodingScreenFrame = false;
-  let screenPathLabel = 'Compatibility JPEG · up to 1280px · max 20 fps';
+  let screenPathLabel = 'Compatibility JPEG · native resolution';
   let screenFallbackReason = '';
 
   async function watchScreen() {
@@ -1050,7 +1060,7 @@
     watchButton.disabled = true;
     screenView.classList.add('active');
     state.textContent = 'Connecting · showing the first available frame…';
-    screenPathLabel = 'Compatibility JPEG · up to 1280px · max 20 fps';
+    screenPathLabel = 'Compatibility JPEG · native resolution';
     video.hidden = true;
     canvas.hidden = false;
     // Start the local preview immediately. JPEG remains visible only until the
@@ -1068,7 +1078,7 @@
       video.hidden = true;
       canvas.hidden = false;
       screenFallbackReason = error.message || 'connection failed';
-      screenPathLabel = 'Compatibility JPEG · up to 1280px · max 20 fps · direct link unavailable';
+      screenPathLabel = 'Compatibility JPEG · native resolution · direct link unavailable';
       state.textContent = screenPathLabel + ' (' + screenFallbackReason + ')';
     }
   }
@@ -1079,6 +1089,11 @@
     screenPeer = peer;
     peer.addTransceiver('video', {direction: 'recvonly'});
     peer.ontrack = event => {
+      // Live view, not playback: ask the browser to show each frame as soon as
+      // it is decoded instead of buffering for smoothness.
+      try { if ('jitterBufferTarget' in event.receiver) event.receiver.jitterBufferTarget = 0; } catch (e) {}
+      try { if ('playoutDelayHint' in event.receiver) event.receiver.playoutDelayHint = 0; } catch (e) {}
+      try { if (event.track && 'contentHint' in event.track) event.track.contentHint = 'detail'; } catch (e) {}
       const stream = event.streams && event.streams[0] ? event.streams[0] : new MediaStream([event.track]);
       video.srcObject = stream;
       // Keep drawing the JPEG fallback until the direct stream has decoded a
@@ -1217,25 +1232,14 @@
         const merged = new Uint8Array(pending.length + value.length);
         merged.set(pending, 0);
         merged.set(value, pending.length);
-        let start = indexOfJpegStart(merged, 0);
-        if (start < 0) {
-          pending = merged.length && merged[merged.length - 1] === 0xFF ? merged.slice(-1) : new Uint8Array(0);
-          continue;
-        }
+        // Take whole parts by their Content-Length. Searching for JPEG end
+        // markers could end a frame early, and drawing a cut JPEG shows only
+        // its top part. Older frames in the same chunk are skipped.
         let latest = null;
-        while (start >= 0) {
-          const finish = indexOfJpegEnd(merged, start);
-          if (finish < 0) break;
-          latest = merged.slice(start, finish + 2);
-          start = indexOfJpegStart(merged, finish + 2);
-        }
-        if (start >= 0) {
-          // A partial frame remains; keep only that frame instead of every older
-          // complete frame in the chunk.
-          pending = merged.slice(start);
-        } else {
-          pending = new Uint8Array(0);
-        }
+        let rest = merged;
+        let part;
+        while ((part = takeScreenPart(rest))) { latest = part.frame; rest = part.rest; }
+        pending = rest.length > 48 * 1024 * 1024 ? new Uint8Array(0) : rest;
         if (latest) { latestScreenJpeg = latest; drawLatestScreenFrame(canvas, context, state); }
       }
     } catch (error) {
@@ -1283,6 +1287,34 @@
       decodingScreenFrame = false;
       if (latestScreenJpeg && screenWanted) drawLatestScreenFrame(canvas, context, state);
     }
+  }
+
+  const PART_HEADER_END = [13, 10, 13, 10];
+  function indexOfBytes(bytes, needle, from) {
+    outer: for (let i = from || 0; i <= bytes.length - needle.length; i++) {
+      for (let j = 0; j < needle.length; j++) if (bytes[i + j] !== needle[j]) continue outer;
+      return i;
+    }
+    return -1;
+  }
+
+  // One multipart part from the front of the buffer, or null while incomplete.
+  function takeScreenPart(bytes) {
+    const headEnd = indexOfBytes(bytes, PART_HEADER_END, 0);
+    if (headEnd < 0) return null;
+    const head = new TextDecoder('ascii').decode(bytes.subarray(0, headEnd));
+    const match = /content-length:\s*(\d+)/i.exec(head);
+    if (!match) {
+      const start = indexOfJpegStart(bytes, headEnd);
+      if (start < 0) return null;
+      const finish = indexOfJpegEnd(bytes, start);
+      if (finish < 0) return null;
+      return {frame: bytes.slice(start, finish + 2), rest: bytes.subarray(finish + 2)};
+    }
+    const length = Number(match[1]);
+    const begin = headEnd + 4;
+    if (bytes.length < begin + length) return null;
+    return {frame: bytes.slice(begin, begin + length), rest: bytes.subarray(begin + length)};
   }
 
   function indexOfJpegStart(bytes, from) {

@@ -39,7 +39,6 @@ import org.webrtc.VideoTrack;
 
 import java.util.ArrayList;
 import java.io.ByteArrayOutputStream;
-import java.nio.ByteBuffer;
 import java.util.Collections;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -70,8 +69,8 @@ public final class ScreenCaptureService extends Service {
     private volatile CountDownLatch answerLatch;
     private volatile boolean iceGatheringComplete;
     private volatile JpegSink jpegSink;
-    private int captureWidth;
-    private int captureHeight;
+    private volatile int captureWidth;
+    private volatile int captureHeight;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     static final class JpegFrame {
@@ -91,8 +90,35 @@ public final class ScreenCaptureService extends Service {
     static JpegFrame awaitJpegFrame(long afterSequence, long timeoutMs) {
         ScreenCaptureService service = instance;
         JpegSink sink = service == null ? null : service.jpegSink;
-        return sink == null ? null : sink.awaitAfter(afterSequence, timeoutMs);
+        if (sink == null) {
+            // No encoder yet (or it was just switched off): wait a little instead
+            // of returning at once. Returning at once turned the server's stream
+            // loop into a busy spin that pinned a CPU core and froze the phone.
+            try { Thread.sleep(Math.max(1, Math.min(timeoutMs, 100))); }
+            catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+            return null;
+        }
+        return sink.awaitAfter(afterSequence, timeoutMs);
     }
+
+    private static final java.util.concurrent.atomic.AtomicInteger MJPEG_VIEWERS = new java.util.concurrent.atomic.AtomicInteger();
+
+    /** A browser opened the JPEG stream: keep the JPEG encoder on while it watches. */
+    static void mjpegViewerStarted() {
+        MJPEG_VIEWERS.incrementAndGet();
+        prepareMjpegFallback();
+    }
+
+    /** The JPEG encoder is CPU-heavy; switch it off when the last JPEG viewer leaves. */
+    static void mjpegViewerEnded() {
+        if (MJPEG_VIEWERS.decrementAndGet() <= 0) {
+            MJPEG_VIEWERS.set(0);
+            ScreenCaptureService service = instance;
+            if (service != null) service.disableJpegFallback();
+        }
+    }
+
+    static int mjpegViewers() { return MJPEG_VIEWERS.get(); }
 
     /** Enable the JPEG compatibility stream only when a browser needs it. */
     static void prepareMjpegFallback() {
@@ -202,11 +228,35 @@ public final class ScreenCaptureService extends Service {
         capturer.initialize(surfaceTextureHelper, getApplicationContext(), videoSource.getCapturerObserver());
 
         int[] size = captureSize();
-        capturer.startCapture(size[0], size[1], 30);
+        capturer.startCapture(size[0], size[1], ScreenStreamTuning.MAX_FRAMERATE);
         captureWidth = size[0];
         captureHeight = size[1];
         videoTrack = factory.createVideoTrack("pocketbridge-screen", videoSource);
         videoTrack.setEnabled(true);
+        watchRotation();
+    }
+
+    private android.hardware.display.DisplayManager.DisplayListener rotationListener;
+
+    /**
+     * The virtual display is created at the size the phone had when sharing
+     * started. Before Android 14 nothing tells the capturer that the phone
+     * rotated, so a landscape screen was squeezed into the portrait-sized
+     * capture. Follow the real display size on every rotation instead.
+     */
+    private void watchRotation() {
+        android.hardware.display.DisplayManager displays = getSystemService(android.hardware.display.DisplayManager.class);
+        if (displays == null) return;
+        rotationListener = new android.hardware.display.DisplayManager.DisplayListener() {
+            @Override public void onDisplayAdded(int displayId) { }
+            @Override public void onDisplayRemoved(int displayId) { }
+            @Override public void onDisplayChanged(int displayId) {
+                if (displayId != android.view.Display.DEFAULT_DISPLAY) return;
+                int[] size = captureSize();
+                resizeCaptureForContent(size[0], size[1]);
+            }
+        };
+        displays.registerDisplayListener(rotationListener, mainHandler);
     }
 
     /** Keep the native display size for the direct WebRTC stream. The JPEG fallback scales separately. */
@@ -222,7 +272,7 @@ public final class ScreenCaptureService extends Service {
         int[] size = boundedCaptureSize(contentWidth, contentHeight);
         if (size[0] == captureWidth && size[1] == captureHeight) return;
         try {
-            capturer.changeCaptureFormat(size[0], size[1], 24);
+            capturer.changeCaptureFormat(size[0], size[1], ScreenStreamTuning.MAX_FRAMERATE);
             captureWidth = size[0];
             captureHeight = size[1];
             android.util.Log.i("PocketBridge", "Screen capture resized to " + captureWidth + "x" + captureHeight);
@@ -255,7 +305,16 @@ public final class ScreenCaptureService extends Service {
         sink.close();
     }
 
+    private final Object offerLock = new Object();
+
     private String acceptOffer(String offerSdp) {
+        // One negotiation at a time; a second browser tab replaces the first.
+        synchronized (offerLock) {
+            return acceptOfferLocked(offerSdp);
+        }
+    }
+
+    private String acceptOfferLocked(String offerSdp) {
         closePeer();
         lastOfferError = null;
         pendingAnswer = null;
@@ -270,9 +329,10 @@ public final class ScreenCaptureService extends Service {
             @Override public void onSignalingChange(PeerConnection.SignalingState state) { }
             @Override public void onIceConnectionChange(PeerConnection.IceConnectionState state) {
                 lastIceState = state == null ? "unknown" : state.toString().toLowerCase(java.util.Locale.ROOT);
-                if (state == PeerConnection.IceConnectionState.CONNECTED || state == PeerConnection.IceConnectionState.COMPLETED) {
-                    // Keep one MediaProjection capture session alive. Restarting it to
-                    // refresh a still frame breaks Android 14+ one-session capture rules.
+                if ((state == PeerConnection.IceConnectionState.CONNECTED || state == PeerConnection.IceConnectionState.COMPLETED)
+                        && MJPEG_VIEWERS.get() == 0) {
+                    // The direct stream is up and nobody is on the JPEG stream:
+                    // stop spending CPU on JPEG frames nobody receives.
                     disableJpegFallback();
                 }
             }
@@ -301,16 +361,21 @@ public final class ScreenCaptureService extends Service {
         if (sender != null) {
             try {
                 RtpParameters parameters = sender.getParameters();
-                // Keep native capture dimensions, but cap the hotspot stream so
-                // WebRTC has less data to queue while the phone screen is moving.
+                // Original quality: never trade resolution away. On congestion
+                // WebRTC lowers the frame rate first and keeps the pixels sharp.
+                parameters.degradationPreference = RtpParameters.DegradationPreference.MAINTAIN_RESOLUTION;
                 for (RtpParameters.Encoding encoding : parameters.encodings) {
-                    encoding.maxBitrateBps = 6_000_000;
-                    encoding.maxFramerate = 24;
+                    encoding.maxBitrateBps = ScreenStreamTuning.MAX_KBPS * 1000;
+                    encoding.minBitrateBps = ScreenStreamTuning.MIN_KBPS * 1000;
+                    encoding.maxFramerate = ScreenStreamTuning.MAX_FRAMERATE;
+                    encoding.scaleResolutionDownBy = 1.0;
+                    encoding.networkPriority = 3; // Priority.HIGH
+                    encoding.bitratePriority = 4.0;
                 }
                 sender.setParameters(parameters);
             } catch (Exception ignored) { }
         }
-        SessionDescription offer = new SessionDescription(SessionDescription.Type.OFFER, offerSdp);
+        SessionDescription offer = new SessionDescription(SessionDescription.Type.OFFER, ScreenStreamTuning.tuneOffer(offerSdp));
         activePeer.setRemoteDescription(new EmptySdpObserver() {
             @Override public void onSetSuccess() {
                 activePeer.createAnswer(new EmptySdpObserver() {
@@ -361,12 +426,16 @@ public final class ScreenCaptureService extends Service {
     }
 
     private void closePeer() {
-        if (peer != null) {
-            try { peer.close(); } catch (Exception ignored) { }
-            try { peer.dispose(); } catch (Exception ignored) { }
+        PeerConnection closing;
+        synchronized (this) {
+            closing = peer;
             peer = null;
+            sender = null;
         }
-        sender = null;
+        if (closing != null) {
+            try { closing.close(); } catch (Exception ignored) { }
+            try { closing.dispose(); } catch (Exception ignored) { }
+        }
     }
 
     /** Encodes the local compatibility stream when direct WebRTC cannot be used. */
@@ -374,8 +443,14 @@ public final class ScreenCaptureService extends Service {
         // The WebRTC path keeps the source resolution. Compatibility JPEG is a
         // last-resort path, so cap its CPU and hotspot bandwidth to prevent a
         // growing encode/send queue from turning into seconds of stale video.
-        private static final int MAX_EDGE = 1280;
-        private static final long MIN_FRAME_NS = 50_000_000L;
+        // Native resolution: the fallback is for browsers without WebRTC and
+        // should look like the phone, not like a thumbnail of it. 4096 only
+        // guards memory on unusual displays.
+        private static final int MAX_EDGE = 4096;
+        static final int QUALITY = 88;
+        // At most 30 fps. Frames arriving while one is still encoding are
+        // dropped, so only the newest frame is ever sent.
+        private static final long MIN_FRAME_NS = 33_000_000L;
         private final Object frameLock = new Object();
         private final AtomicBoolean encoding = new AtomicBoolean();
         private final ExecutorService encoder = Executors.newSingleThreadExecutor(task -> {
@@ -468,7 +543,7 @@ public final class ScreenCaptureService extends Service {
                 Nv21Rotation.Frame rotated = Nv21Rotation.rotate(nv21, width, height, frame.getRotation());
                 ByteArrayOutputStream out = new ByteArrayOutputStream();
                 if (!new YuvImage(rotated.data, ImageFormat.NV21, rotated.width, rotated.height, null)
-                        .compressToJpeg(new Rect(0, 0, rotated.width, rotated.height), 65, out)) return null;
+                        .compressToJpeg(new Rect(0, 0, rotated.width, rotated.height), QUALITY, out)) return null;
                 return out.toByteArray();
             } catch (Exception | OutOfMemoryError error) {
                 android.util.Log.w("PocketBridge", "Could not encode a local screen frame", error);
@@ -480,29 +555,17 @@ public final class ScreenCaptureService extends Service {
         }
 
         private byte[] toNv21(VideoFrame.I420Buffer frame, int width, int height) {
-            int ySize = width * height;
-            byte[] nv21 = new byte[ySize + ySize / 2];
-            ByteBuffer y = frame.getDataY().duplicate();
-            ByteBuffer u = frame.getDataU().duplicate();
-            ByteBuffer v = frame.getDataV().duplicate();
-            int out = 0;
-            for (int row = 0; row < height; row++) {
-                int base = row * frame.getStrideY();
-                for (int col = 0; col < width; col++) nv21[out++] = y.get(base + col);
-            }
-            for (int row = 0; row < height / 2; row++) {
-                int uBase = row * frame.getStrideU();
-                int vBase = row * frame.getStrideV();
-                for (int col = 0; col < width / 2; col++) {
-                    nv21[out++] = v.get(vBase + col);
-                    nv21[out++] = u.get(uBase + col);
-                }
-            }
-            return nv21;
+            return I420Packing.toNv21(frame.getDataY(), frame.getStrideY(), frame.getDataU(), frame.getStrideU(),
+                    frame.getDataV(), frame.getStrideV(), width, height);
         }
     }
 
     @Override public void onDestroy() {
+        if (rotationListener != null) {
+            android.hardware.display.DisplayManager displays = getSystemService(android.hardware.display.DisplayManager.class);
+            if (displays != null) displays.unregisterDisplayListener(rotationListener);
+            rotationListener = null;
+        }
         closePeer();
         if (jpegSink != null) {
             if (videoTrack != null) {
