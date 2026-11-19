@@ -4,6 +4,17 @@ PocketBridge is an open-source Android app for sharing phone media and the phone
 
 See the illustrated [quick-start guide](docs/QUICK_START_GUIDE.md) for connecting, browsing, and screen sharing.
 
+## Version 0.6.0.5
+
+- **A cleaner video viewer.** The browser streams the original file first and fits the image to its source ratio by default. Optional Fill (crop), Stretch, 21:9, 16:10, 16:9, 3:2, 4:3, square and portrait layouts are available, along with playback speed, volume and picture-in-picture where the browser supports it.
+- **The Music tab is audio-only.** Videos and file-type filters stay in Files; the Music tab contains the song queue and its player.
+- **Chat is easier to browse.** The conversation has a larger scrollable history, keeps your reading position during refresh, and does not rebuild unchanged messages. Downloading a received attachment now starts only when you click its Download action.
+- **Laptop files load with recycled rows on Android.** The phone no longer creates hundreds of buttons on the main thread as each laptop page arrives, reducing freezes while browsing large folders.
+- **Incoming files can be saved deliberately on Android.** Tap Download to phone, choose a destination, then the file is copied in the background.
+- **Repeated video opens release UI listeners and reset the viewer layout**, avoiding stale sizing and accumulated input callbacks.
+
+See [RELEASE_NOTES_v0.6.0.5.md](RELEASE_NOTES_v0.6.0.5.md).
+
 ## Version 0.6.0.3
 
 - **No more freezes from busy connections.** The phone's server creates workers as needed (up to 64) and answers "busy" instead of queueing, closes stuck screen viewers and all connections when sharing stops, and the screen stream no longer spins the CPU. Chat and other disk/network work moved off the main thread.

@@ -73,6 +73,13 @@ def main():
         "dark theme and persisted theme control": "pocketbridge_theme",
         "video aspect ratio recalculation": "function fitVideoStage()",
         "aspect ratio selection resizes the viewer": "fitVideoStage();",
+        "video playback preserves the original URL": "media.src = url;",
+        "video fitting offers cinema, portrait and classic ratios": "value=\"21-9\"",
+        "video controls are cleaned up between files": "modal.removeEventListener(eventName, controlRevealHandler)",
+        "music queue reads audio only": "/api/files?kind=audio&limit=5000",
+        "chat history has a large scroll area": "#chatMessages{max-height:min(58vh,560px)",
+        "unchanged chat polls do not rebuild the conversation": "if (fingerprint === lastChatFingerprint) return;",
+        "chat downloads are initiated only by the recipient": "download.addEventListener('click', () => downloadChatAttachment(attachment));",
         "transfer immediately refreshes chat": "await refreshMessages();",
         "chat file picker": 'id="chatFile"',
         "music play control": 'id="musicPlayPause"',
@@ -83,6 +90,15 @@ def main():
             problems += fail("missing " + feature)
     if "Open with" in html:
         problems += fail("the removed Open with action is still in the browser UI")
+    if "Download all to this laptop now?" in html:
+        problems += fail("chat polling can still start automatic file downloads")
+    if "if (!confirm('Download " in html:
+        problems += fail("recipient file download still requires a second confirmation instead of one deliberate click")
+    groups = re.search(r"const TAB_GROUPS = \{(.*?)\n  \};", html, re.S)
+    if not groups or "files: ['inboxSection', 'inboxGrid', 'librarySection', 'kindTabs', 'grid', 'transferSection']" not in groups.group(1):
+        problems += fail("video and file type filters must stay inside the Files tab")
+    if not groups or "music: ['musicSection']" not in groups.group(1):
+        problems += fail("the Music tab must show only the music player and song list")
     if "2560px / 12 fps" in html or "up to 1280px" in html:
         problems += fail("the screen-share fallback label does not match the phone encoder limits")
 
