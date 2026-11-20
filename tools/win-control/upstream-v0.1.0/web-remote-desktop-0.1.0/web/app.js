@@ -12,6 +12,16 @@ const hidden = document.getElementById('hidden');
 const msg = document.getElementById('msg');
 const cursorEl = document.getElementById('cursor');
 
+// Camera capture requires a secure context. The helper is also served on the
+// laptop's LAN address, but Edge only grants getUserMedia to localhost over
+// plain HTTP. Open the same authenticated helper on loopback for the call UI.
+document.getElementById('cameraShare')?.addEventListener('click', () => {
+  const token = PCR_TOKEN;
+  if (!token) { toast('Reopen the current helper link so its access token is available.'); return; }
+  const port = location.port || '7070';
+  location.href = `http://127.0.0.1:${port}/camera.html?t=${encodeURIComponent(token)}`;
+});
+
 let scale = 1, offX = 0, offY = 0;   // view transform
 let natW = 0, natH = 0;              // video size in pixels
 let curX = 0.5, curY = 0.5;          // virtual cursor, normalized 0..1

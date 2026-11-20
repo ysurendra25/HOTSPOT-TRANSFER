@@ -101,6 +101,30 @@ public class ServerFunctionalTest {
         return new Response(status, text, location);
     }
 
+    /** HttpURLConnection blocks the Origin header as browser-controlled; send it on a raw socket for CORS coverage. */
+    private static String rawOptions(String path, String origin) throws Exception {
+        try (java.net.Socket socket = new java.net.Socket("127.0.0.1", MediaHttpServer.PORT)) {
+            socket.setSoTimeout(4000);
+            String request = "OPTIONS " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: " + origin
+                    + "\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: content-type"
+                    + "\r\nAccess-Control-Request-Private-Network: true\r\nConnection: close\r\n\r\n";
+            socket.getOutputStream().write(request.getBytes(StandardCharsets.US_ASCII));
+            socket.getOutputStream().flush();
+            return readAll(socket.getInputStream());
+        }
+    }
+
+    private static String rawGet(String path, String origin) throws Exception {
+        try (java.net.Socket socket = new java.net.Socket("127.0.0.1", MediaHttpServer.PORT)) {
+            socket.setSoTimeout(4000);
+            String request = "GET " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: " + origin
+                    + "\r\nAccept: application/json\r\nConnection: close\r\n\r\n";
+            socket.getOutputStream().write(request.getBytes(StandardCharsets.US_ASCII));
+            socket.getOutputStream().flush();
+            return readAll(socket.getInputStream());
+        }
+    }
+
     private static String readAll(InputStream stream) throws Exception {
         try (InputStream input = stream) {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -210,7 +234,8 @@ public class ServerFunctionalTest {
     @Test public void browserAssetsExposeScrollableChatAndExpandedVideoControls() throws Exception {
         Response page = send("GET", "/", null, null);
         assertEquals(200, page.status);
-        assertTrue("chat should be scrollable", page.body.contains("#chatMessages{max-height:min(58vh,560px)") && page.body.contains("overscroll-behavior:contain"));
+        assertTrue("chat should scroll naturally on touch screens", page.body.contains("#chatMessages{max-height:min(58vh,560px)")
+                && page.body.contains("overscroll-behavior-y:contain") && page.body.contains("touch-action:pan-y"));
         assertTrue("video controls should include speed and volume", page.body.contains("playbackSpeed") && page.body.contains("videoVolume"));
         assertTrue("expanded aspect ratios should be present", page.body.contains("21-9") && page.body.contains("16-10") && page.body.contains("9-16") && page.body.contains("3-2"));
         assertFalse("incoming files must not trigger an automatic download prompt", page.body.contains("Download all to this laptop now?"));
@@ -318,6 +343,22 @@ public class ServerFunctionalTest {
         Response status = send("GET", withCode("/api/screen/status"), null, null);
         assertEquals(200, status.status);
         assertTrue(status.body.contains("\"ready\":false"));
+    }
+
+    @Test public void cameraSignalingRequiresThePhoneCodeAndAllowsOnlyTheLocalHelperOrigin() throws Exception {
+        String allowed = rawOptions(withCode("/api/camera/offer"), "http://127.0.0.1:7070");
+        assertTrue(allowed, allowed.startsWith("HTTP/1.1 204"));
+        assertTrue(allowed, allowed.toLowerCase(java.util.Locale.ROOT).contains("access-control-allow-origin: http://127.0.0.1:7070"));
+        assertTrue(allowed, allowed.toLowerCase(java.util.Locale.ROOT).contains("access-control-allow-private-network: true"));
+
+        String rejected = rawOptions(withCode("/api/camera/offer"), "https://untrusted.example");
+        assertTrue(rejected, rejected.startsWith("HTTP/1.1 403"));
+        String status = rawGet(withCode("/api/camera/status"), "http://127.0.0.1:7070");
+        assertTrue(status, status.startsWith("HTTP/1.1 200"));
+        assertTrue(status, status.toLowerCase(java.util.Locale.ROOT).contains("access-control-allow-origin: http://127.0.0.1:7070"));
+
+        assertEquals("camera APIs still require the six-digit access code", 403,
+                send("OPTIONS", "/api/camera/offer", null, null).status);
     }
 
     @Test public void healthAndFaviconAnswerWithoutTheCode() throws Exception {

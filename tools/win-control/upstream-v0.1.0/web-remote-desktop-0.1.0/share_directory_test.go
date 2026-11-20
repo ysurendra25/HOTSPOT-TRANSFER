@@ -36,9 +36,13 @@ func TestResolveShareDirectoryRejectsMissingPath(t *testing.T) {
 
 func TestResolveShareDirectoryHomeAlias(t *testing.T) {
 	got, err := resolveShareDirectory("@home")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	home, err := os.UserHomeDir()
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.EqualFold(filepath.Clean(got), filepath.Clean(home)) {
 		t.Fatalf("@home resolved to %q, want %q", got, home)
 	}
@@ -47,15 +51,30 @@ func TestResolveShareDirectoryHomeAlias(t *testing.T) {
 func TestResolveShareDirectoryHandlesTheProvidedMandaadiFilename(t *testing.T) {
 	root := t.TempDir()
 	container := filepath.Join(root, "38833FF26BA1D.UnigramPreview_g9c9v27vpyspw!App")
-	if err := os.Mkdir(container, 0700); err != nil { t.Fatal(err) }
+	if err := os.Mkdir(container, 0700); err != nil {
+		t.Fatal(err)
+	}
 	expectedContainer, err := filepath.EvalSymlinks(container)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	name := "Mandaadi (2026) Telugu HQ HDRip - 1080p - x264 - (DD+5.1.mkv"
 	file := filepath.Join(container, name)
-	if err := os.WriteFile(file, []byte("video"), 0600); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(file, []byte("video"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	got, err := resolveShareDirectory(`"` + file + `"`)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.EqualFold(filepath.Clean(got), filepath.Clean(expectedContainer)) {
 		t.Fatalf("file path resolved to %q; want containing folder %q", got, expectedContainer)
+	}
+	gotRoot, gotFile, err := resolveSharePath(`"` + file + `"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.EqualFold(filepath.Clean(gotRoot), filepath.Clean(expectedContainer)) || gotFile != name {
+		t.Fatalf("exact file path resolved to (%q, %q), want (%q, %q)", gotRoot, gotFile, expectedContainer, name)
 	}
 }

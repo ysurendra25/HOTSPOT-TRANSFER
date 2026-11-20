@@ -88,6 +88,31 @@ func TestQRImageRouteRequiresTokenAndReturnsPNG(t *testing.T) {
 	}
 }
 
+func TestCameraPageIsAuthenticatedAndDoesNotNeedAnExternalRelay(t *testing.T) {
+	withTestConfig(t, t.TempDir())
+	if res := serve(t, "GET", "/camera.html", "", map[string]string{"Accept": "text/html"}); res.Code != http.StatusUnauthorized {
+		t.Fatalf("camera page without helper token: %d", res.Code)
+	}
+	res := serve(t, "GET", "/camera.html?t="+testToken, "", map[string]string{"Accept": "text/html"})
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), "Two-way camera share") {
+		t.Fatalf("camera page: %d %s", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), "getUserMedia") || !strings.Contains(res.Body.String(), "iceServers:[]") {
+		t.Fatal("camera page should request explicit local camera permission and use direct local ICE")
+	}
+	if strings.Contains(res.Body.String(), "stun:") || strings.Contains(res.Body.String(), "turn:") {
+		t.Fatal("offline camera signaling must not depend on an external STUN/TURN service")
+	}
+}
+
+func TestHelperPageOffersCameraOnLaptopLoopback(t *testing.T) {
+	withTestConfig(t, t.TempDir())
+	res := serve(t, "GET", "/?t="+testToken, "", map[string]string{"Accept": "text/html"})
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `id="cameraShare"`) {
+		t.Fatalf("camera entry button missing: %d", res.Code)
+	}
+}
+
 func TestPhoneStyleRequestsGetJSONNotTheLoginPage(t *testing.T) {
 	withTestConfig(t, t.TempDir())
 	// Android's HttpURLConnection sends an Accept header that includes text/html.

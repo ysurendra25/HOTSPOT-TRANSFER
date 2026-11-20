@@ -69,13 +69,14 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if p.ShareDir != nil {
-			shareDir, err := resolveShareDirectory(*p.ShareDir)
+			shareDir, shareFile, err := resolveSharePath(*p.ShareDir)
 			if err != nil {
 				cfgMu.Unlock()
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			cfg.ShareDir = shareDir
+			cfg.ShareFile = shareFile
 		}
 		saved := cfg
 		cfgMu.Unlock()
@@ -101,11 +102,12 @@ func settingsHandler(w http.ResponseWriter, r *http.Request) {
 		"max_width": c.MaxW,
 		// Tap-ready links with the token already in them, regenerated from the
 		// current addresses so DHCP moving the machine doesn't strand anyone.
-		"lan_urls":  lanURLs(listenPort(c), c.Token),
-		"h264":      h264Info(),
-		"width":     b.Dx(),
-		"height":    b.Dy(),
-		"share_dir": c.ShareDir,
+		"lan_urls":   lanURLs(listenPort(c), c.Token),
+		"h264":       h264Info(),
+		"width":      b.Dx(),
+		"height":     b.Dy(),
+		"share_dir":  c.ShareDir,
+		"share_file": c.ShareFile,
 	})
 }
 

@@ -26,7 +26,9 @@ final class FakeHttpServer implements AutoCloseable {
     static final class Reply {
         final int status;
         final String body;
-        Reply(int status, String body) { this.status = status; this.body = body; }
+        final byte[] bytes;
+        Reply(int status, String body) { this.status = status; this.body = body; this.bytes = body.getBytes(StandardCharsets.UTF_8); }
+        Reply(int status, byte[] bytes) { this.status = status; this.body = ""; this.bytes = bytes; }
     }
 
     interface Handler { Reply handle(Request request); }
@@ -75,11 +77,10 @@ final class FakeHttpServer implements AutoCloseable {
                 Handler handler = routes.get(path);
                 Reply reply = handler == null ? new Reply(404, "not found")
                         : handler.handle(new Request(parts[0], path, query, new String(body, StandardCharsets.UTF_8)));
-                byte[] bytes = reply.body.getBytes(StandardCharsets.UTF_8);
                 OutputStream out = client.getOutputStream();
                 out.write(("HTTP/1.1 " + reply.status + " X\r\nContent-Type: application/json\r\nContent-Length: "
-                        + bytes.length + "\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
-                out.write(bytes);
+                        + reply.bytes.length + "\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+                out.write(reply.bytes);
                 out.flush();
             } catch (IOException closedOrBroken) {
                 if (socket.isClosed()) return;

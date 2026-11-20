@@ -500,6 +500,63 @@ final class MediaHttpServer {
                 respond(output, 200, "application/json; charset=utf-8", state.toString(), null);
                 return;
             }
+            if ((path.equals("/api/camera/status") || path.equals("/api/camera/offer") || path.equals("/api/camera/stop")) && method.equals("OPTIONS")) {
+                String cors = cameraCorsHeaders(headers.get("origin"));
+                if (cors == null) {
+                    respond(output, 403, "text/plain; charset=utf-8", "Camera calls are accepted only from the laptop's local helper page.", null);
+                } else {
+                    respond(output, 204, "text/plain; charset=utf-8", "", cors);
+                }
+                return;
+            }
+            if (path.equals("/api/camera/status") && method.equals("GET")) {
+                String cors = cameraCorsHeaders(headers.get("origin"));
+                if (headers.containsKey("origin") && cors == null) {
+                    respond(output, 403, "application/json; charset=utf-8", "{\"error\":\"Open the camera page from the Windows helper on this laptop.\"}", null);
+                    return;
+                }
+                JSONObject state = new JSONObject().put("ready", CameraSessionService.isRunning())
+                        .put("status", CameraSessionService.statusText());
+                respond(output, 200, "application/json; charset=utf-8", state.toString(), cors);
+                return;
+            }
+            if (path.equals("/api/camera/offer") && method.equals("POST")) {
+                String cors = cameraCorsHeaders(headers.get("origin"));
+                if (headers.containsKey("origin") && cors == null) {
+                    respond(output, 403, "application/json; charset=utf-8", "{\"error\":\"Open the camera page from the Windows helper on this laptop.\"}", null);
+                    return;
+                }
+                JSONObject request = new JSONObject(new String(body, StandardCharsets.UTF_8));
+                String sdp = request.optString("sdp", "");
+                if (sdp.isEmpty() || sdp.length() > 200_000) {
+                    respond(output, 400, "application/json; charset=utf-8", "{\"error\":\"The laptop camera offer is empty or too large.\"}", cors);
+                    return;
+                }
+                if (!CameraSessionService.isRunning()) {
+                    respond(output, 409, "application/json; charset=utf-8", "{\"error\":\"Start the phone camera session and approve Android camera access first.\"}", cors);
+                    return;
+                }
+                String answer = CameraSessionService.answerOffer(sdp);
+                if (answer == null || answer.isEmpty()) {
+                    String error = CameraSessionService.lastOfferError();
+                    JSONObject failure = new JSONObject().put("error", error == null ? "The phone could not answer the camera call." : error);
+                    respond(output, 409, "application/json; charset=utf-8", failure.toString(), cors);
+                    return;
+                }
+                respond(output, 200, "application/json; charset=utf-8",
+                        new JSONObject().put("type", "answer").put("sdp", answer).toString(), cors);
+                return;
+            }
+            if (path.equals("/api/camera/stop") && method.equals("POST")) {
+                String cors = cameraCorsHeaders(headers.get("origin"));
+                if (headers.containsKey("origin") && cors == null) {
+                    respond(output, 403, "application/json; charset=utf-8", "{\"error\":\"Open the camera page from the Windows helper on this laptop.\"}", null);
+                    return;
+                }
+                CameraSessionService.stopPeer();
+                respond(output, 200, "application/json; charset=utf-8", "{\"ok\":true}", cors);
+                return;
+            }
             if (path.equals("/api/screen/mjpeg") && method.equals("GET")) {
                 if (!ScreenCaptureService.isRunning()) {
                     String setupError = ScreenCaptureService.getSetupError();
@@ -1183,5 +1240,21 @@ final class MediaHttpServer {
     private static boolean constantTimeEquals(String expected, String actual) {
         if (expected == null || actual == null) return false;
         return java.security.MessageDigest.isEqual(expected.getBytes(StandardCharsets.UTF_8), actual.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** Allow browser camera signaling only from the helper's secure localhost origin. */
+    private static String cameraCorsHeaders(String origin) {
+        if (origin == null || origin.isEmpty()) return "";
+        Uri parsed = Uri.parse(origin);
+        String scheme = parsed.getScheme();
+        String host = parsed.getHost();
+        boolean loopback = "localhost".equalsIgnoreCase(host) || "127.0.0.1".equals(host)
+                || "::1".equals(host) || "[::1]".equals(host);
+        if (!"http".equalsIgnoreCase(scheme) || !loopback || origin.indexOf('\r') >= 0 || origin.indexOf('\n') >= 0) return null;
+        return "Access-Control-Allow-Origin: " + origin + "\r\n"
+                + "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+                + "Access-Control-Allow-Headers: Content-Type\r\n"
+                + "Access-Control-Allow-Private-Network: true\r\n"
+                + "Vary: Origin\r\n";
     }
 }

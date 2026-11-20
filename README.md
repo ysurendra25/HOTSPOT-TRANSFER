@@ -4,6 +4,16 @@ PocketBridge is an open-source Android app for sharing phone media and the phone
 
 See the illustrated [quick-start guide](docs/QUICK_START_GUIDE.md) for connecting, browsing, and screen sharing.
 
+## Version 0.6.0.7
+
+- **Two-way camera share over the local hotspot.** The new Camera tab replaces the unsupported Clone/profile feature. The phone owner starts the camera and grants Android permission; the laptop owner opens the helper's Camera page on localhost, grants Edge permission, and connects with the phone link and code. The direct WebRTC call uses no STUN/TURN service or cloud relay, and either side can stop it.
+- **Laptop files can be downloaded to the phone.** The file browser streams directly to the phone's private receive folder, asks Android to make storage available for known large files, removes partial downloads on failure, and adds successful downloads to Share chat.
+- **Exact laptop paths now target the exact file.** Pasting a full file path filters the helper to that file, while an empty path restores the default Downloads folder.
+- **Chat scrolling stays usable on touch.** The phone's nested chat scroll now captures its own vertical gestures, and the browser uses native vertical panning without scrolling the whole page.
+- **The laptop Camera page is served by the portable helper.** It is protected by the helper token, opened through loopback for Edge camera permissions, and then signals the phone using the six-digit code.
+
+See [RELEASE_NOTES_v0.6.0.7.md](RELEASE_NOTES_v0.6.0.7.md).
+
 ## Version 0.6.0.6
 
 - **A cleaner video viewer.** The browser streams the original file first and fits the image to its source ratio by default. Optional Fill (crop), Stretch, 21:9, 16:10, 16:9, 3:2, 4:3, square and portrait layouts are available, along with playback speed, volume and picture-in-picture where the browser supports it.

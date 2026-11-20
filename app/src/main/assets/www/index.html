@@ -194,7 +194,7 @@
   .chat-file-card .btn{white-space:nowrap}
   .chat-file-actions{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:7px}
   .chat-message-actions{display:flex;justify-content:flex-end;margin-top:7px}
-  #chatMessages{max-height:min(58vh,560px);min-height:180px;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;white-space:pre-wrap;padding:2px 6px}
+  #chatMessages{max-height:min(58vh,560px);min-height:180px;overflow-x:hidden;overflow-y:auto;overscroll-behavior-y:contain;scrollbar-gutter:stable;-webkit-overflow-scrolling:touch;touch-action:pan-y;white-space:pre-wrap;padding:2px 6px}
   .volume-control{display:flex;align-items:center;gap:6px;color:#a9c3bd;font-size:12px;white-space:nowrap}
   .volume-control input{width:74px;accent-color:#25a57f}
   @media(max-width:520px){.chat-file-card{grid-template-columns:34px minmax(0,1fr)}.chat-file-icon{width:34px;height:34px}.chat-file-card .btn{grid-column:2}}

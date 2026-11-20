@@ -27,7 +27,9 @@ import android.widget.BaseAdapter;
 import android.widget.Toast;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import org.json.JSONArray;
@@ -38,10 +40,10 @@ public final class MainActivity extends Activity {
     private static final int REQUEST_SCREEN_CAPTURE = 41;
     private static final int REQUEST_SEND_FILE = 42;
     private static final int REQUEST_QR_SEND_FILE = 43;
-    private static final int REQUEST_CLONE_PROFILE = 44;
     private static final int REQUEST_QR_RECEIVE_SAVE = 45;
     private static final int REQUEST_QR_CAMERA_PERMISSION = 46;
     private static final int REQUEST_SAVE_CHAT_ATTACHMENT = 47;
+    private static final int REQUEST_CAMERA_PERMISSION = 48;
     private static final int COLOR_INK = Color.rgb(232, 241, 244);
     private static final int COLOR_MUTED = Color.rgb(157, 178, 187);
     private static final int COLOR_GREEN = Color.rgb(40, 177, 140);
@@ -82,8 +84,15 @@ public final class MainActivity extends Activity {
     private com.journeyapps.barcodescanner.DecoratedBarcodeView qrScannerView;
     private TextView qrScannerStatus;
     private final java.util.Set<String> seenQrFrames = new java.util.HashSet<>();
-    private TextView cloneStatus;
-    private LinearLayout cloneApps;
+    private TextView cameraStatus;
+    private Button cameraToggle;
+    private org.webrtc.SurfaceViewRenderer phoneCameraPreview;
+    private org.webrtc.SurfaceViewRenderer laptopCameraPreview;
+    private org.webrtc.EglBase cameraEglBase;
+    private android.app.Dialog cameraFullscreenDialog;
+    private ViewGroup cameraPreviewParent;
+    private ViewGroup.LayoutParams cameraPreviewOriginalLayout;
+    private int cameraPreviewOriginalIndex = -1;
     private boolean syncingHelperLinks;
     private Button phoneLibrarySourceButton;
     private Button laptopLibrarySourceButton;
@@ -159,7 +168,8 @@ public final class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         refreshScreenButton();
-        refreshCloneTab();
+        CameraSessionService.attachRenderers(phoneCameraPreview, laptopCameraPreview);
+        refreshCameraStatus();
     }
 
     /** The screen button doubles as the way to stop screen sharing while it runs. */
@@ -172,9 +182,12 @@ public final class MainActivity extends Activity {
     @Override protected void onDestroy() {
         chatHandler.removeCallbacksAndMessages(null);
         screenStatusHandler.removeCallbacksAndMessages(null);
+        cameraHandler.removeCallbacksAndMessages(null);
         qrHandler.removeCallbacksAndMessages(null);
         closeQrScanner();
         if (laptopScreenDialog != null) laptopScreenDialog.dismiss();
+        if (cameraFullscreenDialog != null) cameraFullscreenDialog.dismiss();
+        CameraSessionService.detachRenderers(phoneCameraPreview, laptopCameraPreview);
         if (laptopView != null) {
             laptopView.stopLoading();
             laptopView.destroy();
@@ -228,7 +241,7 @@ public final class MainActivity extends Activity {
         header.addView(intro);
         page.addView(header);
 
-        // Five tabs: Connect, Screen, Library, Chat, Clone. Each one gets its own
+        // Five tabs: Connect, Screen, Library, Chat, Camera. Each one gets its own
         // scrolling column; only the chosen tab is visible.
         android.widget.FrameLayout tabHost = new android.widget.FrameLayout(this);
         ScrollView connectScroll = new ScrollView(this);
@@ -243,19 +256,19 @@ public final class MainActivity extends Activity {
         ScrollView chatScroll = new ScrollView(this);
         LinearLayout chatContent = tabColumn();
         chatScroll.addView(chatContent);
-        ScrollView cloneScroll = new ScrollView(this);
-        LinearLayout cloneContent = tabColumn();
-        cloneScroll.addView(cloneContent);
+        ScrollView cameraScroll = new ScrollView(this);
+        LinearLayout cameraContent = tabColumn();
+        cameraScroll.addView(cameraContent);
         tabHost.addView(connectScroll);
         tabHost.addView(screenScroll);
         tabHost.addView(libraryScroll);
         tabHost.addView(chatScroll);
-        tabHost.addView(cloneScroll);
+        tabHost.addView(cameraScroll);
         screenScroll.setVisibility(View.GONE);
         libraryScroll.setVisibility(View.GONE);
         chatScroll.setVisibility(View.GONE);
-        cloneScroll.setVisibility(View.GONE);
-        this.tabViews = new ScrollView[]{connectScroll, screenScroll, libraryScroll, chatScroll, cloneScroll};
+        cameraScroll.setVisibility(View.GONE);
+        this.tabViews = new ScrollView[]{connectScroll, screenScroll, libraryScroll, chatScroll, cameraScroll};
 
         statusText = new TextView(this);
         statusText.setText("Ready when you are");
@@ -578,8 +591,8 @@ public final class MainActivity extends Activity {
         buildLibraryTab(content);
         content = chatContent;
         buildChatTab(content);
-        content = cloneContent;
-        buildCloneTab(content);
+        content = cameraContent;
+        buildCameraTab(content);
 
         page.addView(tabHost, new LinearLayout.LayoutParams(-1, 0, 1f));
         page.addView(buildBottomBar(), new LinearLayout.LayoutParams(-1, -2));
@@ -645,6 +658,8 @@ public final class MainActivity extends Activity {
     private LinearLayout phoneLibrarySection;
     private LinearLayout laptopLibrarySection;
     private String laptopFilterKind = "all";
+    private final Set<String> laptopDownloadsInProgress = java.util.Collections.synchronizedSet(new HashSet<>());
+    private final Set<String> laptopDownloadsComplete = java.util.Collections.synchronizedSet(new HashSet<>());
     private LinearLayout chatList;
     private ScrollView chatMessageScroll;
     private TextView chatStatus;
@@ -694,8 +709,8 @@ public final class MainActivity extends Activity {
         bar.setBackgroundColor(COLOR_SURFACE);
         bar.setPadding(dp(4), dp(8), dp(4), dp(10));
         bar.setElevation(dp(8));
-        int[] icons = {R.drawable.ic_tab_connect, R.drawable.ic_tab_screen, R.drawable.ic_tab_library, R.drawable.ic_tab_chat, R.drawable.ic_tab_clone};
-        String[] labels = {"Connect", "Screen", "Library", "Chat", "Clone"};
+        int[] icons = {R.drawable.ic_tab_connect, R.drawable.ic_tab_screen, R.drawable.ic_tab_library, R.drawable.ic_tab_chat, R.drawable.ic_tab_camera};
+        String[] labels = {"Connect", "Screen", "Library", "Chat", "Camera"};
         tabButtons = new Button[labels.length];
         for (int i = 0; i < labels.length; i++) {
             final int index = i;
@@ -744,153 +759,173 @@ public final class MainActivity extends Activity {
             chatHandler.removeCallbacks(chatPoll);
         }
         if (index == 1) refreshScreenButton();
-        if (index == 4) refreshCloneTab();
+        if (index == 4) refreshCameraStatus();
     }
 
-    private void buildCloneTab(LinearLayout parent) {
+    private void buildCameraTab(LinearLayout parent) {
         TextView intro = new TextView(this);
-        intro.setText("Create an Android Work profile for separate app installs and accounts. Android controls the profile and asks you to approve setup.");
+        intro.setText("Start a private, two-way camera call over your hotspot. The laptop and phone each have to start the call and approve their camera permission. Video stays on the local network.");
         intro.setTextColor(COLOR_MUTED);
         intro.setTextSize(14);
         intro.setLineSpacing(dp(3), 1f);
-        addCard(parent, "PRIVATE APP SPACE", intro);
+        addCard(parent, "CAMERA SHARE · BOTH SIDES APPROVE", intro);
 
-        cloneStatus = new TextView(this);
-        cloneStatus.setTextColor(COLOR_INK);
-        cloneStatus.setTextSize(14);
-        cloneStatus.setLineSpacing(dp(3), 1f);
-        addCard(parent, "STATUS", cloneStatus);
+        cameraStatus = new TextView(this);
+        cameraStatus.setText("Camera is off. Start here, then open the Windows helper's Camera page on the laptop.");
+        cameraStatus.setTextColor(COLOR_INK);
+        cameraStatus.setTextSize(14);
+        cameraStatus.setLineSpacing(dp(3), 1f);
+        addCard(parent, "SESSION STATUS", cameraStatus);
 
-        Button setup = button("Create private app space", COLOR_GREEN);
-        setup.setOnClickListener(v -> startCloneProfileSetup());
-        parent.addView(setup, matchWrap());
-        Button open = button("Open private app space", COLOR_SOFT);
-        open.setTextColor(COLOR_INK);
-        open.setOnClickListener(v -> openCloneProfile());
-        parent.addView(open, matchWrap());
+        cameraToggle = button("Start camera session", COLOR_GREEN);
+        cameraToggle.setOnClickListener(v -> toggleCameraSession());
+        parent.addView(cameraToggle, matchWrap());
 
-        cloneApps = new LinearLayout(this);
-        cloneApps.setOrientation(LinearLayout.VERTICAL);
-        addCard(parent, "APPS AVAILABLE TO ADD", cloneApps);
-
-        TextView limitations = new TextView(this);
-        limitations.setText("Each second copy must be installed separately inside the Work Play Store. PocketBridge cannot copy private app data, clone every app, or remove ads. Some apps or Android device policies may block Work profiles.");
-        limitations.setTextColor(COLOR_MUTED);
-        limitations.setTextSize(12);
-        limitations.setPadding(dp(4), dp(12), dp(4), 0);
-        parent.addView(limitations, matchWrap());
-        refreshCloneTab();
-    }
-
-    private void refreshCloneTab() {
-        if (cloneStatus == null) return;
-        try {
-            android.app.admin.DevicePolicyManager policy = (android.app.admin.DevicePolicyManager)
-                    getSystemService(DEVICE_POLICY_SERVICE);
-            if (policy != null && policy.isProfileOwnerApp(getPackageName())) {
-                cloneStatus.setText("PocketBridge is open inside the Work profile. Install additional app copies from the Work Play Store.");
-                loadCloneCandidatesInProfile();
-            } else if (hasCloneProfile()) {
-                cloneStatus.setText("A Work profile is available. Open it, then add apps from its Play Store.");
-                if (cloneApps != null) {
-                    cloneApps.removeAllViews();
-                    TextView help = new TextView(this);
-                    help.setText("Open PocketBridge from the Work profile to install apps there.");
-                    help.setTextColor(COLOR_MUTED);
-                    cloneApps.addView(help, matchWrap());
-                }
-            } else {
-                cloneStatus.setText("No private app space is set up. Android will ask you to approve a separate Work profile.");
-                if (cloneApps != null) cloneApps.removeAllViews();
-            }
-        } catch (Exception error) {
-            cloneStatus.setText("Android could not read the profile status: " + error.getMessage());
-        }
-    }
-
-    private boolean hasCloneProfile() {
-        try {
-            android.content.pm.LauncherApps launcher = (android.content.pm.LauncherApps)
-                    getSystemService(LAUNCHER_APPS_SERVICE);
-            if (launcher == null) return false;
-            for (android.os.UserHandle profile : launcher.getProfiles()) {
-                if (!profile.equals(android.os.Process.myUserHandle())
-                        && !launcher.getActivityList(getPackageName(), profile).isEmpty()) return true;
-            }
-        } catch (Exception ignored) { }
-        return false;
-    }
-
-    private void startCloneProfileSetup() {
-        android.app.admin.DevicePolicyManager policy = (android.app.admin.DevicePolicyManager)
-                getSystemService(DEVICE_POLICY_SERVICE);
-        if (policy == null || !policy.isProvisioningAllowed(
-                android.app.admin.DevicePolicyManager.ACTION_PROVISION_MANAGED_PROFILE)) {
-            cloneStatus.setText("Android cannot create a Work profile on this phone. Check whether a Work profile already exists or device policy blocks it.");
-            return;
-        }
-        Intent provision = new Intent(android.app.admin.DevicePolicyManager.ACTION_PROVISION_MANAGED_PROFILE);
-        provision.putExtra(android.app.admin.DevicePolicyManager.EXTRA_PROVISIONING_DEVICE_ADMIN_COMPONENT_NAME,
-                new android.content.ComponentName(this, CloneAdminReceiver.class));
-        if (Build.VERSION.SDK_INT >= 33) {
-            provision.putExtra(android.app.admin.DevicePolicyManager.EXTRA_PROVISIONING_ALLOW_OFFLINE, true);
-        }
-        try { startActivityForResult(provision, REQUEST_CLONE_PROFILE); }
-        catch (Exception error) { cloneStatus.setText("Could not open Work profile setup: " + error.getMessage()); }
-    }
-
-    private void openCloneProfile() {
-        try {
-            android.content.pm.LauncherApps launcher = (android.content.pm.LauncherApps)
-                    getSystemService(LAUNCHER_APPS_SERVICE);
-            if (launcher == null) throw new IllegalStateException("Android app launcher is unavailable.");
-            for (android.os.UserHandle profile : launcher.getProfiles()) {
-                if (profile.equals(android.os.Process.myUserHandle())) continue;
-                List<android.content.pm.LauncherActivityInfo> activities = launcher.getActivityList(getPackageName(), profile);
-                if (!activities.isEmpty()) {
-                    launcher.startMainActivity(activities.get(0).getComponentName(), profile, null, null);
-                    return;
-                }
-            }
-            cloneStatus.setText("Finish Work profile setup, then open PocketBridge from the Work profile.");
-        } catch (Exception error) { cloneStatus.setText("Could not open the Work profile: " + error.getMessage()); }
-    }
-
-    private void loadCloneCandidatesInProfile() {
-        if (cloneApps == null) return;
-        cloneApps.removeAllViews();
-        TextView instruction = new TextView(this);
-        instruction.setText("Enter an app package name to open its Work Play Store listing, or browse the Store.");
-        instruction.setTextColor(COLOR_MUTED);
-        cloneApps.addView(instruction, matchWrap());
-        EditText packageField = new EditText(this);
-        packageField.setSingleLine(true);
-        packageField.setHint("App package name");
-        cloneApps.addView(packageField, matchWrap());
-        Button openStore = button("Open app in Work Play Store", COLOR_SOFT);
-        openStore.setTextColor(COLOR_INK);
-        openStore.setOnClickListener(v -> {
-            String packageName = packageField.getText().toString().trim();
-            if (!packageName.matches("[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)+")) {
-                Toast.makeText(this, "Enter a valid app package name.", Toast.LENGTH_SHORT).show();
+        Button copyCameraDetails = button("Copy phone link and access code", COLOR_SOFT);
+        copyCameraDetails.setTextColor(COLOR_INK);
+        copyCameraDetails.setOnClickListener(v -> {
+            String link = linkText == null ? "" : linkText.getText().toString().trim();
+            String accessCode = codeText == null ? "" : codeText.getText().toString().replaceAll("\\s", "");
+            if (!link.startsWith("http://") || accessCode.length() != 6) {
+                Toast.makeText(this, "Start Wi-Fi or hotspot sharing first.", Toast.LENGTH_SHORT).show();
                 return;
             }
-            android.net.Uri listing = android.net.Uri.parse("market://details?id=" + android.net.Uri.encode(packageName));
-            try { startActivity(new Intent(Intent.ACTION_VIEW, listing).setPackage("com.android.vending")); }
-            catch (Exception error) {
-                try { startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(
-                        "https://play.google.com/store/apps/details?id=" + android.net.Uri.encode(packageName)))); }
-                catch (Exception unavailable) { Toast.makeText(this, "Work Play Store is unavailable.", Toast.LENGTH_LONG).show(); }
+            ClipboardManager clipboard = getSystemService(ClipboardManager.class);
+            if (clipboard != null) {
+                clipboard.setPrimaryClip(ClipData.newPlainText("PocketBridge camera", link + "\nCode: " + accessCode));
+                Toast.makeText(this, "Phone link and code copied. Enter them on the laptop Camera page.", Toast.LENGTH_LONG).show();
             }
         });
-        cloneApps.addView(openStore, matchWrap());
-        Button browseStore = button("Browse Work Play Store", COLOR_SOFT);
-        browseStore.setTextColor(COLOR_INK);
-        browseStore.setOnClickListener(v -> {
-            try { startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse("market://search?q=")).setPackage("com.android.vending")); }
-            catch (Exception error) { Toast.makeText(this, "Work Play Store is unavailable.", Toast.LENGTH_LONG).show(); }
+        parent.addView(copyCameraDetails, matchWrap());
+
+        phoneCameraPreview = new org.webrtc.SurfaceViewRenderer(this);
+        phoneCameraPreview.setBackgroundColor(Color.BLACK);
+        phoneCameraPreview.setLayoutParams(new LinearLayout.LayoutParams(-1, dp(240)));
+        phoneCameraPreview.setEnableHardwareScaler(true);
+        phoneCameraPreview.setScalingType(org.webrtc.RendererCommon.ScalingType.SCALE_ASPECT_FIT);
+        phoneCameraPreview.setVisibility(View.GONE);
+        addCard(parent, "PHONE CAMERA · SENT TO LAPTOP", phoneCameraPreview);
+
+        laptopCameraPreview = new org.webrtc.SurfaceViewRenderer(this);
+        laptopCameraPreview.setBackgroundColor(Color.BLACK);
+        laptopCameraPreview.setLayoutParams(new LinearLayout.LayoutParams(-1, dp(240)));
+        laptopCameraPreview.setEnableHardwareScaler(true);
+        laptopCameraPreview.setScalingType(org.webrtc.RendererCommon.ScalingType.SCALE_ASPECT_FIT);
+        laptopCameraPreview.setVisibility(View.GONE);
+        addCard(parent, "LAPTOP CAMERA · RECEIVED HERE", laptopCameraPreview);
+        CameraSessionService.attachRenderers(phoneCameraPreview, laptopCameraPreview);
+
+        Button fullscreen = button("Full screen laptop camera", COLOR_SOFT);
+        fullscreen.setTextColor(COLOR_INK);
+        fullscreen.setOnClickListener(v -> showCameraFullscreen());
+        parent.addView(fullscreen, matchWrap());
+
+        TextView help = new TextView(this);
+        help.setText("On the laptop, open the Windows helper's local link in Edge, choose Camera, and enter this phone's link and 6-digit code from Connect. The helper page uses Edge's local camera permission; this phone asks for Android camera permission. Neither camera starts until its owner approves.");
+        help.setTextColor(COLOR_MUTED);
+        help.setTextSize(12);
+        help.setLineSpacing(dp(3), 1f);
+        help.setPadding(dp(4), dp(12), dp(4), 0);
+        parent.addView(help, matchWrap());
+        refreshCameraStatus();
+    }
+
+    private void toggleCameraSession() {
+        if (CameraSessionService.isRunning()) {
+            stopService(new Intent(this, CameraSessionService.class));
+            refreshCameraStatus();
+            return;
+        }
+        if (!sharing) {
+            cameraStatus.setText("Start a Wi-Fi or hotspot share first so the laptop can reach the phone.");
+            return;
+        }
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.CAMERA}, REQUEST_CAMERA_PERMISSION);
+            return;
+        }
+        startCameraSession();
+    }
+
+    private void startCameraSession() {
+        Intent service = new Intent(this, CameraSessionService.class);
+        if (Build.VERSION.SDK_INT >= 26) startForegroundService(service); else startService(service);
+        cameraStatus.setText("Starting the camera. Your laptop must also start and approve its camera.");
+        if (phoneCameraPreview != null) phoneCameraPreview.setVisibility(View.VISIBLE);
+        if (laptopCameraPreview != null) laptopCameraPreview.setVisibility(View.VISIBLE);
+        cameraHandler.removeCallbacks(cameraStatusPoll);
+        cameraHandler.postDelayed(cameraStatusPoll, 500);
+        CameraSessionService.attachRenderers(phoneCameraPreview, laptopCameraPreview);
+    }
+
+    private void refreshCameraStatus() {
+        if (cameraStatus == null) return;
+        if (CameraSessionService.isRunning()) {
+            cameraToggle.setText("Stop camera session");
+            cameraStatus.setText(CameraSessionService.statusText());
+            if (phoneCameraPreview != null) phoneCameraPreview.setVisibility(View.VISIBLE);
+            if (laptopCameraPreview != null) laptopCameraPreview.setVisibility(View.VISIBLE);
+            cameraHandler.removeCallbacks(cameraStatusPoll);
+            cameraHandler.postDelayed(cameraStatusPoll, 1000);
+        } else {
+            cameraToggle.setText("Start camera session");
+            cameraStatus.setText("Camera is off. Start here, then open the Windows helper's Camera page on the laptop.");
+            if (phoneCameraPreview != null) phoneCameraPreview.setVisibility(View.GONE);
+            if (laptopCameraPreview != null) laptopCameraPreview.setVisibility(View.GONE);
+            cameraHandler.removeCallbacks(cameraStatusPoll);
+        }
+    }
+
+    private final android.os.Handler cameraHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable cameraStatusPoll = new Runnable() {
+        @Override public void run() {
+            if (!CameraSessionService.isRunning() || isFinishing()) { refreshCameraStatus(); return; }
+            cameraStatus.setText(CameraSessionService.statusText());
+            cameraHandler.postDelayed(this, 1000);
+        }
+    };
+
+    private void showCameraFullscreen() {
+        if (laptopCameraPreview == null || laptopCameraPreview.getVisibility() != View.VISIBLE) {
+            cameraStatus.setText("Start the camera session and connect from Edge before opening full screen.");
+            return;
+        }
+        if (cameraFullscreenDialog != null && cameraFullscreenDialog.isShowing()) return;
+        if (!(laptopCameraPreview.getParent() instanceof ViewGroup)) return;
+        cameraPreviewParent = (ViewGroup) laptopCameraPreview.getParent();
+        cameraPreviewOriginalIndex = cameraPreviewParent.indexOfChild(laptopCameraPreview);
+        cameraPreviewOriginalLayout = laptopCameraPreview.getLayoutParams();
+        cameraPreviewParent.removeView(laptopCameraPreview);
+        android.widget.FrameLayout frame = new android.widget.FrameLayout(this);
+        frame.setBackgroundColor(Color.BLACK);
+        frame.addView(laptopCameraPreview, new android.widget.FrameLayout.LayoutParams(-1, -1));
+        Button close = button("Close", COLOR_SOFT);
+        android.widget.FrameLayout.LayoutParams closeLp = new android.widget.FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.END);
+        closeLp.setMargins(0, dp(12), dp(12), 0);
+        frame.addView(close, closeLp);
+        android.app.Dialog dialog = new android.app.Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+        cameraFullscreenDialog = dialog;
+        dialog.setContentView(frame);
+        close.setOnClickListener(v -> dialog.dismiss());
+        dialog.setOnDismissListener(ignored -> {
+            if (cameraPreviewParent != null && laptopCameraPreview.getParent() == frame) {
+                frame.removeView(laptopCameraPreview);
+                int index = cameraPreviewOriginalIndex < 0 ? cameraPreviewParent.getChildCount()
+                        : Math.min(cameraPreviewOriginalIndex, cameraPreviewParent.getChildCount());
+                cameraPreviewParent.addView(laptopCameraPreview, index, cameraPreviewOriginalLayout);
+            }
+            cameraFullscreenDialog = null;
         });
-        cloneApps.addView(browseStore, matchWrap());
+        dialog.show();
+        android.view.Window window = dialog.getWindow();
+        if (window != null) {
+            window.setFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN,
+                    android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN);
+            window.getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                    | View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+        }
     }
 
     /** Library tab: laptop files only. */
@@ -1099,14 +1134,17 @@ public final class MainActivity extends Activity {
             try {
                 HelperLink helper = HelperClient.resolve(link, message -> runOnUiThread(() -> status.setText(message)));
                 adoptResolvedHelper(link, helper);
-                if (!requestedPath.isEmpty()) {
-                    byte[] payload = new JSONObject().put("share_dir", requestedPath).toString()
-                            .getBytes(java.nio.charset.StandardCharsets.UTF_8);
-                    HelperClient.Response chosen = HelperClient.request("POST", helper.url("/settings"), payload,
-                            HelperClient.CONNECT_TIMEOUT_MS, HelperClient.READ_TIMEOUT_MS, 2);
-                    if (!chosen.ok()) throw new HelperClient.HelperException(HelperClient.errorMessage(chosen.status, chosen.body), chosen.status);
-                    runOnUiThread(() -> status.setText("Location selected. Loading its files…"));
-                }
+                String selectedPath = requestedPath.isEmpty() ? "@default" : requestedPath;
+                byte[] payload = new JSONObject().put("share_dir", selectedPath).toString()
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                HelperClient.Response chosen = HelperClient.request("POST", helper.url("/settings"), payload,
+                        HelperClient.CONNECT_TIMEOUT_MS, HelperClient.READ_TIMEOUT_MS, 2);
+                if (!chosen.ok()) throw new HelperClient.HelperException(HelperClient.errorMessage(chosen.status, chosen.body), chosen.status);
+                String exactFile = chosen.json().optString("share_file", "");
+                String effectiveQuery = exactFile.isEmpty() ? initialQuery : "";
+                runOnUiThread(() -> status.setText(requestedPath.isEmpty()
+                        ? "Loading the helper's default shared folder…"
+                        : exactFile.isEmpty() ? "Location selected. Loading its files…" : "Exact file selected. Loading it…"));
                 int offset = 0;
                 int shown = 0;
                 boolean truncated = false;
@@ -1114,7 +1152,7 @@ public final class MainActivity extends Activity {
                 while (shown < LAPTOP_MAX_ROWS) {
                     HelperClient.Response response = HelperClient.request("GET",
                             helper.url("/files", "offset", String.valueOf(offset), "limit", String.valueOf(LAPTOP_PAGE_SIZE),
-                                    "refresh", offset == 0 ? "1" : "0", "q", initialQuery),
+                                    "refresh", offset == 0 ? "1" : "0", "q", effectiveQuery),
                             null, HelperClient.CONNECT_TIMEOUT_MS, 30000, 3);
                     if (!response.ok()) throw new HelperClient.HelperException(HelperClient.errorMessage(response.status, response.body), response.status);
                     HelperClient.FilesPage page = HelperClient.parseFilesPage(response.body, offset);
@@ -1208,11 +1246,13 @@ public final class MainActivity extends Activity {
             LinearLayout row;
             TextView title;
             TextView detail;
-            if (convertView instanceof LinearLayout && convertView.getTag() instanceof TextView[]) {
+            Button download;
+            if (convertView instanceof LinearLayout && convertView.getTag() instanceof View[]) {
                 row = (LinearLayout) convertView;
-                TextView[] views = (TextView[]) convertView.getTag();
-                title = views[0];
-                detail = views[1];
+                View[] views = (View[]) convertView.getTag();
+                title = (TextView) views[0];
+                detail = (TextView) views[1];
+                download = (Button) views[2];
             } else {
                 row = new LinearLayout(MainActivity.this);
                 row.setOrientation(LinearLayout.VERTICAL);
@@ -1224,9 +1264,16 @@ public final class MainActivity extends Activity {
                 detail = new TextView(MainActivity.this);
                 detail.setTextColor(COLOR_MUTED);
                 detail.setTextSize(11);
+                download = button("Download to phone", COLOR_SOFT);
+                download.setTextColor(COLOR_INK);
+                download.setTextSize(12);
+                download.setMinHeight(dp(38));
                 row.addView(title);
                 row.addView(detail);
-                row.setTag(new TextView[]{title, detail});
+                LinearLayout.LayoutParams downloadLp = matchWrap();
+                downloadLp.topMargin = dp(5);
+                row.addView(download, downloadLp);
+                row.setTag(new View[]{title, detail, download});
             }
             JSONObject item = getItem(position);
             String name = item.optString("name", "File");
@@ -1241,6 +1288,21 @@ public final class MainActivity extends Activity {
             final String relative = item.optString("url", "");
             final String openMime = mime;
             final HelperLink currentHelper = helper;
+            final String downloadKey = currentHelper == null || relative.isEmpty() ? relative : currentHelper.url(relative);
+            boolean downloading = laptopDownloadsInProgress.contains(downloadKey);
+            boolean downloaded = laptopDownloadsComplete.contains(downloadKey);
+            download.setText(downloading ? "Downloading…" : downloaded ? "Downloaded · in chat" : "Download to phone");
+            download.setEnabled(currentHelper != null && !relative.isEmpty() && !downloading);
+            download.setOnClickListener(view -> {
+                if (currentHelper == null || relative.isEmpty()) {
+                    Toast.makeText(MainActivity.this, "Reload laptop files to refresh this link.", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                if (laptopDownloadsInProgress.add(downloadKey)) {
+                    filterLaptopRows();
+                    downloadLaptopFile(currentHelper, relative, downloadKey, name, item.optLong("size", -1));
+                }
+            });
             row.setOnClickListener(view -> {
                 if (currentHelper == null || relative.isEmpty()) {
                     Toast.makeText(MainActivity.this, "Reload laptop files to refresh this link.", Toast.LENGTH_SHORT).show();
@@ -1267,6 +1329,34 @@ public final class MainActivity extends Activity {
             try { startActivity(new Intent(Intent.ACTION_VIEW, fileUri)); }
             catch (Exception error) { Toast.makeText(this, "No installed app can open this file type.", Toast.LENGTH_SHORT).show(); }
         }
+    }
+
+    private void downloadLaptopFile(HelperLink helper, String relativeUrl, String downloadKey, String name, long listedSize) {
+        background.execute(() -> {
+            java.io.File received = null;
+            try {
+                String url = helper.url(relativeUrl);
+                received = LaptopFileTransfer.download(this, url,
+                        new java.io.File(getFilesDir(), "received"), name, listedSize);
+                long bytes = received.length();
+                ChatStore.appendFile(this, LaptopFileTransfer.safeName(name), received.getName(), bytes, "laptop");
+                laptopDownloadsInProgress.remove(downloadKey);
+                laptopDownloadsComplete.add(downloadKey);
+                runOnUiThread(() -> {
+                    if (laptopFileAdapter != null) laptopFileAdapter.notifyDataSetChanged();
+                    Toast.makeText(this, "Saved on this phone and added to Share chat.", Toast.LENGTH_LONG).show();
+                    showTab(3);
+                });
+            } catch (Exception error) {
+                if (received != null) { /*noinspection ResultOfMethodCallIgnored*/ received.delete(); }
+                laptopDownloadsInProgress.remove(downloadKey);
+                String message = error.getMessage() == null ? "Could not download this laptop file." : error.getMessage();
+                runOnUiThread(() -> {
+                    if (laptopFileAdapter != null) laptopFileAdapter.notifyDataSetChanged();
+                    Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+                });
+            }
+        });
     }
 
     private void postLaptopPowerAction(String link, String action, boolean confirmed, TextView status) {
@@ -1364,7 +1454,20 @@ public final class MainActivity extends Activity {
         chatList = new LinearLayout(this);
         chatList.setOrientation(LinearLayout.VERTICAL);
         chatList.setPadding(dp(2), dp(6), dp(2), dp(6));
-        chatMessageScroll = new ScrollView(this);
+        chatMessageScroll = new ScrollView(this) {
+            @Override public boolean dispatchTouchEvent(android.view.MotionEvent event) {
+                android.view.ViewParent parent = getParent();
+                if (parent != null) {
+                    int action = event.getActionMasked();
+                    if (action == android.view.MotionEvent.ACTION_DOWN || action == android.view.MotionEvent.ACTION_MOVE) {
+                        parent.requestDisallowInterceptTouchEvent(true);
+                    } else if (action == android.view.MotionEvent.ACTION_UP || action == android.view.MotionEvent.ACTION_CANCEL) {
+                        parent.requestDisallowInterceptTouchEvent(false);
+                    }
+                }
+                return super.dispatchTouchEvent(event);
+            }
+        };
         chatMessageScroll.setFillViewport(true);
         chatMessageScroll.setVerticalScrollBarEnabled(true);
         chatMessageScroll.addView(chatList);
@@ -1966,6 +2069,11 @@ public final class MainActivity extends Activity {
             else Toast.makeText(this, "Allow camera access to scan QR transfers.", Toast.LENGTH_LONG).show();
             return;
         }
+        if (requestCode == REQUEST_CAMERA_PERMISSION) {
+            if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCameraSession();
+            else if (cameraStatus != null) cameraStatus.setText("Camera permission was not granted. You can enable it in Android Settings when you want to share.");
+            return;
+        }
         if (requestCode == REQUEST_PERMISSIONS) {
             boolean wifiPermissionAllowed = Build.VERSION.SDK_INT >= 33
                     ? checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED
@@ -2001,13 +2109,6 @@ public final class MainActivity extends Activity {
             pendingQrFile = null;
             pendingQrName = null;
             pendingQrMime = null;
-            return;
-        }
-        if (requestCode == REQUEST_CLONE_PROFILE) {
-            if (cloneStatus != null) cloneStatus.setText(resultCode == RESULT_OK
-                    ? "Android accepted Work profile setup. When it finishes, open PocketBridge from the Work profile."
-                    : "Work profile setup was cancelled or blocked by Android.");
-            if (cloneStatus != null) cloneStatus.postDelayed(this::refreshCloneTab, 1200);
             return;
         }
         if (requestCode == REQUEST_SEND_FILE) {

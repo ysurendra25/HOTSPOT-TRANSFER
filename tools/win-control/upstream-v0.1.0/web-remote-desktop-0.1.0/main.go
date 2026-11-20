@@ -38,7 +38,8 @@ type Config struct {
 	// "ac" (default) = only on mains power, "always", "never". The display may
 	// still turn off; a viewer connecting wakes it.
 	KeepAwake string `json:"keep_awake"`
-	ShareDir  string `json:"share_dir"` // one folder the authenticated file browser may read
+	ShareDir  string `json:"share_dir"`  // one folder the authenticated file browser may read
+	ShareFile string `json:"share_file"` // optional exact file selected by its owner
 }
 
 func defaultConfig() Config {
@@ -51,6 +52,7 @@ func defaultConfig() Config {
 		MaxW:      0,
 		KeepAwake: "ac",
 		ShareDir:  defaultShareDir(),
+		ShareFile: "",
 	}
 }
 

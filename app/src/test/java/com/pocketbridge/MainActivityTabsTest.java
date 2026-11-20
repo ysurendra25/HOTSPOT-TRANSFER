@@ -80,7 +80,7 @@ public class MainActivityTabsTest {
         Activity activity = controller.get();
         View root = activity.findViewById(android.R.id.content);
 
-        List<Button> tabs = buttonsLabelled(root, "Connect", "Screen", "Library", "Chat", "Clone");
+        List<Button> tabs = buttonsLabelled(root, "Connect", "Screen", "Library", "Chat", "Camera");
         assertEquals("all five tabs should be on screen", 5, tabs.size());
 
         List<ScrollView> panels = tabPanels(root);
@@ -96,7 +96,7 @@ public class MainActivityTabsTest {
         ActivityController<MainActivity> controller = launch();
         Activity activity = controller.get();
         View root = activity.findViewById(android.R.id.content);
-        List<Button> tabs = buttonsLabelled(root, "Connect", "Screen", "Library", "Chat", "Clone");
+        List<Button> tabs = buttonsLabelled(root, "Connect", "Screen", "Library", "Chat", "Camera");
         List<ScrollView> panels = tabPanels(root);
 
         tabs.get(2).performClick(); // Library
@@ -117,7 +117,7 @@ public class MainActivityTabsTest {
         ChatStore.append(activity, "from the phone", "phone");
 
         View root = activity.findViewById(android.R.id.content);
-        List<Button> tabs = buttonsLabelled(root, "Connect", "Screen", "Library", "Chat", "Clone");
+        List<Button> tabs = buttonsLabelled(root, "Connect", "Screen", "Library", "Chat", "Camera");
         tabs.get(3).performClick(); // Chat refreshes the list
 
         // The chat is read on a background thread and drawn back on the main
@@ -167,7 +167,7 @@ public class MainActivityTabsTest {
         ActivityController<MainActivity> controller = launch();
         Activity activity = controller.get();
         View root = activity.findViewById(android.R.id.content);
-        List<Button> tabs = buttonsLabelled(root, "Connect", "Screen", "Library", "Chat", "Clone");
+        List<Button> tabs = buttonsLabelled(root, "Connect", "Screen", "Library", "Chat", "Camera");
         tabs.get(2).performClick(); // Library refreshes from MediaStore, which is empty here
 
         List<String> texts = new ArrayList<>();
@@ -180,7 +180,7 @@ public class MainActivityTabsTest {
         ActivityController<MainActivity> controller = launch();
         Activity activity = controller.get();
         View root = activity.findViewById(android.R.id.content);
-        List<Button> tabs = buttonsLabelled(root, "Connect", "Screen", "Library", "Chat", "Clone");
+        List<Button> tabs = buttonsLabelled(root, "Connect", "Screen", "Library", "Chat", "Camera");
         tabs.get(2).performClick();
 
         List<String> texts = new ArrayList<>();
@@ -192,15 +192,18 @@ public class MainActivityTabsTest {
         controller.pause().stop().destroy();
     }
 
-    @Test public void theCloneTabExplainsThatAndroidOwnsThePrivateProfile() {
+    @Test public void theCameraTabShowsApprovalControlsAndNoCloneFeature() {
         ActivityController<MainActivity> controller = launch();
         View root = controller.get().findViewById(android.R.id.content);
-        List<Button> tabs = buttonsLabelled(root, "Connect", "Screen", "Library", "Chat", "Clone");
+        List<Button> tabs = buttonsLabelled(root, "Connect", "Screen", "Library", "Chat", "Camera");
         assertEquals(5, tabs.size());
         tabs.get(4).performClick();
         List<String> texts = new ArrayList<>();
         collectText(root, texts);
-        assertTrue(texts.toString(), texts.toString().contains("Work profile"));
+        assertTrue(texts.toString(), texts.toString().toUpperCase(java.util.Locale.ROOT).contains("BOTH SIDES APPROVE"));
+        assertTrue("the phone should expose an explicit camera start", buttonsLabelled(root, "Start camera session").size() == 1);
+        assertTrue("the camera should provide a full-screen receive view", buttonsLabelled(root, "Full screen laptop camera").size() == 1);
+        assertFalse("the removed Clone feature must not remain in the UI", buttonsLabelled(root, "Clone").size() > 0);
         controller.pause().stop().destroy();
     }
 }

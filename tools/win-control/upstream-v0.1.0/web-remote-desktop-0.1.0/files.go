@@ -183,9 +183,19 @@ func filesHandler(w http.ResponseWriter, r *http.Request) {
 		writeFilesError(w, http.StatusNotFound, "The shared laptop folder is unavailable: "+root+". Enter another folder path on the phone.")
 		return
 	}
+	config := liveCfg()
 	listing := currentListing(root, r.URL.Query().Get("refresh") == "1")
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	files := filterSharedFiles(listing.files, query)
+	if config.ShareFile != "" {
+		exact := make([]sharedFile, 0, 1)
+		for _, item := range files {
+			if item.Path == filepath.ToSlash(config.ShareFile) {
+				exact = append(exact, item)
+			}
+		}
+		files = exact
+	}
 	offset := queryInt(r, "offset", 0, 0, maxListedFiles)
 	limit := queryInt(r, "limit", maxListedFiles, 1, maxListedFiles)
 	// Old phones ask without paging and expect everything; new ones page.
