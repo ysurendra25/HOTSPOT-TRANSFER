@@ -4,7 +4,7 @@ PocketBridge is an open-source Android app for sharing phone media and the phone
 
 See the illustrated [quick-start guide](docs/QUICK_START_GUIDE.md) for connecting, browsing, and screen sharing.
 
-## Version 0.6.0.5
+## Version 0.6.0.6
 
 - **A cleaner video viewer.** The browser streams the original file first and fits the image to its source ratio by default. Optional Fill (crop), Stretch, 21:9, 16:10, 16:9, 3:2, 4:3, square and portrait layouts are available, along with playback speed, volume and picture-in-picture where the browser supports it.
 - **The Music tab is audio-only.** Videos and file-type filters stay in Files; the Music tab contains the song queue and its player.
