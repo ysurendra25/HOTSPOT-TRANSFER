@@ -103,7 +103,7 @@
   .modal:fullscreen{padding:0;background:#000}
   .modal:fullscreen .modal-box{max-width:none;width:100vw;height:100vh;height:100dvh;max-height:none;min-height:0;border-radius:0;display:flex;flex-direction:column}
   .modal:fullscreen .stage{min-height:0;max-height:none;aspect-ratio:auto!important}
-  .modal:fullscreen .stage.video-stage{flex:1 1 auto;width:100%;height:auto;max-width:none;max-height:none;margin:0;min-width:0}
+  .modal:fullscreen .stage.video-stage{flex:0 0 auto;width:auto;height:auto;max-width:100vw;max-height:none;margin:auto;min-width:0}
   .modal:fullscreen .stage:not(.video-stage){flex:1}
   .modal:fullscreen .stage video{width:100%;height:100%;max-height:none;object-fit:contain}
   .modal:fullscreen .controls{padding:7px 12px;gap:6px}
@@ -828,35 +828,34 @@
     stage.style.removeProperty('height');
   }
 
+  function videoStageDimensions(options) {
+    const {viewportWidth,viewportHeight,topHeight,controlHeight,mediaWidth,mediaHeight,selection,fullscreen,boxWidth}=options;
+    const naturalRatio = mediaWidth > 0 && mediaHeight > 0 ? mediaWidth / mediaHeight : 16 / 9;
+    const ratios = {'21-9':21/9,'16-10':16/10,'16-9':16/9,'3-2':3/2,'4-3':4/3,'1-1':1,'9-16':9/16};
+    const fillViewport = selection === 'fill' || selection === 'stretch';
+    const verticalSpace = fullscreen
+      ? Math.max(120, viewportHeight - topHeight - controlHeight - 16)
+      : Math.max(120, Math.min(viewportHeight * 0.72, viewportHeight - topHeight - controlHeight - 56));
+    const horizontalSpace = fullscreen ? viewportWidth : Math.min(boxWidth || viewportWidth * 0.96, viewportWidth * 0.96);
+    if (fillViewport) return {width:Math.max(2,Math.floor(horizontalSpace)),height:Math.max(2,Math.floor(verticalSpace))};
+    const ratio = selection === 'original' ? naturalRatio : (ratios[selection] || naturalRatio);
+    const width = Math.max(2, Math.floor(Math.min(horizontalSpace, verticalSpace * ratio)));
+    return {width,height:Math.max(2,Math.floor(width / ratio))};
+  }
+
   function fitVideoStage() {
     if (!(media instanceof HTMLVideoElement) || !modal.classList.contains('open')) return;
     const fullscreen = document.fullscreenElement === modal;
-    if (fullscreen) {
-      // Let flexbox fill the whole fullscreen viewport. Keep the source frame
-      // inside that area with contain so no part of the video is cropped.
-      stage.style.removeProperty('width');
-      stage.style.removeProperty('height');
-      return;
-    }
-    const ratioControl = document.getElementById('aspectRatio');
-    const naturalRatio = media.videoWidth > 0 && media.videoHeight > 0 ? media.videoWidth / media.videoHeight : 16 / 9;
-    const ratios = {'21-9':21/9,'16-10':16/10,'16-9':16/9,'3-2':3/2,'4-3':4/3,'1-1':1,'9-16':9/16};
-    const ratio = ratioControl.value === 'original' ? naturalRatio
-      : ratioControl.value === 'fill' || ratioControl.value === 'stretch'
-        ? Math.max(0.1, window.innerWidth / Math.max(1, window.innerHeight))
-        : (ratios[ratioControl.value] || naturalRatio);
     const box = modal.querySelector('.modal-box');
     const topHeight = modal.querySelector('.modal-top').getBoundingClientRect().height || 52;
     const controlHeight = controls.getBoundingClientRect().height || 54;
-    const verticalSpace = fullscreen
-      ? Math.max(120, window.innerHeight - topHeight - controlHeight - 16)
-      : Math.max(120, Math.min(window.innerHeight * 0.72, window.innerHeight - topHeight - controlHeight - 56));
-    const horizontalSpace = fullscreen
-      ? window.innerWidth
-      : Math.min(box.clientWidth || window.innerWidth * 0.96, window.innerWidth * 0.96);
-    const width = Math.max(2, Math.floor(Math.min(horizontalSpace, verticalSpace * ratio)));
-    stage.style.width = width + 'px';
-    stage.style.height = Math.floor(width / ratio) + 'px';
+    const layout = videoStageDimensions({
+      viewportWidth:window.innerWidth, viewportHeight:window.innerHeight,
+      topHeight, controlHeight, mediaWidth:media.videoWidth, mediaHeight:media.videoHeight,
+      selection:document.getElementById('aspectRatio').value, fullscreen, boxWidth:box.clientWidth
+    });
+    stage.style.width = layout.width + 'px';
+    stage.style.height = layout.height + 'px';
   }
   window.addEventListener('resize', fitVideoStage);
   document.addEventListener('fullscreenchange', () => requestAnimationFrame(fitVideoStage));

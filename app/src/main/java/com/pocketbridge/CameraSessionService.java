@@ -64,7 +64,9 @@ public final class CameraSessionService extends Service {
     });
     private final android.os.Handler mainHandler = new android.os.Handler(Looper.getMainLooper());
     private volatile boolean stopping;
+    private volatile boolean initializing;
     private volatile boolean initialized;
+    private volatile boolean failed;
     private volatile String status = "Starting the phone camera…";
     private EglBase eglBase;
     private PeerConnectionFactory factory;
@@ -87,6 +89,11 @@ public final class CameraSessionService extends Service {
     public static boolean isRunning() {
         CameraSessionService service = instance;
         return service != null && service.initialized && service.localTrack != null;
+    }
+
+    public static boolean isStarting() {
+        CameraSessionService service = instance;
+        return service != null && service.initializing;
     }
 
     public static String statusText() {
@@ -147,14 +154,19 @@ public final class CameraSessionService extends Service {
                 stopSelf();
                 return START_NOT_STICKY;
             }
-            if (initialized) return START_NOT_STICKY;
+            if (initialized || initializing) return START_NOT_STICKY;
             if (checkSelfPermission(android.Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                failed = true;
                 status = lastStatus = "Allow camera access in PocketBridge, then start the session again.";
                 stopSelf();
                 return START_NOT_STICKY;
             }
+            failed = false;
+            status = lastStatus = "Starting the phone camera…";
+            initializing = true;
             worker.execute(this::initializeCamera);
         } catch (Exception error) {
+            failed = true;
             status = lastStatus = "Could not start the camera: " + safeMessage(error);
             stopSelf();
         }
@@ -195,11 +207,16 @@ public final class CameraSessionService extends Service {
             localTrack = factory.createVideoTrack("pocketbridge-camera", videoSource);
             localTrack.setEnabled(true);
             initialized = true;
+            initializing = false;
             status = lastStatus = "Phone camera ready. Connect from the Edge Camera page and approve the laptop camera there too.";
             mainHandler.post(() -> attachRenderersOnMain(requestedLocalRenderer, requestedRemoteRenderer));
         } catch (Exception error) {
-            status = lastStatus = "Could not open the phone camera: " + safeMessage(error);
-            android.util.Log.e("PocketBridge", status, error);
+            initializing = false;
+            if (!stopping) {
+                failed = true;
+                status = lastStatus = "Could not open the phone camera: " + safeMessage(error);
+                android.util.Log.e("PocketBridge", status, error);
+            }
             stopSelf();
         }
     }
@@ -343,12 +360,11 @@ public final class CameraSessionService extends Service {
         if (sender == null) return;
         try {
             RtpParameters parameters = sender.getParameters();
-            parameters.degradationPreference = RtpParameters.DegradationPreference.MAINTAIN_RESOLUTION;
+            parameters.degradationPreference = RtpParameters.DegradationPreference.BALANCED;
             for (RtpParameters.Encoding encoding : parameters.encodings) {
-                encoding.maxBitrateBps = 4_000_000;
-                encoding.minBitrateBps = 300_000;
-                encoding.maxFramerate = 30;
-                encoding.scaleResolutionDownBy = 1.0;
+                encoding.maxBitrateBps = 3_000_000;
+                encoding.minBitrateBps = 200_000;
+                encoding.maxFramerate = 24;
             }
             sender.setParameters(parameters);
         } catch (Exception error) {
@@ -371,7 +387,7 @@ public final class CameraSessionService extends Service {
         if (latch != null) latch.countDown();
     }
 
-    private void closePeer() {
+    private synchronized void closePeer() {
         PeerConnection old = peer;
         peer = null;
         VideoTrack oldRemoteTrack = remoteTrack;
@@ -387,7 +403,16 @@ public final class CameraSessionService extends Service {
     @Override public void onDestroy() {
         stopping = true;
         initialized = false;
-        status = lastStatus = "Camera is off.";
+        initializing = false;
+        if (!failed) status = lastStatus = "Camera is off.";
+        try { worker.execute(this::releaseCameraResources); }
+        catch (java.util.concurrent.RejectedExecutionException ignored) { }
+        worker.shutdown();
+        if (instance == this) instance = null;
+        super.onDestroy();
+    }
+
+    private void releaseCameraResources() {
         closePeer();
         if (localSinkAttached && localTrack != null && localRenderer != null) {
             try { localTrack.removeSink(localRenderer); } catch (Exception ignored) { }
@@ -407,9 +432,6 @@ public final class CameraSessionService extends Service {
         localRendererReady = false;
         remoteRendererReady = false;
         try { if (eglBase != null) eglBase.release(); } catch (Exception ignored) { }
-        worker.shutdownNow();
-        if (instance == this) instance = null;
-        super.onDestroy();
     }
 
     private void releaseRenderer(SurfaceViewRenderer renderer) {

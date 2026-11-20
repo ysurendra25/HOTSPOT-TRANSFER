@@ -19,13 +19,13 @@ import java.util.Set;
  * Plain Java so it is unit tested.
  */
 final class ScreenStreamTuning {
-    /** Ceiling for a local hotspot link. */
-    static final int MAX_KBPS = 25_000;
-    /** Start high so the first seconds are already sharp instead of ramping up from 300 kbps. */
-    static final int START_KBPS = 8_000;
-    /** Floor that keeps text readable when the link is briefly congested. */
-    static final int MIN_KBPS = 1_500;
-    static final int MAX_FRAMERATE = 60;
+    /** A practical hotspot ceiling; WebRTC congestion control may go lower as conditions change. */
+    static final int MAX_KBPS = 12_000;
+    /** Start sharp, while leaving headroom for the link's congestion controller. */
+    static final int START_KBPS = 5_000;
+    /** Low enough to recover quickly when the hotspot is briefly congested. */
+    static final int MIN_KBPS = 500;
+    static final int MAX_FRAMERATE = 30;
 
     private static final Set<String> VIDEO_CODECS = new HashSet<>();
     static {

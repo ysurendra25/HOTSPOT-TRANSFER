@@ -27,11 +27,11 @@ public class ScreenStreamTuningTest {
             "a=fmtp:103 apt=102",
             "");
 
-    @Test public void liftsTheBandwidthCapAndSetsHighBitrates() {
+    @Test public void removesOfferCapsAndSetsAdaptiveHotspotBitrates() {
         String tuned = ScreenStreamTuning.tuneOffer(OFFER);
         assertFalse(tuned.contains("b=AS:"));
         assertFalse(tuned.contains("b=TIAS:"));
-        String params = "x-google-start-bitrate=8000;x-google-min-bitrate=1500;x-google-max-bitrate=25000";
+        String params = "x-google-start-bitrate=5000;x-google-min-bitrate=500;x-google-max-bitrate=12000";
         assertTrue("VP8 gets its own fmtp line", tuned.contains("a=rtpmap:96 VP8/90000\r\na=fmtp:96 " + params));
         assertTrue("H.264 keeps its profile and gains bitrates",
                 tuned.contains("a=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f;" + params));
@@ -45,8 +45,10 @@ public class ScreenStreamTuningTest {
         assertEquals(ScreenStreamTuning.tuneOffer(OFFER), twice);
     }
 
-    @Test public void theCeilingSuitsALocalHotspot() {
-        assertTrue(ScreenStreamTuning.MAX_KBPS >= 20_000);
-        assertTrue(ScreenStreamTuning.START_KBPS > 5_000);
+    @Test public void hotspotTuningLeavesRoomForAdaptiveRecovery() {
+        assertTrue(ScreenStreamTuning.MAX_KBPS <= 12_000);
+        assertTrue(ScreenStreamTuning.START_KBPS < ScreenStreamTuning.MAX_KBPS);
+        assertTrue(ScreenStreamTuning.MIN_KBPS < ScreenStreamTuning.START_KBPS);
+        assertTrue(ScreenStreamTuning.MAX_FRAMERATE <= 30);
     }
 }

@@ -42,6 +42,7 @@ jobs:
       - name: Check browser routes and run Android tests
         run: |
           python3 tools/check-web-page.py
+          node tools/test-player-layout.js
           bash gradlew testDebugUnitTest lintDebug --console=plain
       - name: Configure stable Android signing key
         env:

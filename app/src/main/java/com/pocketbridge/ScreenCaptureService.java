@@ -72,6 +72,13 @@ public final class ScreenCaptureService extends Service {
     private volatile int captureWidth;
     private volatile int captureHeight;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final ExecutorService setupWorker = Executors.newSingleThreadExecutor(task -> {
+        Thread thread = new Thread(task, "PocketBridge-screen-setup");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private volatile boolean initializing;
+    private volatile boolean stopping;
 
     static final class JpegFrame {
         final long sequence;
@@ -80,6 +87,8 @@ public final class ScreenCaptureService extends Service {
     }
 
     public static boolean isRunning() { return instance != null && instance.videoTrack != null; }
+
+    public static boolean isStarting() { return instance != null && instance.initializing; }
 
     public static String getSetupError() { return lastSetupError; }
 
@@ -173,25 +182,39 @@ public final class ScreenCaptureService extends Service {
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent == null || intent.getIntExtra(EXTRA_RESULT_CODE, 0) == 0) {
-            lastSetupError = "Android screen-capture permission was not provided.";
-            stopSelf();
-            return START_NOT_STICKY;
-        }
         try {
-            lastSetupError = null;
             // Always answer startForegroundService() promptly, even when a capture is
             // already running, or Android can stop the app for not calling it in time.
             if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
             else startForeground(NOTIFICATION_ID, buildNotification());
-            if (isRunning()) return START_NOT_STICKY;
+            if (isRunning() || initializing) return START_NOT_STICKY;
+            if (intent == null || intent.getIntExtra(EXTRA_RESULT_CODE, 0) == 0) {
+                lastSetupError = "Android screen-capture permission was not provided.";
+                stopSelf(startId);
+                return START_NOT_STICKY;
+            }
             Intent permissionData = intent.getParcelableExtra(EXTRA_RESULT_DATA);
             if (permissionData == null) throw new IllegalArgumentException("Android did not return screen-capture permission data.");
-            initialize(permissionData);
+            lastSetupError = null;
+            initializing = true;
+            setupWorker.execute(() -> {
+                try {
+                    initialize(permissionData);
+                } catch (Exception error) {
+                    if (!stopping) {
+                        lastSetupError = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
+                        android.util.Log.e("PocketBridge", "Screen share setup failed", error);
+                        stopSelf(startId);
+                    }
+                } finally {
+                    initializing = false;
+                }
+            });
         } catch (Exception error) {
             lastSetupError = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
             android.util.Log.e("PocketBridge", "Screen share setup failed", error);
-            stopSelf();
+            initializing = false;
+            stopSelf(startId);
         }
         return START_NOT_STICKY;
     }
@@ -206,8 +229,9 @@ public final class ScreenCaptureService extends Service {
                 .setVideoEncoderFactory(new DefaultVideoEncoderFactory(eglBase.getEglBaseContext(), true, true))
                 .setVideoDecoderFactory(new DefaultVideoDecoderFactory(eglBase.getEglBaseContext()))
                 .createPeerConnectionFactory();
-        // Marking the source as a screencast keeps text sharp (resolution is kept,
-        // frame rate drops first) and repeats the last frame while the screen is still.
+        // Marking the source as a screencast avoids needless work on a static screen.
+        // The sender uses balanced adaptation so congestion does not build a stale
+        // multi-second frame queue on a busy phone hotspot.
         videoSource = factory.createVideoSource(true);
         surfaceTextureHelper = SurfaceTextureHelper.create("PocketBridge-screen", eglBase.getEglBaseContext());
         capturer = new ScreenCapturerAndroid(permissionData, new android.media.projection.MediaProjection.Callback() {
@@ -245,6 +269,7 @@ public final class ScreenCaptureService extends Service {
      * capture. Follow the real display size on every rotation instead.
      */
     private void watchRotation() {
+        if (stopping) return;
         android.hardware.display.DisplayManager displays = getSystemService(android.hardware.display.DisplayManager.class);
         if (displays == null) return;
         rotationListener = new android.hardware.display.DisplayManager.DisplayListener() {
@@ -361,14 +386,14 @@ public final class ScreenCaptureService extends Service {
         if (sender != null) {
             try {
                 RtpParameters parameters = sender.getParameters();
-                // Original quality: never trade resolution away. On congestion
-                // WebRTC lowers the frame rate first and keeps the pixels sharp.
-                parameters.degradationPreference = RtpParameters.DegradationPreference.MAINTAIN_RESOLUTION;
+                // Let WebRTC adapt both resolution and frame rate when hotspot
+                // capacity changes. Holding full resolution at a 25 Mbps floor
+                // made frames queue up and arrive several seconds late.
+                parameters.degradationPreference = RtpParameters.DegradationPreference.BALANCED;
                 for (RtpParameters.Encoding encoding : parameters.encodings) {
                     encoding.maxBitrateBps = ScreenStreamTuning.MAX_KBPS * 1000;
                     encoding.minBitrateBps = ScreenStreamTuning.MIN_KBPS * 1000;
                     encoding.maxFramerate = ScreenStreamTuning.MAX_FRAMERATE;
-                    encoding.scaleResolutionDownBy = 1.0;
                     encoding.networkPriority = 3; // Priority.HIGH
                     encoding.bitratePriority = 4.0;
                 }
@@ -561,28 +586,38 @@ public final class ScreenCaptureService extends Service {
     }
 
     @Override public void onDestroy() {
+        stopping = true;
+        initializing = false;
+        if (rotationListener != null) {
+            android.hardware.display.DisplayManager displays = getSystemService(android.hardware.display.DisplayManager.class);
+            if (displays != null) displays.unregisterDisplayListener(rotationListener);
+            rotationListener = null;
+        }
+        // Serialize teardown after any in-flight encoder/capturer initialization.
+        // Releasing EGL or MediaProjection resources while setup is still using
+        // them caused intermittent service crashes and a frozen sharing screen.
+        try { setupWorker.execute(this::releaseCaptureResources); }
+        catch (RejectedExecutionException ignored) { }
+        setupWorker.shutdown();
+        if (instance == this) instance = null;
+        if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE); else stopForeground(true);
+        super.onDestroy();
+    }
+
+    private void releaseCaptureResources() {
         if (rotationListener != null) {
             android.hardware.display.DisplayManager displays = getSystemService(android.hardware.display.DisplayManager.class);
             if (displays != null) displays.unregisterDisplayListener(rotationListener);
             rotationListener = null;
         }
         closePeer();
-        if (jpegSink != null) {
-            if (videoTrack != null) {
-                try { videoTrack.removeSink(jpegSink); } catch (Exception ignored) { }
-            }
-            jpegSink.close();
-            jpegSink = null;
-        }
+        disableJpegFallback();
         try { if (capturer != null) { capturer.stopCapture(); capturer.dispose(); } } catch (Exception ignored) { }
         try { if (videoTrack != null) videoTrack.dispose(); } catch (Exception ignored) { }
         try { if (videoSource != null) videoSource.dispose(); } catch (Exception ignored) { }
         try { if (surfaceTextureHelper != null) surfaceTextureHelper.dispose(); } catch (Exception ignored) { }
         try { if (factory != null) factory.dispose(); } catch (Exception ignored) { }
         try { if (eglBase != null) eglBase.release(); } catch (Exception ignored) { }
-        instance = null;
-        if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE); else stopForeground(true);
-        super.onDestroy();
     }
 
     private void createNotificationChannel() {

@@ -175,9 +175,22 @@ public final class MainActivity extends Activity {
     /** The screen button doubles as the way to stop screen sharing while it runs. */
     private void refreshScreenButton() {
         if (screenButton != null) {
-            screenButton.setText(ScreenCaptureService.isRunning() ? "Stop screen share" : "Share phone screen");
+            boolean starting = ScreenCaptureService.isStarting();
+            boolean running = ScreenCaptureService.isRunning();
+            screenButton.setText(starting ? "Cancel screen startup" : running ? "Stop screen share" : "Share phone screen");
+            if (starting) {
+                if (statusText != null) statusText.setText("Starting screen capture. Keep PocketBridge open while Android prepares the stream…");
+                screenStatusHandler.removeCallbacks(screenCaptureStatusPoll);
+                screenStatusHandler.postDelayed(screenCaptureStatusPoll, 500);
+            } else if (running && statusText != null) {
+                statusText.setText("Screen capture is ready. Choose Watch screen on the laptop to view it.");
+            } else if (!running && ScreenCaptureService.getSetupError() != null && statusText != null) {
+                statusText.setText("Screen sharing could not start: " + ScreenCaptureService.getSetupError());
+            }
         }
     }
+
+    private final Runnable screenCaptureStatusPoll = this::refreshScreenButton;
 
     @Override protected void onDestroy() {
         chatHandler.removeCallbacksAndMessages(null);
@@ -464,10 +477,11 @@ public final class MainActivity extends Activity {
 
         screenButton = button("Share phone screen", Color.rgb(31, 53, 66));
         screenButton.setOnClickListener(v -> {
-            if (ScreenCaptureService.isRunning()) {
+            if (ScreenCaptureService.isRunning() || ScreenCaptureService.isStarting()) {
                 stopService(new Intent(this, ScreenCaptureService.class));
                 statusText.setText("Screen sharing stopped. Files are still shared.");
                 screenButton.setText("Share phone screen");
+                screenStatusHandler.removeCallbacks(screenCaptureStatusPoll);
                 return;
             }
             if (!sharing) {
@@ -836,6 +850,11 @@ public final class MainActivity extends Activity {
             refreshCameraStatus();
             return;
         }
+        if (CameraSessionService.isStarting()) {
+            stopService(new Intent(this, CameraSessionService.class));
+            cameraStatus.setText("Camera startup cancelled.");
+            return;
+        }
         if (!sharing) {
             cameraStatus.setText("Start a Wi-Fi or hotspot share first so the laptop can reach the phone.");
             return;
@@ -848,11 +867,15 @@ public final class MainActivity extends Activity {
     }
 
     private void startCameraSession() {
+        if (CameraSessionService.isRunning() || CameraSessionService.isStarting()) {
+            refreshCameraStatus();
+            return;
+        }
         Intent service = new Intent(this, CameraSessionService.class);
         if (Build.VERSION.SDK_INT >= 26) startForegroundService(service); else startService(service);
         cameraStatus.setText("Starting the camera. Your laptop must also start and approve its camera.");
-        if (phoneCameraPreview != null) phoneCameraPreview.setVisibility(View.VISIBLE);
-        if (laptopCameraPreview != null) laptopCameraPreview.setVisibility(View.VISIBLE);
+        if (phoneCameraPreview != null) phoneCameraPreview.setVisibility(View.GONE);
+        if (laptopCameraPreview != null) laptopCameraPreview.setVisibility(View.GONE);
         cameraHandler.removeCallbacks(cameraStatusPoll);
         cameraHandler.postDelayed(cameraStatusPoll, 500);
         CameraSessionService.attachRenderers(phoneCameraPreview, laptopCameraPreview);
@@ -860,16 +883,20 @@ public final class MainActivity extends Activity {
 
     private void refreshCameraStatus() {
         if (cameraStatus == null) return;
-        if (CameraSessionService.isRunning()) {
-            cameraToggle.setText("Stop camera session");
+        if (CameraSessionService.isRunning() || CameraSessionService.isStarting()) {
+            boolean starting = CameraSessionService.isStarting();
+            cameraToggle.setText(starting ? "Cancel camera startup" : "Stop camera session");
             cameraStatus.setText(CameraSessionService.statusText());
-            if (phoneCameraPreview != null) phoneCameraPreview.setVisibility(View.VISIBLE);
-            if (laptopCameraPreview != null) laptopCameraPreview.setVisibility(View.VISIBLE);
+            if (phoneCameraPreview != null) phoneCameraPreview.setVisibility(starting ? View.GONE : View.VISIBLE);
+            if (laptopCameraPreview != null) laptopCameraPreview.setVisibility(starting ? View.GONE : View.VISIBLE);
             cameraHandler.removeCallbacks(cameraStatusPoll);
-            cameraHandler.postDelayed(cameraStatusPoll, 1000);
+            cameraHandler.postDelayed(cameraStatusPoll, starting ? 500 : 1000);
         } else {
             cameraToggle.setText("Start camera session");
-            cameraStatus.setText("Camera is off. Start here, then open the Windows helper's Camera page on the laptop.");
+            String lastStatus = CameraSessionService.statusText();
+            cameraStatus.setText(lastStatus == null || lastStatus.equals("Camera is off.")
+                    ? "Camera is off. Start here, then open the Windows helper's Camera page on the laptop."
+                    : lastStatus);
             if (phoneCameraPreview != null) phoneCameraPreview.setVisibility(View.GONE);
             if (laptopCameraPreview != null) laptopCameraPreview.setVisibility(View.GONE);
             cameraHandler.removeCallbacks(cameraStatusPoll);
@@ -879,9 +906,7 @@ public final class MainActivity extends Activity {
     private final android.os.Handler cameraHandler = new android.os.Handler(android.os.Looper.getMainLooper());
     private final Runnable cameraStatusPoll = new Runnable() {
         @Override public void run() {
-            if (!CameraSessionService.isRunning() || isFinishing()) { refreshCameraStatus(); return; }
-            cameraStatus.setText(CameraSessionService.statusText());
-            cameraHandler.postDelayed(this, 1000);
+            if (!isFinishing()) refreshCameraStatus();
         }
     };
 
@@ -2133,7 +2158,9 @@ public final class MainActivity extends Activity {
                 service.putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, data);
                 if (Build.VERSION.SDK_INT >= 26) startForegroundService(service); else startService(service);
                 statusText.setText("Screen capture approved. Starting screen encoder…");
-                screenButton.postDelayed(this::refreshScreenButton, 1500);
+                refreshScreenButton();
+                screenStatusHandler.removeCallbacks(screenCaptureStatusPoll);
+                screenStatusHandler.postDelayed(screenCaptureStatusPoll, 300);
                 Toast.makeText(this, "Keep PocketBridge open. Choose Watch screen on the laptop.", Toast.LENGTH_LONG).show();
             } else Toast.makeText(this, "Screen sharing was cancelled", Toast.LENGTH_SHORT).show();
         }
