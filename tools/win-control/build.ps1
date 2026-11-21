@@ -6,7 +6,7 @@ Push-Location $source
 try {
     go test ./...
     if ($LASTEXITCODE -ne 0) { throw 'Go tests failed.' }
-    go build -trimpath -ldflags '-s -w -H windowsgui' -o (Join-Path $dist 'pc-remote.exe') .
+    go build -trimpath -ldflags '-s -w' -o (Join-Path $dist 'pc-remote.exe') .
     if ($LASTEXITCODE -ne 0) { throw 'Windows helper build failed.' }
 } finally {
     Pop-Location

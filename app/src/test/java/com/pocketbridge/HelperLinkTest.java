@@ -69,8 +69,18 @@ public class HelperLinkTest {
         assertEquals("http://192.168.43.42:7070/file/Trips/100%25%20done%20%D1%84%D0%BE%D1%82%D0%BE.mp4?t=tok", url);
     }
 
-    @Test public void replacesOnlyTheHost() {
-        HelperLink link = HelperLink.parse("http://127.0.0.1:7071/?t=tok").withHost("192.168.43.42");
-        assertEquals("http://192.168.43.42:7071/?t=tok", link.pageUrl());
+    @Test public void acceptsOnlyTheAddressFormsPrintedByTheWindowsHelper() {
+        for (String host : new String[]{"10.0.0.2", "172.16.0.1", "172.31.255.2", "192.168.43.42"}) {
+            HelperLink.parse("http://" + host + ":7070/?t=tok").requireLanAddress();
+        }
+        for (String host : new String[]{"localhost", "127.0.0.1", "[::1]", "0.0.0.0", "example.org",
+                "8.8.8.8", "172.15.1.2", "172.32.1.2", "192.167.1.1", "010.0.0.1", "10.0.0.300"}) {
+            try {
+                HelperLink.parse("http://" + host + ":7070/?t=tok").requireLanAddress();
+                fail(host);
+            } catch (IllegalArgumentException expected) {
+                assertTrue(expected.getMessage().length() > 0);
+            }
+        }
     }
 }

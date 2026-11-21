@@ -11,15 +11,15 @@ function assertSize(label, actual, width, height) {
   }
 }
 
-const common = {viewportWidth:1920,viewportHeight:1080,topHeight:54,controlHeight:64,mediaWidth:1920,mediaHeight:1080,fullscreen:true,boxWidth:1800};
-assertSize('original fullscreen ratio', calculate({...common,selection:'original'}), 1681, 945);
-assertSize('21:9 fullscreen ratio', calculate({...common,selection:'21-9'}), 1920, 822);
-assertSize('portrait fullscreen ratio', calculate({...common,selection:'9-16'}), 532, 945);
-assertSize('fill fullscreen viewport', calculate({...common,selection:'fill'}), 1920, 946);
-assertSize('stretch fullscreen viewport', calculate({...common,selection:'stretch'}), 1920, 946);
-
-const windowed = calculate({...common,viewportWidth:1280,viewportHeight:800,boxWidth:1000,fullscreen:false,selection:'16-9'});
-if (windowed.width > 1000 || Math.abs(windowed.width / windowed.height - 16 / 9) > 0.002) {
-  throw new Error(`windowed 16:9 ratio does not fit: ${windowed.width}x${windowed.height}`);
+const common = {viewportWidth:1920,viewportHeight:1080,mediaWidth:1920,mediaHeight:1080};
+assertSize('original fullscreen ratio', calculate({...common,selection:'original'}), 1920, 1080);
+assertSize('original portrait source', calculate({...common,mediaWidth:360,mediaHeight:640,selection:'original'}), 608, 1080);
+assertSize('21:9 fullscreen ratio', calculate({...common,selection:'21-9'}), 1920, 823);
+assertSize('portrait fullscreen ratio', calculate({...common,selection:'9-16'}), 608, 1080);
+assertSize('IMAX 1.43 fullscreen ratio', calculate({...common,selection:'143-100'}), 1544, 1080);
+assertSize('IMAX 1.90 fullscreen ratio', calculate({...common,selection:'190-100'}), 1920, 1011);
+for (const selection of ['fill','stretch','zoom-125','zoom-150','zoom-200']) {
+  assertSize(selection, calculate({...common,selection}), 1920, 1080);
 }
+assertSize('smaller Edge window', calculate({...common,viewportWidth:900,viewportHeight:600,selection:'16-9'}), 900, 506);
 process.stdout.write('OK: fullscreen and windowed aspect-ratio layouts fit their available viewports\n');

@@ -48,9 +48,9 @@
   .gate .btn{width:100%;margin-top:14px}
   .gate-error{margin-top:14px;color:#b03a3a;font-size:13px;min-height:18px}
 
-  /* bottom tab bar, the same four sections as the phone */
+  /* Section navigation */
   .tabbar{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);z-index:20;display:flex;gap:4px;
-    background:var(--surface-raised);border:1px solid var(--line);padding:6px;border-radius:16px;box-shadow:0 16px 40px rgba(0,0,0,.28)}
+    max-width:calc(100vw - 12px);overflow-x:auto;background:var(--surface-raised);border:1px solid var(--line);padding:6px;border-radius:16px;box-shadow:0 16px 40px rgba(0,0,0,.28)}
   .tabbar .tab{background:transparent;border:0;color:var(--muted);font:inherit;font-size:12px;font-weight:700;
     padding:8px 14px;border-radius:12px;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer}
   .tabbar .tab .tabicon{font-size:16px;line-height:1}
@@ -100,15 +100,6 @@
   .screen-stage>canvas,.screen-stage>video{grid-area:1/1;display:block;width:100%;height:100%;max-width:100%;max-height:100%;min-width:0;min-height:0;object-fit:contain;background:#000;image-rendering:auto}
   .screen-stage>canvas[hidden],.screen-stage>video[hidden]{display:none}
   .screen-view.focused .screen-stage,.screen-view:fullscreen .screen-stage{flex:1;height:auto;min-height:0}
-  .modal:fullscreen{padding:0;background:#000}
-  .modal:fullscreen .modal-box{max-width:none;width:100vw;height:100vh;height:100dvh;max-height:none;min-height:0;border-radius:0;display:flex;flex-direction:column}
-  .modal:fullscreen .stage{min-height:0;max-height:none;aspect-ratio:auto!important}
-  .modal:fullscreen .stage.video-stage{flex:0 0 auto;width:auto;height:auto;max-width:100vw;max-height:none;margin:auto;min-width:0}
-  .modal:fullscreen .stage:not(.video-stage){flex:1}
-  .modal:fullscreen .stage video{width:100%;height:100%;max-height:none;object-fit:contain}
-  .modal:fullscreen .controls{padding:7px 12px;gap:6px}
-  .modal:fullscreen .controls .ctrl{font-size:12px;padding:6px 9px}
-  .modal:fullscreen.player-controls-hidden .controls,.modal:fullscreen.player-controls-hidden .modal-top{opacity:0;pointer-events:none}
 
   /* library */
   .library-head{display:flex;justify-content:space-between;gap:16px;align-items:center;margin:20px 0 14px;flex-wrap:wrap}
@@ -153,7 +144,7 @@
   .foot{padding:26px 0 0;text-align:center;color:var(--muted);font-size:12px}
 
   /* player */
-  .modal{display:none;position:fixed;inset:0;background:rgba(9,22,30,.86);z-index:9;
+  .modal{display:none;position:fixed;inset:0;background:rgba(9,22,30,.86);z-index:1001;
     align-items:center;justify-content:center;padding:22px}
   .modal.open{display:flex}
   .modal-box{width:100%;max-width:min(1200px,96vw);max-height:calc(100dvh - 32px);display:flex;flex-direction:column;background:#101c23;border-radius:16px;overflow:hidden;
@@ -162,10 +153,19 @@
   .modal-top strong{font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .modal-top .btn{background:#1d3038;color:#dfeeeb}
   .stage{position:relative;background:#000;display:flex;align-items:center;justify-content:center;flex:1;min-height:0;max-height:min(72vh,calc(100dvh - 190px));overflow:hidden}
-  .stage.video-stage{flex:0 1 auto;width:auto;height:auto;max-width:100%;max-height:min(72vh,calc(100dvh - 190px));margin:auto;aspect-ratio:auto}
-  .stage.video-stage video{width:100%;height:100%;object-fit:contain;object-position:center;background:#000}
   .stage video,.stage img{width:100%;height:100%;max-height:100%;display:block;object-fit:contain;background:#000}
-  .stage.ratio-21-9{aspect-ratio:21/9}.stage.ratio-16-10{aspect-ratio:16/10}.stage.ratio-16-9{aspect-ratio:16/9}.stage.ratio-3-2{aspect-ratio:3/2}.stage.ratio-4-3{aspect-ratio:4/3}.stage.ratio-1-1{aspect-ratio:1/1}.stage.ratio-9-16{aspect-ratio:9/16}.stage.ratio-original{aspect-ratio:auto}
+  body:has(.modal.open){overflow:hidden}
+  .modal.video-viewer,.modal:fullscreen{padding:0;background:#000}
+  .modal.video-viewer .modal-box,.modal:fullscreen .modal-box{position:relative;width:100%;height:100%;max-width:none;max-height:none;border-radius:0;background:#000;box-shadow:none}
+  .modal.video-viewer .stage{position:absolute;inset:0;width:100%;height:100%;max-height:none;min-height:0;overflow:hidden}
+  .modal.video-viewer .stage video{flex:none;object-position:center;max-width:100%;max-height:100%}
+  .modal.video-viewer .modal-top,.modal.video-viewer .controls{position:absolute;left:0;right:0;z-index:3;transition:opacity .15s}
+  .modal.video-viewer .modal-top{top:0;padding:10px max(12px,env(safe-area-inset-right)) 20px max(12px,env(safe-area-inset-left));background:linear-gradient(#000b,transparent)}
+  .modal.video-viewer .controls{bottom:0;padding:22px max(12px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));gap:6px;background:linear-gradient(transparent,#000d)}
+  .modal.video-viewer .ctrl{font-size:12px;padding:7px 9px}
+  .modal.video-viewer.player-controls-hidden{cursor:none}
+  .modal.video-viewer.player-controls-hidden .modal-top,.modal.video-viewer.player-controls-hidden .controls{opacity:0;pointer-events:none}
+  @media(prefers-reduced-motion:reduce){.modal.video-viewer .modal-top,.modal.video-viewer .controls{transition:none}}
   .music-layout{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(300px,.9fr);gap:18px;align-items:start}
   .music-player{position:sticky;top:14px;background:linear-gradient(145deg,#18353b,#10252c);border:1px solid #27474d;border-radius:22px;padding:22px;color:#f5fbf9;margin:12px 0;box-shadow:0 18px 38px rgba(18,45,53,.15)}
   .music-kicker{color:#a8d3c8;font-size:11px;font-weight:800;letter-spacing:.13em;text-transform:uppercase}
@@ -232,6 +232,7 @@
   @media(max-width:900px){.grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
   @media(max-width:760px){.music-layout{grid-template-columns:1fr}.music-player{position:static}.music-queue{max-height:52vh}}
   @media(max-width:640px){
+    .tabbar{gap:0}.tabbar .tab{padding:8px clamp(5px,2vw,12px)}
     .shell{padding:0 14px 40px}.topbar{height:62px}.hero{padding:22px 0 16px}h1{font-size:26px}
     .grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
     .screen-card{flex-direction:column;align-items:flex-start}
@@ -244,6 +245,7 @@
 <nav class="tabbar" id="tabbar" aria-label="Sections">
   <button class="tab" type="button" data-tab="connect"><span class="tabicon">⌂</span>Connect</button>
   <button class="tab" type="button" data-tab="screen"><span class="tabicon">▣</span>Screen</button>
+  <button class="tab" type="button" data-tab="camera"><span class="tabicon" aria-hidden="true">◉</span>Camera</button>
   <button class="tab" type="button" data-tab="files"><span class="tabicon">▤</span>Files</button>
   <button class="tab" type="button" data-tab="music"><span class="tabicon">♫</span>Music</button>
   <button class="tab" type="button" data-tab="chat"><span class="tabicon">✉</span>Chat</button>
@@ -286,6 +288,23 @@
       </div>
       <button class="btn btn-white" id="watchButton" type="button">Watch screen</button>
     </section>
+
+    <section class="screen-card" id="laptopScreenSection" hidden>
+      <div><div class="screen-title">Laptop screen on your phone</div>
+        <div class="screen-desc" id="laptopCastStatus" role="status">Choose a screen or window in Edge. On the phone, tap Screen → Watch Edge screen.</div></div>
+      <button id="shareLaptopScreen" class="btn btn-white" type="button">Share laptop screen</button>
+    </section>
+
+    <section class="screen-card" id="cameraSection" hidden>
+      <div><div class="screen-title">Two-way camera</div>
+        <div class="screen-desc" id="laptopCameraStatus" role="status">On the phone, tap Camera → Start camera session. Then open the laptop camera here.</div></div>
+      <button id="launchCamera" class="btn btn-white" type="button">Open laptop camera</button>
+    </section>
+    <details class="note" id="helperSetup" hidden>
+      <summary>Set up the Windows helper for screen and camera sharing</summary>
+      <p>Download the helper from this phone, extract the ZIP on your laptop and open Start-Control.bat. Keep the helper running while you share.</p>
+      <a class="btn btn-outline" id="helperDownload" download>Download Windows helper</a>
+    </details>
 
     <section class="screen-card transfer-card" id="transferSection">
       <div class="screen-copy"><div class="screen-icon" style="background:var(--teal-soft);color:var(--teal-dark)">⇧</div><div>
@@ -340,7 +359,7 @@
     </nav>
 
     <section class="grid" id="grid"><div class="loading">Finding media on your phone…</div></section>
-    <div class="load-more" id="loadMoreWrap" hidden><button class="btn btn-soft" id="loadMore" type="button">Load more</button></div>
+    <div id="filesPaging" hidden><div class="load-more" id="loadMoreWrap" hidden><button class="btn btn-soft" id="loadMore" type="button">Load more</button></div></div>
 
     <section id="musicSection" hidden>
       <div class="library-head"><div><span class="section-title">Music</span><span class="count" id="musicCount">Loading songs…</span></div><input class="search" id="musicSearch" placeholder="Search your songs" autocomplete="off"></div>
@@ -374,7 +393,7 @@
 </div>
 
 <!-- player -->
-<div class="modal" id="modal" role="dialog" aria-modal="true">
+<div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalName">
   <div class="modal-box">
     <div class="modal-top">
       <strong id="modalName"></strong>
@@ -392,8 +411,12 @@
       <button class="ctrl" id="fwd10" type="button" aria-label="Go forward 10 seconds" title="Go forward 10 seconds">Forward 10s ↷</button>
       <input class="seek" id="seek" type="range" min="0" max="1000" value="0" aria-label="Seek">
       <span class="time" id="time">0:00 / 0:00</span>
-      <button class="ctrl" id="fullscreen" type="button" title="Fullscreen">⛶</button>
-      <select id="aspectRatio" class="toolbar-select" aria-label="Video fit and aspect ratio"><option value="original">Fit · original</option><option value="fill">Fill screen · crop</option><option value="stretch">Stretch</option><option value="21-9">21:9</option><option value="16-10">16:10</option><option value="16-9">16:9</option><option value="3-2">3:2</option><option value="4-3">4:3</option><option value="1-1">1:1</option><option value="9-16">9:16</option></select>
+      <button class="ctrl" id="fullscreen" type="button" title="Fullscreen (F)" aria-label="Enter fullscreen" aria-pressed="false">⛶</button>
+      <select id="aspectRatio" class="toolbar-select" aria-label="Video fit and aspect ratio">
+        <option value="original">Original · fit</option><option value="fill">Fill screen · crop</option><option value="stretch">Stretch to screen</option>
+        <optgroup label="Zoom and crop"><option value="zoom-125">Zoom 125%</option><option value="zoom-150">Zoom 150%</option><option value="zoom-200">Zoom 200%</option></optgroup>
+        <optgroup label="Aspect ratio"><option value="239-100">2.39:1 CinemaScope</option><option value="235-100">2.35:1 CinemaScope</option><option value="21-9">21:9 Ultrawide</option><option value="190-100">1.90:1 IMAX</option><option value="185-100">1.85:1 Widescreen</option><option value="16-9">16:9</option><option value="16-10">16:10</option><option value="3-2">3:2</option><option value="143-100">1.43:1 IMAX</option><option value="4-3">4:3</option><option value="1-1">1:1</option><option value="9-16">9:16</option></optgroup>
+      </select>
       <select id="playbackSpeed" class="toolbar-select" aria-label="Playback speed"><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select>
       <label class="volume-control" for="videoVolume">Volume <input id="videoVolume" type="range" min="0" max="1" step="0.01" value="1" aria-label="Video volume"></label>
       <button class="ctrl" id="pictureInPicture" type="button" title="Picture in picture">PiP</button>
@@ -496,6 +519,7 @@
     return true;
   }
   function showApp() {
+    document.getElementById('helperDownload').href = endpoint('/api/windows-helper');
     gate.style.display = 'none';
     app.style.display = 'block';
     loadFiles();
@@ -801,6 +825,8 @@
   /* ---------- player ---------- */
   let media = null;
   let controlRevealHandler = null;
+  let playerEvents;
+  const revealEvents = ['pointermove','pointerdown','focusin','keydown'];
   const seek = document.getElementById('seek');
   const timeLabel = document.getElementById('time');
   const playPause = document.getElementById('playPause');
@@ -815,50 +841,50 @@
 
   function releaseMedia() {
     if (controlRevealHandler) {
-      ['pointermove','pointerdown'].forEach(eventName => modal.removeEventListener(eventName, controlRevealHandler));
+      revealEvents.forEach(eventName => modal.removeEventListener(eventName, controlRevealHandler));
       controlRevealHandler = null;
     }
     clearTimeout(playerHideTimer);
-    modal.classList.remove('player-controls-hidden');
-    if (media) { try { media.pause(); } catch (e) {} media.src = ''; media = null; }
+    modal.classList.remove('player-controls-hidden', 'video-viewer');
+    if (playerEvents) { playerEvents.abort(); playerEvents = null; }
+    if (media) { media.pause(); media.removeAttribute('src'); media.load(); media = null; }
     Array.from(stage.children).forEach(child => { if (child.id !== 'playerStatus') child.remove(); });
     document.getElementById('playerStatus').hidden = true;
-    stage.classList.remove('video-stage','ratio-21-9','ratio-16-10','ratio-16-9','ratio-3-2','ratio-4-3','ratio-1-1','ratio-9-16');
-    stage.style.removeProperty('width');
-    stage.style.removeProperty('height');
   }
 
   function videoStageDimensions(options) {
-    const {viewportWidth,viewportHeight,topHeight,controlHeight,mediaWidth,mediaHeight,selection,fullscreen,boxWidth}=options;
+    const {viewportWidth,viewportHeight,mediaWidth,mediaHeight,selection}=options;
     const naturalRatio = mediaWidth > 0 && mediaHeight > 0 ? mediaWidth / mediaHeight : 16 / 9;
-    const ratios = {'21-9':21/9,'16-10':16/10,'16-9':16/9,'3-2':3/2,'4-3':4/3,'1-1':1,'9-16':9/16};
-    const fillViewport = selection === 'fill' || selection === 'stretch';
-    const verticalSpace = fullscreen
-      ? Math.max(120, viewportHeight - topHeight - controlHeight - 16)
-      : Math.max(120, Math.min(viewportHeight * 0.72, viewportHeight - topHeight - controlHeight - 56));
-    const horizontalSpace = fullscreen ? viewportWidth : Math.min(boxWidth || viewportWidth * 0.96, viewportWidth * 0.96);
-    if (fillViewport) return {width:Math.max(2,Math.floor(horizontalSpace)),height:Math.max(2,Math.floor(verticalSpace))};
-    const ratio = selection === 'original' ? naturalRatio : (ratios[selection] || naturalRatio);
-    const width = Math.max(2, Math.floor(Math.min(horizontalSpace, verticalSpace * ratio)));
-    return {width,height:Math.max(2,Math.floor(width / ratio))};
+    if (selection === 'fill' || selection === 'stretch' || selection.startsWith('zoom-')) {
+      return {width:viewportWidth, height:viewportHeight};
+    }
+    const parts = /^(\d+)-(\d+)$/.exec(selection);
+    const ratio = parts ? Number(parts[1]) / Number(parts[2]) : naturalRatio;
+    const width = Math.min(viewportWidth, viewportHeight * ratio);
+    return {width:Math.round(width), height:Math.round(width / ratio)};
   }
 
   function fitVideoStage() {
     if (!(media instanceof HTMLVideoElement) || !modal.classList.contains('open')) return;
-    const fullscreen = document.fullscreenElement === modal;
-    const box = modal.querySelector('.modal-box');
-    const topHeight = modal.querySelector('.modal-top').getBoundingClientRect().height || 52;
-    const controlHeight = controls.getBoundingClientRect().height || 54;
+    const selection = document.getElementById('aspectRatio').value;
     const layout = videoStageDimensions({
-      viewportWidth:window.innerWidth, viewportHeight:window.innerHeight,
-      topHeight, controlHeight, mediaWidth:media.videoWidth, mediaHeight:media.videoHeight,
-      selection:document.getElementById('aspectRatio').value, fullscreen, boxWidth:box.clientWidth
+      viewportWidth:stage.clientWidth, viewportHeight:stage.clientHeight,
+      mediaWidth:media.videoWidth, mediaHeight:media.videoHeight, selection
     });
-    stage.style.width = layout.width + 'px';
-    stage.style.height = layout.height + 'px';
+    media.style.width = layout.width + 'px';
+    media.style.height = layout.height + 'px';
+    const zoom = selection.startsWith('zoom-') ? Number(selection.slice(5)) / 100 : 1;
+    media.style.transform = zoom === 1 ? '' : 'scale(' + zoom + ')';
+    media.style.objectFit = selection === 'original' ? 'contain' : selection === 'fill' || zoom > 1 ? 'cover' : 'fill';
   }
-  window.addEventListener('resize', fitVideoStage);
-  document.addEventListener('fullscreenchange', () => requestAnimationFrame(fitVideoStage));
+  new ResizeObserver(fitVideoStage).observe(stage);
+  document.addEventListener('fullscreenchange', () => {
+    const active = document.fullscreenElement === modal;
+    const button = document.getElementById('fullscreen');
+    button.setAttribute('aria-label', active ? 'Exit fullscreen' : 'Enter fullscreen');
+    button.setAttribute('aria-pressed', String(active));
+    requestAnimationFrame(fitVideoStage);
+  });
 
   function openFile(id) {
     viewIndex = viewList.findIndex(item => item.id === id);
@@ -868,8 +894,8 @@
       viewList = [only];
       viewIndex = 0;
     }
-    showCurrent();
     modal.classList.add('open');
+    showCurrent();
     requestAnimationFrame(fitVideoStage);
   }
 
@@ -896,9 +922,10 @@
 
     if (file.kind === 'video') {
       const ratioSelect = document.getElementById('aspectRatio');
-      ratioSelect.value = 'original';
-      stage.classList.remove('ratio-16-9','ratio-4-3','ratio-1-1');
-      stage.classList.add('video-stage');
+      let lastFit = 'fill';
+      try { lastFit = localStorage.getItem('pb_video_fit') || lastFit; } catch (_) {}
+      ratioSelect.value = Array.from(ratioSelect.options).some(option => option.value === lastFit) ? lastFit : 'fill';
+      modal.classList.add('video-viewer');
       media = document.createElement('video');
       media.src = url;
       media.playsInline = true;
@@ -923,7 +950,11 @@
       let triedOriginal = false;
       image.addEventListener('error', () => {
         if (!triedOriginal) { triedOriginal = true; image.src = url; return; }
-        stage.innerHTML = '<div class="note">This photo cannot be shown in the browser. Use Original to download it.</div>';
+        if (!stage.contains(image)) return;
+        const note = document.createElement('div');
+        note.className = 'note';
+        note.textContent = 'This photo cannot be shown in the browser. Use Original to download it.';
+        image.replaceWith(note);
       });
       image.src = file.preview ? endpoint(file.preview) : url;
       stage.appendChild(image);
@@ -939,46 +970,73 @@
   }
 
   function wirePlayer(element, kind, file) {
+    playerEvents = new AbortController();
+    const {signal} = playerEvents;
+    const onMedia = (name, callback) => element.addEventListener(name, callback, {signal});
+    let wantsPlayback = false, needsGesture = false;
+    function requestPlayback() {
+      wantsPlayback = true;
+      needsGesture = false;
+      const requestedSource = element.src;
+      element.play().catch(error => {
+        if (signal.aborted || element.src !== requestedSource || error.name !== 'NotAllowedError') return;
+        wantsPlayback = false;
+        needsGesture = true;
+        timeLabel.textContent = 'Press Play to start playback.';
+        playPause.textContent = 'Play';
+        modal.classList.remove('player-controls-hidden');
+        if (kind === 'video') {
+          const status = document.getElementById('playerStatus');
+          status.textContent = timeLabel.textContent;
+          status.hidden = false;
+        }
+      });
+    }
     seek.value = 0;
     timeLabel.textContent = '0:00 / 0:00';
     playPause.textContent = 'Play';
 
     if (kind === 'video') timeLabel.textContent = 'Loading video…';
-    element.addEventListener('loadstart', () => {
-      if (kind === 'video') {
+    onMedia('loadstart', () => {
+      if (kind === 'video' && !needsGesture) {
         timeLabel.textContent = element.dataset.compatibilityAttempted === 'yes'
           ? 'Preparing a browser-compatible copy on the phone…' : 'Connecting to the phone…';
         const status = document.getElementById('playerStatus');
         if (status) { status.hidden = false; status.textContent = timeLabel.textContent; }
       }
     });
-    element.addEventListener('loadedmetadata', () => {
+    onMedia('loadedmetadata', () => {
+      if (kind === 'video') fitVideoStage();
+      if (needsGesture) return;
       timeLabel.textContent = '0:00 / ' + formatTime(element.duration);
       const status = document.getElementById('playerStatus');
       if (status) status.hidden = true;
-      if (kind === 'video') fitVideoStage();
     });
-    element.addEventListener('waiting', () => {
+    onMedia('waiting', () => {
+      if (needsGesture) return;
       timeLabel.textContent = 'Buffering · ' + formatTime(element.currentTime);
       if (kind === 'video') {
         const status = document.getElementById('playerStatus');
         if (status) { status.hidden = false; status.textContent = 'Buffering original video…'; }
       }
     });
-    element.addEventListener('canplay', () => {
+    onMedia('canplay', () => {
+      if (needsGesture) return;
       if (kind === 'video') { const status = document.getElementById('playerStatus'); if (status) status.hidden = true; }
       if (element.paused && element.currentTime === 0) timeLabel.textContent = 'Ready · press Play';
     });
-    element.addEventListener('timeupdate', () => {
+    onMedia('timeupdate', () => {
+      if (needsGesture) return;
       if (isFinite(element.duration) && element.duration > 0) {
         seek.value = String(Math.round((element.currentTime / element.duration) * 1000));
       }
       timeLabel.textContent = formatTime(element.currentTime) + ' / ' + formatTime(element.duration);
     });
-    element.addEventListener('play', () => { playPause.textContent = 'Pause'; });
-    element.addEventListener('pause', () => { playPause.textContent = 'Play'; });
-    element.addEventListener('ended', () => { playPause.textContent = 'Play'; });
-    element.addEventListener('error', () => {
+    onMedia('play', () => { playPause.textContent = 'Pause'; });
+    onMedia('playing', () => { document.getElementById('playerStatus').hidden = true; });
+    onMedia('pause', () => { playPause.textContent = 'Play'; });
+    onMedia('ended', () => { playPause.textContent = 'Play'; });
+    onMedia('error', () => {
       const mediaError = element.error;
       const code = mediaError ? mediaError.code : 0;
       if (kind === 'video' && file.allowCompatibility !== false && (code === 3 || code === 4) && element.dataset.compatibilityAttempted !== 'yes') {
@@ -986,6 +1044,7 @@
         timeLabel.textContent = 'This browser cannot decode the original. Preparing a compatible copy on the phone…';
         element.src = endpoint('/api/video/compatible/' + encodeURIComponent(file.id));
         element.load();
+        if (wantsPlayback) requestPlayback();
         return;
       }
       timeLabel.textContent = code === 4
@@ -998,7 +1057,8 @@
     });
 
     playPause.onclick = () => {
-      if (element.paused) element.play().catch(() => { timeLabel.textContent = 'Playback was blocked. Press Play again.'; }); else element.pause();
+      if (element.paused) requestPlayback();
+      else { wantsPlayback = false; element.pause(); }
     };
     document.getElementById('back10').onclick = () => {
       element.currentTime = Math.max(0, element.currentTime - 10);
@@ -1018,18 +1078,14 @@
     document.getElementById('playbackSpeed').style.display = kind === 'video' ? 'inline-flex' : 'none';
     document.querySelector('.volume-control').style.display = kind === 'video' ? 'flex' : 'none';
     ratioSelect.onchange = () => {
-      stage.classList.remove('ratio-21-9','ratio-16-10','ratio-16-9','ratio-3-2','ratio-4-3','ratio-1-1','ratio-9-16');
-      if (ratioSelect.value !== 'original') stage.classList.add('ratio-' + ratioSelect.value);
-      // Fit preserves every source pixel. Fill crops; Stretch changes geometry.
-      element.style.objectFit = ratioSelect.value === 'fill' ? 'cover'
-        : ratioSelect.value === 'stretch' ? 'fill' : 'contain';
+      try { localStorage.setItem('pb_video_fit', ratioSelect.value); } catch (_) {}
       fitVideoStage();
     };
     fsButton.style.display = kind === 'video' ? 'inline-flex' : 'none';
     fsButton.onclick = () => {
       const box = element.closest('.modal') || element;
       if (document.fullscreenElement) { document.exitFullscreen().catch(() => {}); }
-      else if (box.requestFullscreen) { box.requestFullscreen().catch(() => {}); }
+      else if (box.requestFullscreen) { box.requestFullscreen().catch(() => { timeLabel.textContent = 'Edge could not enter fullscreen. Try F11.'; }); }
     };
     const fullModal = document.getElementById('modal');
     const revealControls = () => {
@@ -1038,11 +1094,11 @@
       if (!element.paused) playerHideTimer = setTimeout(() => fullModal.classList.add('player-controls-hidden'), 3000);
     };
     controlRevealHandler = revealControls;
-    ['pointermove','pointerdown'].forEach(eventName => fullModal.addEventListener(eventName, revealControls, {passive:true}));
-    element.addEventListener('play', revealControls);
-    element.addEventListener('pause', () => { clearTimeout(playerHideTimer); fullModal.classList.remove('player-controls-hidden'); });
+    revealEvents.forEach(eventName => fullModal.addEventListener(eventName, revealControls, {passive:true}));
+    onMedia('play', revealControls);
+    onMedia('pause', () => { clearTimeout(playerHideTimer); fullModal.classList.remove('player-controls-hidden'); });
     if (kind === 'video') {
-      element.addEventListener('click', () => element.paused ? element.play().catch(() => {}) : element.pause());
+      onMedia('click', playPause.onclick);
       document.getElementById('videoVolume').oninput = event => { element.volume = Number(event.currentTarget.value); };
       document.getElementById('playbackSpeed').onchange = event => { element.playbackRate = Number(event.currentTarget.value); };
       const pip = document.getElementById('pictureInPicture');
@@ -1051,6 +1107,7 @@
         if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
         else if (document.pictureInPictureEnabled && element.requestPictureInPicture) element.requestPictureInPicture().catch(() => { timeLabel.textContent = 'Picture in picture is unavailable for this video.'; });
       };
+      requestPlayback();
     } else {
       document.getElementById('pictureInPicture').style.display = 'none';
       document.getElementById('videoVolume').oninput = null;
@@ -1059,6 +1116,7 @@
   }
 
   function closeModal() {
+    if (document.fullscreenElement === modal) document.exitFullscreen().catch(() => {});
     releaseMedia();
     modal.classList.remove('open');
   }
@@ -1069,6 +1127,10 @@
   document.addEventListener('keydown', (event) => {
     if (!modal.classList.contains('open')) return;
     if (event.key === 'Escape') { closeModal(); return; }
+    if (event.target.closest('select,input,textarea') || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (event.key.toLowerCase() === 'f' && media instanceof HTMLVideoElement) {
+      event.preventDefault(); document.getElementById('fullscreen').click(); return;
+    }
     if (event.key === 'PageDown') { stepViewer(1); return; }
     if (event.key === 'PageUp') { stepViewer(-1); return; }
     if (!media) {
@@ -1080,7 +1142,7 @@
     // Video and audio: the arrow keys skip 10 seconds.
     if (event.key === 'ArrowRight') { document.getElementById('fwd10').click(); }
     if (event.key === 'ArrowLeft') { document.getElementById('back10').click(); }
-    if (event.key === ' ') { event.preventDefault(); playPause.click(); }
+    if (event.key === ' ' && !event.target.closest('button,a')) { event.preventDefault(); playPause.click(); }
   });
   let touchStartX = null;
   stage.addEventListener('touchstart', (event) => {
@@ -1106,6 +1168,24 @@
   let decodingScreenFrame = false;
   let screenPathLabel = 'Compatibility JPEG · native resolution';
   let screenFallbackReason = '';
+  let activeViewer = '';
+
+  async function waitForPhoneCapture(viewer, state) {
+    const deadline = Date.now() + 90000;
+    while (viewer === activeViewer && Date.now() < deadline) {
+      const response = await fetch(endpoint('/api/screen/status'), {cache:'no-store', signal:AbortSignal.timeout(6000)});
+      if (!response.ok) throw new Error('Could not check phone capture. Reopen the current phone link and enter its code.');
+      const status = await response.json();
+      if (viewer !== activeViewer) return false;
+      if (status.ready) return true;
+      if (status.error && !status.starting) throw new Error(status.error);
+      state.textContent = status.starting ? 'Android is preparing the screen…'
+        : 'On your phone, open Screen, tap Share phone screen and approve. This viewer will connect automatically.';
+      await new Promise(resolve => setTimeout(resolve, 900));
+    }
+    if (viewer === activeViewer) throw new Error('Still waiting for the phone. Approve screen sharing there, then click Watch screen.');
+    return false;
+  }
 
   async function watchScreen() {
     const screenView = document.getElementById('screenView');
@@ -1114,9 +1194,11 @@
     const canvas = document.getElementById('screenCanvas');
     const video = document.getElementById('screenVideo');
     if (watchButton.disabled) return;
+    if (activeViewer) stopWatching();
     clearTimeout(screenFrameTimer);
     screenWanted = true;
-    screenRetries = 0;
+    const viewer = Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
+    activeViewer = viewer;
     screenFallbackReason = '';
     watchButton.disabled = true;
     screenView.classList.add('active');
@@ -1127,12 +1209,20 @@
     // Start the local preview immediately. JPEG remains visible only until the
     // direct WebRTC path is confirmed, so negotiation delays no longer look like
     // a frozen screen at the start of sharing.
-    readScreenStream(state, watchButton, canvas, 0);
     try {
-      await watchScreenWebRtc(video, state);
+      if (!await waitForPhoneCapture(viewer, state)) return;
     } catch (error) {
-      if (!screenWanted) return;
-      await closeScreenPeer();
+      if (viewer !== activeViewer) return;
+      state.textContent = error.message;
+      watchButton.disabled = false;
+      return;
+    }
+    readScreenStream(state, watchButton, canvas, 0, viewer);
+    try {
+      await watchScreenWebRtc(video, state, viewer);
+    } catch (error) {
+      if (viewer !== activeViewer) return;
+      closeScreenPeer(viewer);
       video.pause();
       video.srcObject = null;
       video.style.visibility = '';
@@ -1144,12 +1234,13 @@
     }
   }
 
-  async function watchScreenWebRtc(video, state) {
+  async function watchScreenWebRtc(video, state, viewer) {
     if (!window.RTCPeerConnection) throw new Error('WebRTC is unavailable');
     const peer = new RTCPeerConnection({iceServers: [], bundlePolicy: 'max-bundle'});
     screenPeer = peer;
     peer.addTransceiver('video', {direction: 'recvonly'});
     peer.ontrack = event => {
+      if (screenPeer !== peer || viewer !== activeViewer) return;
       // Live view, not playback: ask the browser to show each frame as soon as
       // it is decoded instead of buffering for smoothness.
       try { if ('jitterBufferTarget' in event.receiver) event.receiver.jitterBufferTarget = 0; } catch (e) {}
@@ -1165,13 +1256,24 @@
       video.play().catch(() => {});
     };
     peer.oniceconnectionstatechange = () => {
+      if (screenPeer !== peer || viewer !== activeViewer) return;
       if (peer.iceConnectionState === 'connected' || peer.iceConnectionState === 'completed') {
         state.textContent = 'Direct WebRTC connected · waiting for the first video frame…';
+      } else if (peer.iceConnectionState === 'failed' && screenPathLabel.startsWith('Direct WebRTC')) {
+        closeScreenPeer(viewer);
+        video.srcObject = null;
+        video.hidden = true;
+        const canvas = document.getElementById('screenCanvas');
+        canvas.hidden = false;
+        screenPathLabel = 'Compatibility JPEG · native resolution';
+        state.textContent = 'Direct video interrupted. Reconnecting to the phone…';
+        readScreenStream(state, document.getElementById('watchButton'), canvas, 0, viewer);
       }
     };
     const offer = await peer.createOffer();
     await peer.setLocalDescription(offer);
     await waitForIceGathering(peer, 10000);
+    if (viewer !== activeViewer) return;
     if (peer.iceGatheringState !== 'complete') throw new Error('Local network candidates did not finish gathering');
 
     const controller = new AbortController();
@@ -1180,7 +1282,7 @@
     try {
       const response = await fetch(endpoint('/api/screen/offer'), {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({sdp: peer.localDescription.sdp}), signal: controller.signal
+        body: JSON.stringify({sdp: peer.localDescription.sdp, viewer}), signal: controller.signal
       });
       const answer = await response.json();
       if (!response.ok || !answer.sdp) throw new Error(answer.error || 'The phone rejected the local screen connection');
@@ -1193,6 +1295,8 @@
     // endpoint; the JPEG fallback remains visible while ICE is still trying.
     await waitForIceConnection(peer, 20000);
     await waitForVideoFrame(video, 5000);
+    if (viewer !== activeViewer) return;
+    clearTimeout(screenFrameTimer);
     video.style.visibility = '';
     screenPathLabel = 'Direct WebRTC · source resolution';
     screenFallbackReason = '';
@@ -1254,26 +1358,32 @@
     });
   }
 
-  async function closeScreenPeer() {
+  function closeScreenPeer(viewer) {
     if (screenSignalAbort) { try { screenSignalAbort.abort(); } catch (e) {} screenSignalAbort = null; }
-    if (screenPeer) { try { screenPeer.close(); } catch (e) {} screenPeer = null; }
-    try { await fetch(endpoint('/api/screen/stop'), {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}); } catch (e) {}
+    const closing = screenPeer;
+    screenPeer = null;
+    if (!closing) return;
+    closing.ontrack = null;
+    closing.oniceconnectionstatechange = null;
+    try { closing.close(); } catch (e) {}
+    fetch(endpoint('/api/screen/stop') + '&viewer=' + encodeURIComponent(viewer),
+      {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(() => {});
   }
 
-  async function readScreenStream(state, watchButton, canvas, attempt) {
-    if (!screenWanted) return;
-    screenAbort = new AbortController();
+  async function readScreenStream(state, watchButton, canvas, attempt, viewer) {
+    if (viewer !== activeViewer || screenPathLabel.startsWith('Direct WebRTC')) return;
+    const controller = new AbortController();
+    screenAbort = controller;
     if (attempt === 0) { screenFrames = 0; latestScreenJpeg = null; }
     try {
       const response = await fetch(endpoint('/api/screen/mjpeg') + '&_=' + Date.now(), {
-        cache: 'no-store', signal: screenAbort.signal
+        cache: 'no-store', signal: controller.signal
       });
+      if (viewer !== activeViewer || controller.signal.aborted) return;
       if (!response.ok) {
         let reason = 'HTTP ' + response.status;
         try { const data = await response.json(); if (data && data.error) reason = data.error; } catch (e) {}
-        state.textContent = reason;
-        watchButton.disabled = false;
-        return;
+        throw new Error(reason);
       }
       if (!response.body) {
         state.textContent = 'This browser cannot stream the phone screen. Try Chrome, Edge or Firefox.';
@@ -1284,8 +1394,9 @@
       screenReader = reader;
       const context = canvas.getContext('2d');
       let pending = new Uint8Array(0);
-      while (screenWanted) {
+      while (viewer === activeViewer && !controller.signal.aborted) {
         const {done, value} = await reader.read();
+        if (viewer !== activeViewer || controller.signal.aborted) return;
         if (done) break;
         // Keep consuming the network while a JPEG is decoding. If the phone or
         // hotspot is faster than this browser, only the newest frame is drawn;
@@ -1304,30 +1415,32 @@
         if (latest) { latestScreenJpeg = latest; drawLatestScreenFrame(canvas, context, state); }
       }
     } catch (error) {
-      if (!screenWanted || screenPathLabel.startsWith('Direct WebRTC')) return;
+      if (viewer !== activeViewer || controller.signal.aborted) return;
+      screenFallbackReason = error.message;
     }
-    if (!screenWanted || screenPathLabel.startsWith('Direct WebRTC')) return;
+    if (viewer !== activeViewer || controller.signal.aborted || screenPathLabel.startsWith('Direct WebRTC')) return;
     // The stream ended or stalled: try again a couple of times before giving up.
     if (attempt < 2) {
       state.textContent = 'Stream interrupted · reconnecting (' + (attempt + 1) + '/2)…';
-      setTimeout(() => readScreenStream(state, watchButton, canvas, attempt + 1), 1200);
+      screenFrameTimer = setTimeout(() => readScreenStream(state, watchButton, canvas, attempt + 1, viewer), 1200);
     } else {
       state.textContent = screenFrames > 0
         ? 'The stream stopped. Tap Watch screen to reconnect.'
-        : 'No screen frame arrived. On the phone, stop screen sharing, start it again, then retry.';
+        : screenFallbackReason || 'No screen frame arrived. On the phone, stop screen sharing, start it again, then retry.';
       watchButton.disabled = false;
     }
   }
 
   async function drawLatestScreenFrame(canvas, context, state) {
     if (decodingScreenFrame || !latestScreenJpeg || !screenWanted) return;
+    const viewer = activeViewer;
     decodingScreenFrame = true;
     try {
-      while (latestScreenJpeg && screenWanted) {
+      while (latestScreenJpeg && viewer === activeViewer && !screenPathLabel.startsWith('Direct WebRTC')) {
         const jpeg = latestScreenJpeg;
         latestScreenJpeg = null;
         const bitmap = await createImageBitmap(new Blob([jpeg], {type: 'image/jpeg'}));
-        if (screenWanted) {
+        if (viewer === activeViewer && !screenPathLabel.startsWith('Direct WebRTC')) {
           if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
             canvas.width = bitmap.width;
             canvas.height = bitmap.height;
@@ -1343,10 +1456,10 @@
         if (bitmap.close) bitmap.close();
       }
     } catch (error) {
-      if (screenWanted) state.textContent = 'Could not decode a screen frame. Reconnect and try again.';
+      if (viewer === activeViewer) state.textContent = 'Could not decode a screen frame. Reconnect and try again.';
     } finally {
       decodingScreenFrame = false;
-      if (latestScreenJpeg && screenWanted) drawLatestScreenFrame(canvas, context, state);
+      if (latestScreenJpeg && screenWanted && !screenPathLabel.startsWith('Direct WebRTC')) drawLatestScreenFrame(canvas, context, state);
     }
   }
 
@@ -1391,7 +1504,8 @@
   function stopWatching() {
     screenWanted = false;
     clearTimeout(screenFrameTimer);
-    closeScreenPeer();
+    closeScreenPeer(activeViewer);
+    activeViewer = '';
     if (screenAbort) { try { screenAbort.abort(); } catch (e) {} screenAbort = null; }
     if (screenReader) { try { screenReader.cancel(); } catch (e) {} screenReader = null; }
     const canvas = document.getElementById('screenCanvas');
@@ -1454,7 +1568,7 @@
       if (!response.ok) throw new Error('Could not load received files');
       const data = await response.json();
       document.getElementById('inboxCount').textContent = (data.files || []).length + ' items';
-      grid.innerHTML = data.files.length ? data.files.map(item => '<article class="card"><div class="meta"><div class="name" title="' + safe(item.name) + '">' + safe(item.name) + '</div><div class="submeta">' + formatBytes(item.size) + '</div><a class="btn btn-soft" href="' + endpoint('/api/inbox/' + encodeURIComponent(item.id)) + '" download="' + safe(item.name) + '">Download</a></div></article>').join('') : '<div class="empty"><strong>Inbox is empty</strong>Choose a file above to send it here.</div>';
+      grid.innerHTML = data.files.length ? data.files.map(item => '<article class="card"><div class="meta"><div class="name" title="' + safe(item.name) + '">' + safe(item.name) + '</div><div class="submeta">' + formatSize(item.size) + '</div><a class="btn btn-soft" href="' + endpoint('/api/inbox/' + encodeURIComponent(item.id)) + '" download="' + safe(item.name) + '">Download</a></div></article>').join('') : '<div class="empty"><strong>Inbox is empty</strong>Choose a file above to send it here.</div>';
     } catch (_) { grid.innerHTML = '<div class="empty">Could not load received files.</div>'; }
   }
   document.getElementById('refreshInbox').addEventListener('click', loadInbox);
@@ -1512,7 +1626,7 @@
           icon.textContent = mime.startsWith('image/') ? '▧' : mime.startsWith('video/') ? '▶' : mime.startsWith('audio/') ? '♫' : '↧';
           const details = document.createElement('div');
           const name = document.createElement('div'); name.className = 'chat-file-name'; name.textContent = filename;
-          const meta = document.createElement('div'); meta.className = 'chat-file-meta'; meta.textContent = kind + ' · ' + formatBytes(Number(attachment.size) || 0);
+          const meta = document.createElement('div'); meta.className = 'chat-file-meta'; meta.textContent = kind + ' · ' + formatSize(Number(attachment.size) || 0);
           details.append(name, meta);
           const actions = document.createElement('div'); actions.className = 'chat-file-actions';
           const mediaKind = mime.startsWith('image/') ? 'image' : mime.startsWith('video/') ? 'video' : mime.startsWith('audio/') ? 'audio' : '';
@@ -1626,8 +1740,9 @@
   /* ---------- sections behind the tab bar ---------- */
   const TAB_GROUPS = {
     connect: ['heroSection', 'transferSection'],
-    screen: ['screenSection', 'screenView'],
-    files: ['inboxSection', 'inboxGrid', 'librarySection', 'kindTabs', 'grid', 'transferSection'],
+    screen: ['screenSection', 'laptopScreenSection', 'screenView', 'helperSetup'],
+    camera: ['cameraSection', 'helperSetup'],
+    files: ['inboxSection', 'inboxGrid', 'librarySection', 'kindTabs', 'grid', 'filesPaging', 'transferSection'],
     chat: ['chatSection', 'chatCard'],
     music: ['musicSection']
   };
@@ -1667,5 +1782,7 @@
     document.getElementById('codeInput').focus();
   })();
 </script>
+<script src="/camera-launch.js" defer></script>
+<script src="/laptop-cast.js" defer></script>
 </body>
 </html>

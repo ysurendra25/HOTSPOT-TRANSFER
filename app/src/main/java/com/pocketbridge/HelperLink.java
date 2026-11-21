@@ -52,6 +52,9 @@ final class HelperLink {
         }
         String host = uri.getHost();
         if (host == null || host.isEmpty()) throw new IllegalArgumentException("The helper link has no laptop address in it.");
+        if (uri.getRawUserInfo() != null || uri.getPort() == 0 || uri.getPort() > 65535) {
+            throw new IllegalArgumentException("Copy the complete LAN link printed by the Windows helper.");
+        }
         int port = uri.getPort() > 0 ? uri.getPort() : DEFAULT_PORT;
         String token = queryValue(uri.getRawQuery(), "t");
         if (token == null || token.trim().isEmpty()) {
@@ -83,7 +86,25 @@ final class HelperLink {
         return h.equals("localhost") || h.startsWith("127.") || h.equals("::1") || h.equals("[::1]") || h.equals("0.0.0.0");
     }
 
-    HelperLink withHost(String newHost) { return new HelperLink(newHost, port, token); }
+    /** The helper prints one canonical private IPv4 link per LAN interface. */
+    void requireLanAddress() {
+        if (isLoopback()) {
+            throw new IllegalArgumentException("That address points to this phone. Paste the LAN link for the laptop's Wi-Fi adapter from the Windows helper window.");
+        }
+        String[] parts = host.split("\\.", -1);
+        int[] octets = new int[4];
+        if (parts.length == 4) {
+            boolean valid = true;
+            for (int i = 0; i < parts.length; i++) {
+                if (!parts[i].matches("0|[1-9][0-9]{0,2}")) { valid = false; break; }
+                octets[i] = Integer.parseInt(parts[i]);
+                if (octets[i] > 255) { valid = false; break; }
+            }
+            if (valid && (octets[0] == 10 || (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31)
+                    || (octets[0] == 192 && octets[1] == 168))) return;
+        }
+        throw new IllegalArgumentException("Paste the private IPv4 LAN link for the laptop's Wi-Fi adapter from the Windows helper window.");
+    }
 
     String base() {
         String h = host.contains(":") && !host.startsWith("[") ? "[" + host + "]" : host;
@@ -116,9 +137,6 @@ final class HelperLink {
 
     /** The helper's own viewer page. */
     String pageUrl() { return url("/"); }
-
-    /** The link in the form the helper prints, for saving back into the field. */
-    String display() { return pageUrl(); }
 
     @Override public boolean equals(Object other) {
         if (!(other instanceof HelperLink)) return false;

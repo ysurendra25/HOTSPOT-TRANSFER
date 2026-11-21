@@ -13,9 +13,11 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -60,8 +62,26 @@ var cfg Config
 
 func main() {
 	log.SetFlags(log.LstdFlags)
+	saveConfig := loadConfig()
+	addr := listenAddr(cfg)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		if isAddrInUse(err) {
+			log.Fatalf("Port %d is already in use. If PocketBridge is open, use the LAN link from its original window.", listenPort(cfg))
+		}
+		log.Fatalf("Could not start the helper on %s: %v", addr, err)
+	}
+	defer listener.Close()
 	setupLogFile()
-	loadConfig()
+	if saveConfig {
+		data, err := json.MarshalIndent(cfg, "", "  ")
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := os.WriteFile(configPath(), data, 0600); err != nil {
+			log.Fatalf("Could not save config.json. Extract the helper into a writable folder: %v", err)
+		}
+	}
 
 	n := numDisplays()
 	if cfg.Monitor >= n {
@@ -77,21 +97,18 @@ func main() {
 	// awake per policy (see wake_windows.go).
 	go keepAwake(func() string { return liveCfg().KeepAwake })
 
-	addr := listenAddr(cfg)
 	log.Printf("[pc-remote] listening on %s | monitor=%d fps=%d q=%d maxw=%d", addr, cfg.Monitor, cfg.FPS, cfg.Quality, cfg.MaxW)
-	log.Printf("[pc-remote] mo:  http://127.0.0.1:%d/?t=%s", listenPort(cfg), cfg.Token)
+	fmt.Printf("On this laptop: http://127.0.0.1:%d/?t=%s\n", listenPort(cfg), cfg.Token)
 	links := lanURLs(listenPort(cfg), cfg.Token)
 	for _, u := range links {
-		log.Printf("[pc-remote] LAN: %s", u)
+		fmt.Printf("LAN: %s\n", u)
+	}
+	if len(links) == 0 {
+		fmt.Println("No private IPv4 address found. Connect the laptop to the phone's hotspot and restart this helper.")
 	}
 	writeLinkFile(links)
-	if err := http.ListenAndServe(addr, mux); err != nil {
-		if isAddrInUse(err) {
-			// Another copy already holds the port — that one is doing the job.
-			log.Printf("[pc-remote] another instance is already listening on %s — exiting", addr)
-			return
-		}
-		log.Fatalf("[pc-remote] listen: %v", err)
+	if err := http.Serve(listener, mux); err != nil {
+		log.Fatal(err)
 	}
 }
 
@@ -106,6 +123,8 @@ func newMux() *http.ServeMux {
 	}
 	protect := func(h http.Handler) http.Handler { return cors(auth(h)) }
 	mux.Handle("/", protect(http.FileServer(http.FS(sub))))
+	mux.HandleFunc("/capture-camera", localCapturePage("camera.html"))
+	mux.HandleFunc("/present.html", localCapturePage("present.html"))
 	mux.Handle("/ping", protect(http.HandlerFunc(pingHandler)))
 	mux.Handle("/input", protect(http.HandlerFunc(inputHandler)))
 	mux.Handle("/screen", protect(http.HandlerFunc(screenHandler)))
@@ -124,7 +143,7 @@ func newMux() *http.ServeMux {
 }
 
 // helperVersion is reported by /ping so the phone can show which helper answered.
-const helperVersion = "0.6.0.3"
+const helperVersion = "0.6.0.9"
 
 // pingHandler is the cheap reachability check the phone uses to find the
 // helper and to tell "wrong link" from "laptop asleep". It touches no disk and
@@ -167,12 +186,12 @@ func cors(next http.Handler) http.Handler {
 	})
 }
 
-// writeLinkFile records this run's phone links in a file that is replaced on
-// every start, so Start-Control.bat shows the current links and never a stale
-// one from an earlier run still sitting in the appended log.
+// Only the instance that acquired the listening port publishes its pairing links.
 func writeLinkFile(links []string) {
 	p := filepath.Join(exeDir(), "pc-remote-links.txt")
-	_ = os.WriteFile(p, []byte(strings.Join(links, "\r\n")+"\r\n"), 0600)
+	if err := os.WriteFile(p, []byte(strings.Join(links, "\r\n")+"\r\n"), 0600); err != nil {
+		log.Printf("Could not save pc-remote-links.txt: %v", err)
+	}
 }
 
 // isAddrInUse reports whether a listen failed purely because the port is taken.
@@ -185,11 +204,7 @@ func isAddrInUse(err error) bool {
 	return strings.Contains(err.Error(), "in use") || strings.Contains(err.Error(), "normally permitted")
 }
 
-// setupLogFile sends log output to a file beside the exe.
-//
-// The binary is built as a GUI app (-H windowsgui) so nothing pops a console
-// window when it starts at logon — which also means stdout goes nowhere. Keep
-// the log on disk, capped, so there's still something to read when it misbehaves.
+// Keep diagnostics on disk and in the foreground console. Pairing links go to stdout.
 func setupLogFile() {
 	p := filepath.Join(exeDir(), "pc-remote.log")
 	// Don't let it grow forever on a machine that's always on.
@@ -200,7 +215,7 @@ func setupLogFile() {
 	if err != nil {
 		return
 	}
-	log.SetOutput(f)
+	log.SetOutput(io.MultiWriter(os.Stderr, f))
 	log.Printf("---- pc-remote starting ----")
 }
 
@@ -212,22 +227,22 @@ func configPath() string {
 	return filepath.Join(filepath.Dir(exe), "config.json")
 }
 
-func loadConfig() {
-	p := configPath()
-	b, err := os.ReadFile(p)
-	if err != nil {
-		cfg = defaultConfig()
-		if data, e := json.MarshalIndent(cfg, "", "  "); e == nil {
-			_ = os.WriteFile(p, data, 0600)
-			log.Printf("[pc-remote] created default config: %s (token generated)", p)
-		}
-		return
-	}
+// Load config before binding, but let only the process that obtains the port save changes.
+func loadConfig() bool {
+	b, err := os.ReadFile(configPath())
 	cfg = defaultConfig()
+	if errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	if err != nil {
+		log.Fatalf("Could not read config.json: %v", err)
+	}
+	cfg.Token = ""
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		log.Fatalf("[pc-remote] config.json is invalid: %v", err)
 	}
-	if cfg.Token == "" {
+	dirty := cfg.Token == ""
+	if dirty {
 		cfg.Token = randToken()
 	}
 	if cfg.FPS <= 0 {
@@ -240,17 +255,14 @@ func loadConfig() {
 	// balanced profile. Explicit user presets continue to be preserved.
 	if cfg.FPS == 12 && cfg.Quality == 65 && cfg.MaxW == 1600 {
 		cfg.FPS, cfg.Quality, cfg.MaxW = 10, 60, 1280
-		if data, err := json.MarshalIndent(cfg, "", "  "); err == nil {
-			_ = os.WriteFile(p, data, 0600)
-		}
+		dirty = true
 	}
 	// Upgrade the former out-of-box hotspot profile to source-resolution capture.
 	if cfg.FPS == 10 && cfg.Quality == 60 && cfg.MaxW == 1280 {
 		cfg.FPS, cfg.Quality, cfg.MaxW = 30, 95, 0
-		if data, err := json.MarshalIndent(cfg, "", "  "); err == nil {
-			_ = os.WriteFile(p, data, 0600)
-		}
+		dirty = true
 	}
+	return dirty
 }
 
 // auth wraps a handler with a constant-time token check. The token may arrive

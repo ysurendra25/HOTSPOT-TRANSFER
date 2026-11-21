@@ -36,6 +36,50 @@ public class ServerFunctionalTest {
     private static final String TOKEN = "0123456789abcdef0123456789abcdef";
     private static final String BASE = "http://127.0.0.1:" + MediaHttpServer.PORT;
 
+    @Test public void matchingPortableHelperDownloadsOverPairedConnection() throws Exception {
+        String path = "/api/windows-helper";
+        assertEquals(403, send("GET", path, null, null).status);
+        HttpURLConnection download = (HttpURLConnection) new URL(BASE + withCode(path)).openConnection();
+        try {
+            assertEquals(200, download.getResponseCode());
+            assertEquals("application/zip", download.getContentType());
+            assertTrue(download.getContentLengthLong() > 0);
+            assertTrue(download.getHeaderField("Content-Disposition").contains("PocketBridge-Windows-Control.zip"));
+            java.util.Set<String> entries = new java.util.HashSet<>();
+            try (java.util.zip.ZipInputStream zip = new java.util.zip.ZipInputStream(download.getInputStream())) {
+                java.util.zip.ZipEntry entry;
+                while ((entry = zip.getNextEntry()) != null) {
+                    entries.add(entry.getName());
+                    if (entry.getName().equals("PocketBridge-Windows-Control.exe")) {
+                        assertEquals('M', zip.read());
+                        assertEquals('Z', zip.read());
+                    }
+                    zip.closeEntry();
+                }
+            }
+            assertEquals(new java.util.HashSet<>(java.util.Arrays.asList("PocketBridge-Windows-Control.exe",
+                    "Start-Control.bat", "README.md", "UPSTREAM-LICENSE.txt")), entries);
+        } finally {
+            download.disconnect();
+        }
+    }
+
+    @Test public void laptopScreenPageAndSignalingUseActivePairing() throws Exception {
+        MediaHttpServer.setLaptopHelperLink("http://192.168.1.20:7654/?t=helpersecret");
+        Response launch = send("GET", "/laptop-cast.js", null, null);
+        assertTrue(launch.body.contains("http://127.0.0.1:7654"));
+        assertFalse(launch.body.contains("helpersecret"));
+        assertEquals(403, send("GET", "/watch-laptop.html", null, null).status);
+        assertTrue(send("GET", "/watch-laptop.html?code=" + CODE, null, null).body.contains("RTCPeerConnection"));
+        String path = "/api/laptop-cast";
+        assertEquals(403, send("POST", path, "{\"action\":\"start\"}", null).status);
+        Response start = send("POST", path + "?code=" + CODE, "{\"action\":\"start\"}", null);
+        assertEquals(200, start.status);
+        assertTrue(start.body.contains("publisher"));
+        assertEquals(200, send("POST", path + "?code=" + CODE, "{\"action\":\"view\"}", null).status);
+        assertEquals(410, send("POST", path + "?code=" + CODE, "{\"action\":\"poll\"}", null).status);
+    }
+
     private MediaHttpServer server;
     private Context context;
 
@@ -343,6 +387,30 @@ public class ServerFunctionalTest {
         Response status = send("GET", withCode("/api/screen/status"), null, null);
         assertEquals(200, status.status);
         assertTrue(status.body.contains("\"ready\":false"));
+        assertTrue(status.body.contains("\"starting\":false"));
+        assertEquals(403, send("GET", "/api/screen/status", null, null).status);
+    }
+
+    @Test public void cameraLaunchUsesHelperPortWithoutDisclosingItsToken() throws Exception {
+        MediaHttpServer.setLaptopHelperLink("http://192.168.12.2:7090/?t=helper-secret");
+        Response script = send("GET", "/camera-launch.js", null, null);
+        assertEquals(200, script.status);
+        assertTrue(script.body.contains("http://127.0.0.1:7090"));
+        assertFalse(script.body.contains("helper-secret"));
+        assertFalse(script.body.contains(TOKEN));
+    }
+
+    @Test public void cameraAcceptsAuthenticatedOfferFromItsOwnHotspotPage() throws Exception {
+        try (java.net.Socket socket = new java.net.Socket("127.0.0.1", MediaHttpServer.PORT)) {
+            socket.setSoTimeout(4000);
+            String host = "192.168.43.1:" + MediaHttpServer.PORT;
+            String request = "POST " + withCode("/api/camera/offer") + " HTTP/1.1\r\nHost: " + host
+                    + "\r\nOrigin: http://" + host + "\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+            socket.getOutputStream().write(request.getBytes(StandardCharsets.US_ASCII));
+            String reply = readAll(socket.getInputStream());
+            assertTrue(reply, reply.startsWith("HTTP/1.1 400"));
+            assertTrue(reply, reply.contains("offer is empty"));
+        }
     }
 
     @Test public void cameraSignalingRequiresThePhoneCodeAndAllowsOnlyTheLocalHelperOrigin() throws Exception {

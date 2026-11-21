@@ -143,9 +143,10 @@ public final class MainActivity extends Activity {
             sharing = url != null && !url.isEmpty();
             // Only the sharing state disables the mode buttons. A status message
             // must never be able to leave them stuck disabled.
-            wifiButton.setEnabled(!sharing);
-            hotspotButton.setEnabled(!sharing);
-            stopButton.setEnabled(sharing);
+            boolean active = intent.getBooleanExtra(ShareSessionService.EXTRA_ACTIVE, sharing);
+            wifiButton.setEnabled(!active);
+            hotspotButton.setEnabled(!active);
+            stopButton.setEnabled(active);
             copyButton.setEnabled(sharing);
         }
     };
@@ -415,14 +416,14 @@ public final class MainActivity extends Activity {
 
         screenHelperLink = new EditText(this);
         screenHelperLink.setSingleLine(true);
-        screenHelperLink.setHint("http://laptop-address:7070/?t=code");
+        screenHelperLink.setHint("http://192.168.43.42:7070/?t=…");
         screenHelperLink.setTextSize(14);
         screenHelperLink.setText(getSavedHelperLink());
         MediaHttpServer.setLaptopHelperLink(getSavedHelperLink());
         watchHelperLink(screenHelperLink);
         addCard(content, "WINDOWS HELPER LINK · PASTE ONCE", screenHelperLink);
         laptopScreenStatus = new TextView(this);
-        laptopScreenStatus.setText("Start the portable Windows helper, then paste its local link here. Keep the laptop awake for screen sharing.");
+        laptopScreenStatus.setText("Start the Windows helper and paste the LAN link for the laptop's Wi-Fi adapter. Keep the laptop awake for screen sharing.");
         laptopScreenStatus.setTextColor(COLOR_MUTED);
         laptopScreenStatus.setTextSize(13);
         laptopScreenStatus.setLineSpacing(dp(3), 1f);
@@ -533,8 +534,10 @@ public final class MainActivity extends Activity {
         };
         laptopView.setWebViewClient(new android.webkit.WebViewClient() {
             @Override public void onPageFinished(android.webkit.WebView view, String url) {
-                laptopScreenStatus.setText("Viewer loaded · waiting for laptop frames…");
                 screenStatusHandler.removeCallbacks(screenStatusPoll[0]);
+                if (url.startsWith("http://127.0.0.1:" + MediaHttpServer.PORT + "/watch-laptop.html")
+                        || "about:blank".equals(url)) return;
+                laptopScreenStatus.setText("Viewer loaded · waiting for laptop frames…");
                 screenStatusHandler.post(screenStatusPoll[0]);
             }
             @Override public void onReceivedError(android.webkit.WebView view, android.webkit.WebResourceRequest request, android.webkit.WebResourceError error) {
@@ -546,7 +549,20 @@ public final class MainActivity extends Activity {
                         : "The laptop helper returned HTTP " + response.getStatusCode() + ". Check the helper and try again.");
             }
         });
-        Button showLaptop = button("Show laptop screen here", COLOR_GREEN);
+        Button watchPresentation = button("Watch Edge screen", COLOR_GREEN);
+        watchPresentation.setOnClickListener(v -> {
+            String code = codeText.getText().toString().trim();
+            if (!sharing || !code.matches("[0-9]{6}")) {
+                Toast.makeText(this, "Start sharing in Connect first.", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            screenStatusHandler.removeCallbacks(screenStatusPoll[0]);
+            laptopScreenStatus.setText("Watching the screen selected in Edge.");
+            laptopView.setVisibility(View.VISIBLE);
+            laptopView.loadUrl("http://127.0.0.1:" + MediaHttpServer.PORT + "/watch-laptop.html?code=" + code);
+        });
+        content.addView(watchPresentation, matchWrap());
+        Button showLaptop = button("View Windows helper", COLOR_SOFT);
         showLaptop.setOnClickListener(v -> {
             String link = screenHelperLink.getText().toString().trim();
             if (link.isEmpty()) {
@@ -813,7 +829,8 @@ public final class MainActivity extends Activity {
         parent.addView(copyCameraDetails, matchWrap());
 
         phoneCameraPreview = new org.webrtc.SurfaceViewRenderer(this);
-        phoneCameraPreview.setBackgroundColor(Color.BLACK);
+        // SurfaceView draws camera pixels on a separate surface behind the view.
+        // An opaque background on the renderer itself covers those pixels.
         phoneCameraPreview.setLayoutParams(new LinearLayout.LayoutParams(-1, dp(240)));
         phoneCameraPreview.setEnableHardwareScaler(true);
         phoneCameraPreview.setScalingType(org.webrtc.RendererCommon.ScalingType.SCALE_ASPECT_FIT);
@@ -821,7 +838,6 @@ public final class MainActivity extends Activity {
         addCard(parent, "PHONE CAMERA · SENT TO LAPTOP", phoneCameraPreview);
 
         laptopCameraPreview = new org.webrtc.SurfaceViewRenderer(this);
-        laptopCameraPreview.setBackgroundColor(Color.BLACK);
         laptopCameraPreview.setLayoutParams(new LinearLayout.LayoutParams(-1, dp(240)));
         laptopCameraPreview.setEnableHardwareScaler(true);
         laptopCameraPreview.setScalingType(org.webrtc.RendererCommon.ScalingType.SCALE_ASPECT_FIT);
@@ -835,7 +851,7 @@ public final class MainActivity extends Activity {
         parent.addView(fullscreen, matchWrap());
 
         TextView help = new TextView(this);
-        help.setText("On the laptop, open the Windows helper's local link in Edge, choose Camera, and enter this phone's link and 6-digit code from Connect. The helper page uses Edge's local camera permission; this phone asks for Android camera permission. Neither camera starts until its owner approves.");
+        help.setText("On the laptop, run the matching Windows helper. In the PocketBridge hotspot page choose Camera, open the camera window and allow Edge to use the webcam. Keep that hotspot tab open during the call.");
         help.setTextColor(COLOR_MUTED);
         help.setTextSize(12);
         help.setLineSpacing(dp(3), 1f);
@@ -1036,7 +1052,7 @@ public final class MainActivity extends Activity {
         loadLaptop.setOnClickListener(v -> {
             String link = libraryHelperLink.getText().toString().trim();
             if (link.isEmpty()) {
-                laptopStatusView.setText("Start the Windows helper and paste the local link it prints.");
+                laptopStatusView.setText("Start the Windows helper and paste the LAN link for the laptop's Wi-Fi adapter.");
                 return;
             }
             String requestedPath = laptopFolderPath.getText().toString().trim();
@@ -1133,18 +1149,6 @@ public final class MainActivity extends Activity {
         }
     }
 
-    /** Remembers the address that answered, so the next action skips the search. */
-    private void adoptResolvedHelper(String pasted, HelperLink resolved) {
-        HelperLink original = HelperLink.tryParse(pasted);
-        if (original == null || original.equals(resolved)) return;
-        runOnUiThread(() -> {
-            String value = resolved.display();
-            getPreferences(MODE_PRIVATE).edit().putString("laptop_helper_link", value).apply();
-            MediaHttpServer.setLaptopHelperLink(value);
-            syncHelperLinkFields();
-        });
-    }
-
     private static final int LAPTOP_PAGE_SIZE = 500;
     private static final int LAPTOP_MAX_ROWS = 5000;
 
@@ -1158,7 +1162,6 @@ public final class MainActivity extends Activity {
         background.execute(() -> {
             try {
                 HelperLink helper = HelperClient.resolve(link, message -> runOnUiThread(() -> status.setText(message)));
-                adoptResolvedHelper(link, helper);
                 String selectedPath = requestedPath.isEmpty() ? "@default" : requestedPath;
                 byte[] payload = new JSONObject().put("share_dir", selectedPath).toString()
                         .getBytes(java.nio.charset.StandardCharsets.UTF_8);
@@ -1389,7 +1392,6 @@ public final class MainActivity extends Activity {
         background.execute(() -> {
             try {
                 HelperLink helper = HelperClient.resolve(link, message -> runOnUiThread(() -> status.setText(message)));
-                adoptResolvedHelper(link, helper);
                 byte[] payload = new JSONObject().put("action", action).put("confirm", confirmed).toString()
                         .getBytes(java.nio.charset.StandardCharsets.UTF_8);
                 // Never retry a power action automatically: a lost reply does not

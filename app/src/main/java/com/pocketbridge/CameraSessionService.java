@@ -53,7 +53,6 @@ public final class CameraSessionService extends Service {
 
     private static volatile CameraSessionService instance;
     private static volatile String lastStatus = "Camera is off.";
-    private static volatile boolean rtcLibraryInitialized;
     private static volatile SurfaceViewRenderer requestedLocalRenderer;
     private static volatile SurfaceViewRenderer requestedRemoteRenderer;
 
@@ -67,6 +66,7 @@ public final class CameraSessionService extends Service {
     private volatile boolean initializing;
     private volatile boolean initialized;
     private volatile boolean failed;
+    private final CountDownLatch firstCameraFrame = new CountDownLatch(1);
     private volatile String status = "Starting the phone camera…";
     private EglBase eglBase;
     private PeerConnectionFactory factory;
@@ -175,14 +175,7 @@ public final class CameraSessionService extends Service {
 
     private void initializeCamera() {
         try {
-            if (!rtcLibraryInitialized) {
-                synchronized (CameraSessionService.class) {
-                    if (!rtcLibraryInitialized) {
-                        PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(getApplicationContext()).createInitializationOptions());
-                        rtcLibraryInitialized = true;
-                    }
-                }
-            }
+            RtcRuntime.initialize(getApplicationContext());
             eglBase = EglBase.create();
             factory = PeerConnectionFactory.builder()
                     .setOptions(new PeerConnectionFactory.Options())
@@ -197,7 +190,14 @@ public final class CameraSessionService extends Service {
                 if (chosen == null) chosen = name;
             }
             if (chosen == null) throw new IllegalStateException("This phone does not report a usable camera.");
-            VideoCapturer newCapturer = cameras.createCapturer(chosen, null);
+            VideoCapturer newCapturer = cameras.createCapturer(chosen, new CameraVideoCapturer.CameraEventsHandler() {
+                @Override public void onCameraError(String message) { captureFailed(message); }
+                @Override public void onCameraDisconnected() { captureFailed("Camera disconnected."); }
+                @Override public void onCameraFreezed(String message) { captureFailed(message); }
+                @Override public void onCameraOpening(String device) { }
+                @Override public void onCameraClosed() { }
+                @Override public void onFirstFrameAvailable() { firstCameraFrame.countDown(); }
+            });
             if (!(newCapturer instanceof CameraVideoCapturer)) throw new IllegalStateException("Android could not open the phone camera.");
             capturer = (CameraVideoCapturer) newCapturer;
             videoSource = factory.createVideoSource(false);
@@ -206,13 +206,17 @@ public final class CameraSessionService extends Service {
             capturer.startCapture(CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
             localTrack = factory.createVideoTrack("pocketbridge-camera", videoSource);
             localTrack.setEnabled(true);
+            if (!firstCameraFrame.await(10, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("No frames arrived. Close other camera apps and try again.");
+            }
+            if (stopping || failed) return;
             initialized = true;
             initializing = false;
             status = lastStatus = "Phone camera ready. Connect from the Edge Camera page and approve the laptop camera there too.";
             mainHandler.post(() -> attachRenderersOnMain(requestedLocalRenderer, requestedRemoteRenderer));
         } catch (Exception error) {
             initializing = false;
-            if (!stopping) {
+            if (!stopping && !failed) {
                 failed = true;
                 status = lastStatus = "Could not open the phone camera: " + safeMessage(error);
                 android.util.Log.e("PocketBridge", status, error);
@@ -261,6 +265,14 @@ public final class CameraSessionService extends Service {
                 remoteSinkAttached = true;
             }
         }
+    }
+
+    private void captureFailed(String reason) {
+        if (stopping) return;
+        failed = true;
+        status = lastStatus = "Phone camera stopped. " + reason;
+        firstCameraFrame.countDown();
+        stopSelf();
     }
 
     private void detachRenderersOnMain(SurfaceViewRenderer local, SurfaceViewRenderer remote) {
@@ -402,6 +414,12 @@ public final class CameraSessionService extends Service {
 
     @Override public void onDestroy() {
         stopping = true;
+        firstCameraFrame.countDown();
+        CountDownLatch pending = answerLatch;
+        if (pending != null) pending.countDown();
+        // Release the Activity's views on the main thread before a new service
+        // can attach the same views. Hardware teardown remains on the worker.
+        detachRenderersOnMain(localRenderer, remoteRenderer);
         initialized = false;
         initializing = false;
         if (!failed) status = lastStatus = "Camera is off.";

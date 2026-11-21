@@ -68,8 +68,7 @@ func lanIPs() []string {
 	// Keep every private address, routed one first. A laptop on the phone's
 	// hotspot and on a wired network at once routes the internet through the
 	// wire, so printing only that address handed the phone a link it could
-	// never reach. The phone tries them in order and also finds the helper on
-	// its own subnet when a pasted address does not answer.
+	// never reach. The owner chooses the Wi-Fi adapter's LAN link on the phone.
 	return out
 }
 

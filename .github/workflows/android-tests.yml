@@ -20,9 +20,16 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4.0.4
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.x'
+          cache-dependency-path: tools/win-control/upstream-v0.1.0/web-remote-desktop-0.1.0/go.sum
 
       - name: Check the browser page against the server
-        run: python3 tools/check-web-page.py
+        run: |
+          python3 tools/check-web-page.py
+          node tools/test-player-layout.js
+          node tools/test-phone-screen.js
 
       - name: Run unit tests
         run: bash gradlew testDebugUnitTest --console=plain

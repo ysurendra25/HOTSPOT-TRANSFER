@@ -219,6 +219,15 @@ final class MediaHttpServer {
         }
     }
 
+    private final LaptopCast laptopCast = new LaptopCast();
+
+    private void castAsset(BufferedOutputStream output, String name, String mime) throws Exception {
+        try (InputStream input = context.getAssets().open("www/" + name)) {
+            respond(output, 200, mime, new String(readAll(input), StandardCharsets.UTF_8),
+                    "Cache-Control: no-store\r\nReferrer-Policy: no-referrer\r\n");
+        }
+    }
+
     private void handleRequest(Socket socket) {
         try (Socket ignored = socket;
              BufferedInputStream input = new BufferedInputStream(socket.getInputStream());
@@ -250,6 +259,15 @@ final class MediaHttpServer {
             byte[] body = method.equals("POST") && !uploadRequest ? readBytes(input, contentLength) : new byte[0];
 
             // The page itself carries no data, so it loads before the code is entered.
+            if ((path.equals("/camera-launch.js") || path.equals("/laptop-cast.js")) && method.equals("GET")) {
+                try (InputStream asset = context.getAssets().open("www" + path)) {
+                    HelperLink helper = HelperLink.tryParse(laptopHelperLink);
+                    String script = new String(readAll(asset), StandardCharsets.UTF_8)
+                            .replace("__PB_HELPER_PORT__", String.valueOf(helper == null ? 7070 : helper.port));
+                    respond(output, 200, "text/javascript; charset=utf-8", script, "Cache-Control: no-store\r\n");
+                }
+                return;
+            }
             if (path.equals("/") || path.equals("/index.html")) {
                 respond(output, 200, "text/html; charset=utf-8", page(false), "Cache-Control: no-store\r\n");
                 return;
@@ -286,6 +304,41 @@ final class MediaHttpServer {
                 return;
             }
 
+            if (path.equals("/api/windows-helper") && (method.equals("GET") || method.equals("HEAD"))) {
+                try (android.content.res.AssetFileDescriptor archive = context.getAssets().openFd("PocketBridge-Windows-Control.zip")) {
+                    writeHead(output, 200, "application/zip", archive.getLength(),
+                            "Content-Disposition: attachment; filename=\"PocketBridge-Windows-Control.zip\"\r\nCache-Control: no-store\r\n", null);
+                    if (method.equals("GET")) {
+                        try (InputStream contents = archive.createInputStream()) {
+                            copyBytes(contents, output, archive.getLength());
+                        }
+                    }
+                    output.flush();
+                }
+                return;
+            }
+            if (path.equals("/watch-laptop.html") || path.equals("/api/laptop-cast")) {
+                String viewerHost = "127.0.0.1:" + PORT;
+                boolean onPhone = socket.getInetAddress().isLoopbackAddress()
+                        && viewerHost.equals(headers.get("host"))
+                        && ("http://" + viewerHost).equals(headers.getOrDefault("origin", "http://" + viewerHost));
+                if (path.equals("/watch-laptop.html") && method.equals("GET") && onPhone) {
+                    castAsset(output, "watch-laptop.html", "text/html; charset=utf-8");
+                } else if (path.equals("/api/laptop-cast") && method.equals("POST")) {
+                    try {
+                        JSONObject reply = laptopCast.exchange(new JSONObject(new String(body, StandardCharsets.UTF_8)),
+                                onPhone, android.os.SystemClock.elapsedRealtime());
+                        respond(output, 200, "application/json", reply.toString(), "Cache-Control: no-store\r\n");
+                    } catch (LaptopCast.Refused e) {
+                        respond(output, e.status, "application/json", new JSONObject().put("error", e.getMessage()).toString(), null);
+                    } catch (org.json.JSONException invalid) {
+                        respond(output, 400, "application/json", "{\"error\":\"Invalid presentation message.\"}", null);
+                    }
+                } else {
+                    respond(output, 403, "text/plain", "Open the viewer on the phone.", null);
+                }
+                return;
+            }
             if (path.equals("/api/open-vlc") && method.equals("GET")) {
                 String helper = laptopHelperLink;
                 Uri helperUri = Uri.parse(helper);
@@ -489,6 +542,7 @@ final class MediaHttpServer {
             }
             if (path.equals("/api/screen/status") && method.equals("GET")) {
                 JSONObject state = new JSONObject().put("ready", ScreenCaptureService.isRunning())
+                        .put("starting", ScreenCaptureService.isStarting())
                         .put("iceState", ScreenCaptureService.getIceState())
                         .put("frames", ScreenCaptureService.framesSent())
                         .put("lastFrameAgeMs", ScreenCaptureService.lastFrameAgeMs())
@@ -501,7 +555,7 @@ final class MediaHttpServer {
                 return;
             }
             if ((path.equals("/api/camera/status") || path.equals("/api/camera/offer") || path.equals("/api/camera/stop")) && method.equals("OPTIONS")) {
-                String cors = cameraCorsHeaders(headers.get("origin"));
+                String cors = cameraCorsHeaders(headers);
                 if (cors == null) {
                     respond(output, 403, "text/plain; charset=utf-8", "Camera calls are accepted only from the laptop's local helper page.", null);
                 } else {
@@ -510,7 +564,7 @@ final class MediaHttpServer {
                 return;
             }
             if (path.equals("/api/camera/status") && method.equals("GET")) {
-                String cors = cameraCorsHeaders(headers.get("origin"));
+                String cors = cameraCorsHeaders(headers);
                 if (headers.containsKey("origin") && cors == null) {
                     respond(output, 403, "application/json; charset=utf-8", "{\"error\":\"Open the camera page from the Windows helper on this laptop.\"}", null);
                     return;
@@ -521,7 +575,7 @@ final class MediaHttpServer {
                 return;
             }
             if (path.equals("/api/camera/offer") && method.equals("POST")) {
-                String cors = cameraCorsHeaders(headers.get("origin"));
+                String cors = cameraCorsHeaders(headers);
                 if (headers.containsKey("origin") && cors == null) {
                     respond(output, 403, "application/json; charset=utf-8", "{\"error\":\"Open the camera page from the Windows helper on this laptop.\"}", null);
                     return;
@@ -548,7 +602,7 @@ final class MediaHttpServer {
                 return;
             }
             if (path.equals("/api/camera/stop") && method.equals("POST")) {
-                String cors = cameraCorsHeaders(headers.get("origin"));
+                String cors = cameraCorsHeaders(headers);
                 if (headers.containsKey("origin") && cors == null) {
                     respond(output, 403, "application/json; charset=utf-8", "{\"error\":\"Open the camera page from the Windows helper on this laptop.\"}", null);
                     return;
@@ -589,7 +643,7 @@ final class MediaHttpServer {
             if (path.equals("/api/screen/offer") && method.equals("POST")) {
                 JSONObject request = new JSONObject(new String(body, StandardCharsets.UTF_8));
                 String sdp = request.optString("sdp", "");
-                String answer = ScreenCaptureService.answerOffer(sdp);
+                String answer = ScreenCaptureService.answerOffer(sdp, request.optString("viewer", ""));
                 if (answer == null) {
                     String error = ScreenCaptureService.getLastOfferError();
                     JSONObject failure = new JSONObject().put("error", error == null
@@ -603,7 +657,8 @@ final class MediaHttpServer {
                 return;
             }
             if (path.equals("/api/screen/stop") && method.equals("POST")) {
-                ScreenCaptureService.stopPeer();
+                String viewer = target.getQueryParameter("viewer");
+                ScreenCaptureService.stopPeer(viewer == null ? "" : viewer);
                 respond(output, 200, "application/json", "{\"ok\":true}", null);
                 return;
             }
@@ -1166,6 +1221,7 @@ final class MediaHttpServer {
             case 404: return "Not Found";
             case 405: return "Method Not Allowed";
             case 409: return "Conflict";
+            case 410: return "Gone";
             case 413: return "Payload Too Large";
             case 416: return "Range Not Satisfiable";
             case 422: return "Unprocessable Entity";
@@ -1243,7 +1299,9 @@ final class MediaHttpServer {
     }
 
     /** Allow browser camera signaling only from the helper's secure localhost origin. */
-    private static String cameraCorsHeaders(String origin) {
+    private static String cameraCorsHeaders(Map<String, String> headers) {
+        String origin = headers.get("origin");
+        if (("http://" + headers.get("host")).equalsIgnoreCase(origin)) return "";
         if (origin == null || origin.isEmpty()) return "";
         Uri parsed = Uri.parse(origin);
         String scheme = parsed.getScheme();

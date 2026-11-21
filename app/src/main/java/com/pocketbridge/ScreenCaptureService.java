@@ -5,15 +5,12 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
-import android.content.Context;
 import android.content.Intent;
-import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.IBinder;
-import android.os.Looper;
 import android.util.DisplayMetrics;
-import android.view.WindowManager;
 import android.content.pm.ServiceInfo;
 import android.graphics.ImageFormat;
 import android.graphics.Rect;
@@ -64,6 +61,7 @@ public final class ScreenCaptureService extends Service {
     private VideoSource videoSource;
     private volatile VideoTrack videoTrack;
     private volatile PeerConnection peer;
+    private String viewerId = "";
     private volatile RtpSender sender;
     private volatile String pendingAnswer;
     private volatile CountDownLatch answerLatch;
@@ -71,12 +69,8 @@ public final class ScreenCaptureService extends Service {
     private volatile JpegSink jpegSink;
     private volatile int captureWidth;
     private volatile int captureHeight;
-    private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final ExecutorService setupWorker = Executors.newSingleThreadExecutor(task -> {
-        Thread thread = new Thread(task, "PocketBridge-screen-setup");
-        thread.setDaemon(true);
-        return thread;
-    });
+    private final HandlerThread captureThread = new HandlerThread("PocketBridge-screen-setup");
+    private Handler captureHandler;
     private volatile boolean initializing;
     private volatile boolean stopping;
 
@@ -86,9 +80,15 @@ public final class ScreenCaptureService extends Service {
         JpegFrame(long sequence, byte[] bytes) { this.sequence = sequence; this.bytes = bytes; }
     }
 
-    public static boolean isRunning() { return instance != null && instance.videoTrack != null; }
+    public static boolean isRunning() {
+        ScreenCaptureService service = instance;
+        return service != null && !service.stopping && service.videoTrack != null;
+    }
 
-    public static boolean isStarting() { return instance != null && instance.initializing; }
+    public static boolean isStarting() {
+        ScreenCaptureService service = instance;
+        return service != null && !service.stopping && service.initializing;
+    }
 
     public static String getSetupError() { return lastSetupError; }
 
@@ -113,13 +113,13 @@ public final class ScreenCaptureService extends Service {
     private static final java.util.concurrent.atomic.AtomicInteger MJPEG_VIEWERS = new java.util.concurrent.atomic.AtomicInteger();
 
     /** A browser opened the JPEG stream: keep the JPEG encoder on while it watches. */
-    static void mjpegViewerStarted() {
+    static synchronized void mjpegViewerStarted() {
         MJPEG_VIEWERS.incrementAndGet();
         prepareMjpegFallback();
     }
 
     /** The JPEG encoder is CPU-heavy; switch it off when the last JPEG viewer leaves. */
-    static void mjpegViewerEnded() {
+    static synchronized void mjpegViewerEnded() {
         if (MJPEG_VIEWERS.decrementAndGet() <= 0) {
             MJPEG_VIEWERS.set(0);
             ScreenCaptureService service = instance;
@@ -157,26 +157,35 @@ public final class ScreenCaptureService extends Service {
         return service.captureWidth + "x" + service.captureHeight;
     }
 
-    public static String answerOffer(String sdp) {
+    public static String answerOffer(String sdp, String viewer) {
         ScreenCaptureService service = instance;
-        if (service == null || service.videoTrack == null || sdp == null || sdp.isEmpty()) return null;
-        try {
-            return service.acceptOffer(sdp);
-        } catch (RuntimeException error) {
-            lastOfferError = "The phone hit an error preparing screen sharing. Restart screen sharing and retry.";
-            android.util.Log.e("PocketBridge", "Screen offer failed", error);
-            service.closePeer();
-            return null;
+        if (service == null || sdp == null || sdp.isEmpty()) return null;
+        synchronized (service.offerLock) {
+            if (service.stopping || service.videoTrack == null) return null;
+            service.viewerId = viewer;
+            try {
+                return service.acceptOfferLocked(sdp);
+            } catch (RuntimeException error) {
+                lastOfferError = "The phone could not prepare this screen connection. Retry Watch screen.";
+                android.util.Log.e("PocketBridge", "Screen offer failed", error);
+                service.closePeer();
+                return null;
+            }
         }
     }
 
-    public static void stopPeer() {
+    public static void stopPeer(String viewer) {
         ScreenCaptureService service = instance;
-        if (service != null) service.closePeer();
+        if (service == null) return;
+        synchronized (service.offerLock) {
+            if (service.viewerId.equals(viewer)) service.closePeer();
+        }
     }
 
     @Override public void onCreate() {
         super.onCreate();
+        captureThread.start();
+        captureHandler = new Handler(captureThread.getLooper());
         instance = this;
         createNotificationChannel();
     }
@@ -197,14 +206,15 @@ public final class ScreenCaptureService extends Service {
             if (permissionData == null) throw new IllegalArgumentException("Android did not return screen-capture permission data.");
             lastSetupError = null;
             initializing = true;
-            setupWorker.execute(() -> {
+            captureHandler.post(() -> {
+                if (stopping) return;
                 try {
                     initialize(permissionData);
                 } catch (Exception error) {
                     if (!stopping) {
                         lastSetupError = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
                         android.util.Log.e("PocketBridge", "Screen share setup failed", error);
-                        stopSelf(startId);
+                        stopSelf();
                     }
                 } finally {
                     initializing = false;
@@ -220,8 +230,7 @@ public final class ScreenCaptureService extends Service {
     }
 
     private void initialize(Intent permissionData) throws Exception {
-        PeerConnectionFactory.InitializationOptions options = PeerConnectionFactory.InitializationOptions.builder(getApplicationContext()).createInitializationOptions();
-        PeerConnectionFactory.initialize(options);
+        RtcRuntime.initialize(this);
         eglBase = EglBase.create();
         PeerConnectionFactory.Options factoryOptions = new PeerConnectionFactory.Options();
         factory = PeerConnectionFactory.builder()
@@ -241,12 +250,7 @@ public final class ScreenCaptureService extends Service {
             }
 
             @Override public void onCapturedContentResize(int width, int height) {
-                // Android 14+ reports the captured region's exact dimensions when the
-                // phone rotates or a shared app changes window size. Resize on the main
-                // thread; the WebRTC capturer then resizes its existing VirtualDisplay
-                // and output surface on its own texture thread (without creating a new
-                // MediaProjection VirtualDisplay).
-                mainHandler.post(() -> resizeCaptureForContent(width, height));
+                captureHandler.post(() -> resizeCaptureForContent(width, height));
             }
         });
         capturer.initialize(surfaceTextureHelper, getApplicationContext(), videoSource.getCapturerObserver());
@@ -255,9 +259,11 @@ public final class ScreenCaptureService extends Service {
         capturer.startCapture(size[0], size[1], ScreenStreamTuning.MAX_FRAMERATE);
         captureWidth = size[0];
         captureHeight = size[1];
-        videoTrack = factory.createVideoTrack("pocketbridge-screen", videoSource);
-        videoTrack.setEnabled(true);
-        watchRotation();
+        VideoTrack track = factory.createVideoTrack("pocketbridge-screen", videoSource);
+        track.setEnabled(true);
+        videoTrack = track;
+        // From API 34 the captured app can be smaller than the device display.
+        if (Build.VERSION.SDK_INT < 34) watchRotation();
     }
 
     private android.hardware.display.DisplayManager.DisplayListener rotationListener;
@@ -281,19 +287,21 @@ public final class ScreenCaptureService extends Service {
                 resizeCaptureForContent(size[0], size[1]);
             }
         };
-        displays.registerDisplayListener(rotationListener, mainHandler);
+        displays.registerDisplayListener(rotationListener, captureHandler);
     }
 
     /** Keep the native display size for the direct WebRTC stream. The JPEG fallback scales separately. */
     private int[] captureSize() {
-        WindowManager windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+        android.hardware.display.DisplayManager displays = getSystemService(android.hardware.display.DisplayManager.class);
+        android.view.Display display = displays.getDisplay(android.view.Display.DEFAULT_DISPLAY);
         DisplayMetrics metrics = new DisplayMetrics();
-        windowManager.getDefaultDisplay().getRealMetrics(metrics);
+        if (display != null) display.getRealMetrics(metrics);
+        else metrics.setTo(getResources().getDisplayMetrics());
         return boundedCaptureSize(metrics.widthPixels, metrics.heightPixels);
     }
 
     private void resizeCaptureForContent(int contentWidth, int contentHeight) {
-        if (contentWidth <= 0 || contentHeight <= 0 || capturer == null || videoSource == null) return;
+        if (stopping || contentWidth <= 0 || contentHeight <= 0 || capturer == null || videoSource == null) return;
         int[] size = boundedCaptureSize(contentWidth, contentHeight);
         if (size[0] == captureWidth && size[1] == captureHeight) return;
         try {
@@ -315,9 +323,11 @@ public final class ScreenCaptureService extends Service {
 
     /** JPEG is CPU-heavy, so reserve it for old browsers or a failed WebRTC link. */
     private synchronized void enableJpegFallback() {
-        if (videoTrack == null || jpegSink != null) return;
+        if (stopping || videoTrack == null || jpegSink != null) return;
         jpegSink = new JpegSink();
         videoTrack.addSink(jpegSink);
+        // A still Android display may never deliver a new texture after the sink joins.
+        surfaceTextureHelper.forceFrame();
     }
 
     private synchronized void disableJpegFallback() {
@@ -332,13 +342,6 @@ public final class ScreenCaptureService extends Service {
 
     private final Object offerLock = new Object();
 
-    private String acceptOffer(String offerSdp) {
-        // One negotiation at a time; a second browser tab replaces the first.
-        synchronized (offerLock) {
-            return acceptOfferLocked(offerSdp);
-        }
-    }
-
     private String acceptOfferLocked(String offerSdp) {
         closePeer();
         lastOfferError = null;
@@ -347,6 +350,10 @@ public final class ScreenCaptureService extends Service {
         lastIceState = "new";
         CountDownLatch latch = new CountDownLatch(1);
         answerLatch = latch;
+        if (stopping) {
+            answerLatch = null;
+            return null;
+        }
         ArrayList<PeerConnection.IceServer> iceServers = new ArrayList<>();
         PeerConnection.RTCConfiguration configuration = new PeerConnection.RTCConfiguration(iceServers);
         configuration.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN;
@@ -354,11 +361,11 @@ public final class ScreenCaptureService extends Service {
             @Override public void onSignalingChange(PeerConnection.SignalingState state) { }
             @Override public void onIceConnectionChange(PeerConnection.IceConnectionState state) {
                 lastIceState = state == null ? "unknown" : state.toString().toLowerCase(java.util.Locale.ROOT);
-                if ((state == PeerConnection.IceConnectionState.CONNECTED || state == PeerConnection.IceConnectionState.COMPLETED)
-                        && MJPEG_VIEWERS.get() == 0) {
-                    // The direct stream is up and nobody is on the JPEG stream:
-                    // stop spending CPU on JPEG frames nobody receives.
-                    disableJpegFallback();
+                if (state == PeerConnection.IceConnectionState.CONNECTED || state == PeerConnection.IceConnectionState.COMPLETED) {
+                    captureHandler.post(() -> {
+                        if (stopping) return;
+                        surfaceTextureHelper.forceFrame();
+                    });
                 }
             }
             @Override public void onIceConnectionReceivingChange(boolean receiving) { }
@@ -386,9 +393,7 @@ public final class ScreenCaptureService extends Service {
         if (sender != null) {
             try {
                 RtpParameters parameters = sender.getParameters();
-                // Let WebRTC adapt both resolution and frame rate when hotspot
-                // capacity changes. Holding full resolution at a 25 Mbps floor
-                // made frames queue up and arrive several seconds late.
+                // Adapt both resolution and frame rate to current hotspot capacity.
                 parameters.degradationPreference = RtpParameters.DegradationPreference.BALANCED;
                 for (RtpParameters.Encoding encoding : parameters.encodings) {
                     encoding.maxBitrateBps = ScreenStreamTuning.MAX_KBPS * 1000;
@@ -588,17 +593,12 @@ public final class ScreenCaptureService extends Service {
     @Override public void onDestroy() {
         stopping = true;
         initializing = false;
-        if (rotationListener != null) {
-            android.hardware.display.DisplayManager displays = getSystemService(android.hardware.display.DisplayManager.class);
-            if (displays != null) displays.unregisterDisplayListener(rotationListener);
-            rotationListener = null;
-        }
-        // Serialize teardown after any in-flight encoder/capturer initialization.
-        // Releasing EGL or MediaProjection resources while setup is still using
-        // them caused intermittent service crashes and a frozen sharing screen.
-        try { setupWorker.execute(this::releaseCaptureResources); }
-        catch (RejectedExecutionException ignored) { }
-        setupWorker.shutdown();
+        CountDownLatch negotiating = answerLatch;
+        if (negotiating != null) negotiating.countDown();
+        captureHandler.post(() -> {
+            try { releaseCaptureResources(); }
+            finally { captureThread.quitSafely(); }
+        });
         if (instance == this) instance = null;
         if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE); else stopForeground(true);
         super.onDestroy();
@@ -610,7 +610,7 @@ public final class ScreenCaptureService extends Service {
             if (displays != null) displays.unregisterDisplayListener(rotationListener);
             rotationListener = null;
         }
-        closePeer();
+        synchronized (offerLock) { closePeer(); }
         disableJpegFallback();
         try { if (capturer != null) { capturer.stopCapture(); capturer.dispose(); } } catch (Exception ignored) { }
         try { if (videoTrack != null) videoTrack.dispose(); } catch (Exception ignored) { }

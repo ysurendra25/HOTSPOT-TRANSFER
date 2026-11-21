@@ -8,9 +8,9 @@ This optional companion is based on [TaciTech web-remote-desktop](https://github
 2. Connect Windows to the Wi-Fi name and password PocketBridge shows. Keep Windows connected even if it reports no internet.
 3. Extract `PocketBridge-Windows-Control-<version>.zip` and double-click `Start-Control.bat`.
 4. If Windows Firewall asks, allow access on private networks only.
-5. Paste one of the printed `http://...:7070/?t=...` links into PocketBridge on the phone (**Connect** → Windows helper link), or open it in the phone's browser. The first link is usually the right one; if the phone cannot reach it, PocketBridge searches its hotspot for the laptop by itself. The links are also saved in `pc-remote-links.txt`, rewritten on every start.
+5. In PocketBridge on the phone, paste the printed **LAN** link for the laptop’s Wi-Fi adapter into **Connect** → **Windows helper link**. If several links appear, match the address to **Wi-Fi → IPv4 Address** in Windows `ipconfig`. PocketBridge checks the helper identity at that address. The `127.0.0.1` link opens on the laptop itself. The helper saves its current LAN links in `pc-remote-links.txt`. If another window already has the helper running, return to that window for the active link.
 6. Tap or drag the laptop image to move/click. Use the page's keyboard, scroll, right-click, and trackpad controls.
-7. Press a key in the helper console when finished. Stop the phone's local share separately.
+7. Close the helper window when finished. This stops the helper running in that window. Stop the phone's local share separately.
 
 The helper shares the folder configured by `share_dir` in `config.json` (Downloads by default), including nested folders. Very large folders are listed in pages: at most 20,000 files are read, within about four seconds, newest first, and system folders such as AppData, node_modules and $Recycle.Bin are skipped. Pick a smaller folder on the phone to see files beyond that.
 
@@ -34,6 +34,8 @@ The helper runs as a portable process; it does not install a Windows service or 
 
 ## Build from source
 
+From the repository root, `./gradlew :app:packageWindowsHelper` builds the portable Windows x64 ZIP in `app/build/generated/windowsHelperAssets/`. The Android build runs this task automatically. For a universal APK on Windows, run `.\gradlew.bat assembleDebug -PpocketbridgeUniversal=true` with Go and the Android SDK installed. The paired browser can download that build's matching helper from the phone while offline.
+
 The upstream MIT-licensed source is included under `upstream-v0.1.0/web-remote-desktop-0.1.0`. Install Go 1.26 or newer (the release build uses Go 1.27), then run `./build.ps1`. The script runs upstream Go tests and produces `dist/pc-remote.exe`. It includes PocketBridge's `/jpeg` handler and browser fallback; the release ZIP includes a prebuilt executable so the laptop does not need Go.
 
-The first run creates `config.json` and `pc-remote.log` beside the executable. The log prints the URL to open. For no-internet use, FFmpeg is optional: PocketBridge's JPEG fallback works without it. FFmpeg enables more bandwidth-efficient H.264/HEVC streaming.
+The first run creates `config.json` and `pc-remote.log` beside the executable. The running console prints the pairing links. The log contains startup and connection diagnostics. For no-internet use, FFmpeg is optional: PocketBridge's JPEG fallback works without it. FFmpeg enables more bandwidth-efficient H.264/HEVC streaming.

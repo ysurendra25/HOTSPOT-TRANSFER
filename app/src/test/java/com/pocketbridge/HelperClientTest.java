@@ -25,10 +25,9 @@ public class HelperClientTest {
     private final List<String> powerBodies = new ArrayList<>();
 
     @Before public void startFakeHelper() throws Exception {
-        HelperClient.forget();
         helper = new FakeHttpServer();
         helper.route("/ping", request -> "t=tok".equals(request.rawQuery)
-                ? new FakeHttpServer.Reply(200, "{\"ok\":true}")
+                ? new FakeHttpServer.Reply(200, "{\"ok\":true,\"app\":\"PocketBridge Windows Control\"}")
                 : new FakeHttpServer.Reply(401, "unauthorized"));
         helper.route("/files", request -> {
             if (busyAnswers.getAndDecrement() > 0) return new FakeHttpServer.Reply(503, "{\"error\":\"busy\"}");
@@ -46,7 +45,6 @@ public class HelperClientTest {
 
     @After public void stopFakeHelper() throws Exception {
         helper.close();
-        HelperClient.forget();
     }
 
     /** A link to the fake helper; 127.0.0.1 here plays the laptop's LAN address. */
@@ -89,19 +87,57 @@ public class HelperClientTest {
         }
     }
 
-    @Test public void resolvesAReachableLinkWithoutScanning() throws Exception {
-        HelperLink resolved = HelperClient.resolve(base + "/?t=tok", null);
-        assertEquals(link(), resolved);
+    @Test public void verifiesTheBundledHelpersIdentity() throws Exception {
+        HelperClient.verifyIdentity(link());
     }
 
     @Test public void aWrongCodeIsExplainedNotRetried() {
         try {
-            HelperClient.resolve(base + "/?t=wrong", null);
+            HelperClient.verifyIdentity(HelperLink.parse(base + "/?t=wrong"));
             fail("a rejected code must not count as reachable");
         } catch (HelperClient.HelperException expected) {
             assertEquals(401, expected.status);
             assertTrue(expected.getMessage().contains("access code"));
         }
+    }
+
+    @Test public void refusesMissingPingAndImpostorsWithoutTryingOtherPaths() throws Exception {
+        AtomicInteger pings = new AtomicInteger();
+        AtomicInteger fallbackRequests = new AtomicInteger();
+        helper.route("/screen", request -> {
+            fallbackRequests.incrementAndGet();
+            return new FakeHttpServer.Reply(200, "{}");
+        });
+        FakeHttpServer.Reply[] replies = {
+                new FakeHttpServer.Reply(404, ""),
+                new FakeHttpServer.Reply(200, "<html>login</html>"),
+                new FakeHttpServer.Reply(200, "{\"ok\":true}"),
+                new FakeHttpServer.Reply(200, "{\"ok\":true,\"app\":\"Another server\"}"),
+                new FakeHttpServer.Reply(200, "{\"ok\":\"true\",\"app\":\"PocketBridge Windows Control\"}")
+        };
+        for (FakeHttpServer.Reply reply : replies) {
+            helper.route("/ping", request -> { pings.incrementAndGet(); return reply; });
+            try {
+                HelperClient.verifyIdentity(link());
+                fail("unexpected identity");
+            } catch (HelperClient.HelperException expected) {
+                assertTrue(expected.getMessage().contains("identify"));
+            }
+        }
+        assertEquals(replies.length, pings.get());
+        assertEquals(0, fallbackRequests.get());
+    }
+
+    @Test public void rejectsALoopbackLinkBeforeSendingItsToken() {
+        AtomicInteger requests = new AtomicInteger();
+        helper.route("/ping", request -> { requests.incrementAndGet(); return new FakeHttpServer.Reply(200, "{}"); });
+        try {
+            HelperClient.resolve(base + "/?t=tok", null);
+            fail("a loopback link cannot be used from the phone");
+        } catch (HelperClient.HelperException expected) {
+            assertTrue(expected.getMessage().contains("LAN link"));
+        }
+        assertEquals(0, requests.get());
     }
 
     @Test public void sendsPowerActionsAsJson() throws Exception {

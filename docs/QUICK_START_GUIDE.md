@@ -43,7 +43,7 @@ To stop, tap **Stop viewing** in the browser and **Stop sharing** in PocketBridg
 
 1. Keep the laptop and phone connected to the same PocketBridge hotspot.
 2. On Windows, extract the portable PocketBridge Windows Control ZIP and start `Start-Control.bat`. Keep the helper running; if Windows asks, allow it on private networks.
-3. Copy the local link printed by the helper. In PocketBridge on the phone, open **Library** → **Files on the laptop**, paste the link and tap **Load laptop files**. The link is saved and shared with **Screen**.
+3. Copy the **LAN** link for the Wi-Fi adapter printed by the helper. In PocketBridge on the phone, open **Library** → **Files on the laptop**, paste the link and tap **Load laptop files**. The link is saved and shared with **Screen**.
 4. Use Search or the Photos, Videos, Audio and Other filters. Tap a supported video or audio file to stream it in an Android player; other formats open in a compatible app. The helper shares Downloads and its subfolders by default.
 5. To view the laptop display, open **Screen** → **Show laptop screen here**. The helper page shows connection and stream status; use its toolbar to fit the view or adjust the stream quality.
 
@@ -54,7 +54,7 @@ To stop, tap **Stop viewing** in the browser and **Stop sharing** in PocketBridg
 - **A preview is blank:** leave the page open for a moment. If the phone's media provider has no thumbnail, PocketBridge tries a fallback preview; downloading still transfers the original.
 - **A video copy does not play:** the phone may not support converting that source codec. Use **Download** for the original; conversion can need free storage and time.
 - **No screen frame appears:** confirm Android's capture permission was approved, both devices remain on the same network, and PocketBridge stays open. Stop capture on the phone, start it again, then tap **Watch screen**.
-- **Laptop files are missing on the phone:** start the Windows helper, paste its printed link in **Library** → **Files on the laptop**, and load again. The helper lists the folder set by `share_dir` in its `config.json` (Downloads by default). If the phone says the folder was only partly read, enter a smaller folder path. If the pasted address does not answer, PocketBridge searches the hotspot for the laptop and remembers the address that works.
+- **Laptop files are missing on the phone:** start the Windows helper, paste its printed link in **Library** → **Files on the laptop**, and load again. The helper lists the folder set by `share_dir` in its `config.json` (Downloads by default). If the phone says the folder was only partly read, enter a smaller folder path. If a link does not answer, check the **Wi-Fi → IPv4 Address** in Windows `ipconfig`, then copy the helper’s LAN link with that address.
 - **Laptop screen is blank on the phone:** keep the Windows helper running, confirm the phone is on the laptop's hotspot, and check the helper link in **Connect**. A sleeping laptop or Windows Firewall can block the viewer.
 - **Laptop controls:** Lock, Wake display, Sleep and Shut down work while the helper runs. **Wake & show sign-in** only wakes the display; Windows still needs the PIN or password typed on the laptop.
 - **A large download pauses:** keep the phone unlocked and sharing, keep the laptop connected to the hotspot, and retry the download.

@@ -70,7 +70,7 @@ Download the APK before going offline. After installation, PocketBridge creates 
 ## Control the laptop from the phone
 
 1. Start the PocketBridge hotspot and connect the laptop to it.
-2. Download and extract `PocketBridge-Windows-Control-0.5.9.6.zip` on Windows.
+2. On the paired Windows browser page, use **Download Windows helper** and extract the ZIP.
 3. Double-click `Start-Control.bat`. If Windows Firewall asks, allow private network access only.
 4. The helper prints a link in its window. Open that link on the phone while the phone is still connected to the laptop's PocketBridge hotspot.
 5. Use the touch screen for mouse movement and clicks, and the keyboard controls on the page to type. Leave the helper running while connected. Press a key in its console when done to stop it.

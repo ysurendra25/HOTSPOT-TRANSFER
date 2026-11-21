@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Watch laptop screen</title>
+<style>
+*{box-sizing:border-box}html,body,video{width:100%;height:100%;margin:0;background:#000}video{object-fit:contain;display:block}
+#status{position:fixed;inset:auto 12px 12px;padding:10px 12px;border-radius:8px;color:white;background:#112127e6;font:15px/1.4 system-ui}
+</style>
+</head>
+<body>
+<video autoplay muted playsinline></video>
+<div id="status" role="status">Checking for a laptop presentation…</div>
+<script>
+(() => {
+  const video = document.querySelector('video');
+  const status = document.querySelector('#status');
+  const endpoint = '/api/laptop-cast' + location.search;
+  let peer, session = '', viewer = '', running = true, offeredAt = 0;
+  const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+  async function exchange(action, details = {}) {
+    const response = await fetch(endpoint, {method:'POST', cache:'no-store',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify({action, ...details}), signal:AbortSignal.timeout(6000)});
+    const message = await response.json();
+    if (!response.ok) throw new Error(message.error || 'Cannot reach the presentation.');
+    return message;
+  }
+  function clear() {
+    if (peer) { peer.ontrack = null; peer.close(); peer = null; }
+    video.srcObject = null;
+    session = viewer = '';
+    status.hidden = false;
+  }
+  async function watch(id) {
+    clear();
+    const pc = new RTCPeerConnection({iceServers:[]});
+    peer = pc;
+    pc.addTransceiver('video', {direction:'recvonly'});
+    pc.ontrack = event => {
+      if (pc !== peer) return;
+      video.srcObject = new MediaStream([event.track]);
+      video.play().catch(() => {});
+    };
+    status.textContent = 'Connecting to the selected laptop screen…';
+    await pc.setLocalDescription(await pc.createOffer());
+    for (let i = 0; running && pc.iceGatheringState !== 'complete' && i < 45; i++) await delay(100);
+    if (!running) return;
+    if (!/^a=candidate:/m.test(pc.localDescription.sdp)) throw new Error('No local Wi-Fi route is available.');
+    const state = await exchange('offer', {session:id, sdp:pc.localDescription.sdp});
+    session = state.session;
+    viewer = state.viewer;
+    offeredAt = performance.now();
+  }
+  async function poll() {
+    while (running) {
+      let ready = !!peer && peer.connectionState === 'connected' && video.readyState >= 2;
+      try {
+        const state = await exchange('view', {viewer, connected:ready});
+        if (!running) return;
+        if (!state.session) {
+          clear();
+          status.textContent = 'In Edge, open Screen and choose Share laptop screen.';
+        } else if (!peer || session !== state.session || viewer !== state.viewer
+              || peer.connectionState === 'failed' || (!ready && performance.now() - offeredAt > 30000)) {
+          await watch(state.session);
+        } else if (state.answer && !peer.remoteDescription) {
+          await peer.setRemoteDescription({type:'answer', sdp:state.answer});
+        }
+        if (ready && peer && session === state.session) { status.hidden = true; offeredAt = performance.now(); }
+      } catch (error) {
+        if (!ready) clear();
+        status.hidden = false;
+        status.textContent = (error.message || 'Connection interrupted') + ' Retrying…';
+      }
+      await delay(ready ? 2200 : 650);
+    }
+  }
+  window.addEventListener('pagehide', () => {
+    running = false;
+    if (viewer) fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:'leave',viewer}), keepalive:true}).catch(() => {});
+    clear();
+  });
+  poll();
+})();
+</script>
+</body>
+</html>

@@ -67,8 +67,8 @@ def main():
         "screen video and JPEG preview share one cell (no half-height picture)": ".screen-stage>canvas,.screen-stage>video{grid-area:1/1",
         "MJPEG frames are cut by Content-Length": "function takeScreenPart(bytes)",
         "WebRTC receiver asks for minimal playout delay": "jitterBufferTarget = 0",
-        "fullscreen player preserves the selected aspect ratio": ".modal:fullscreen .stage.video-stage{flex:0 0 auto;width:auto",
-        "fullscreen player recalculates aspect-sized inline dimensions": "stage.style.width = layout.width + 'px';",
+        "fullscreen player uses a full-viewport black stage": ".modal.video-viewer .stage{position:absolute;inset:0;width:100%;height:100%",
+        "player sizes the picture independently from overlay controls": "media.style.width = layout.width + 'px';",
         "fallback screen status matches the encoder": "Compatibility JPEG · native resolution",
         "dark theme and persisted theme control": "pocketbridge_theme",
         "video aspect ratio recalculation": "function fitVideoStage()",
@@ -95,7 +95,7 @@ def main():
     if "if (!confirm('Download " in html:
         problems += fail("recipient file download still requires a second confirmation instead of one deliberate click")
     groups = re.search(r"const TAB_GROUPS = \{(.*?)\n  \};", html, re.S)
-    if not groups or "files: ['inboxSection', 'inboxGrid', 'librarySection', 'kindTabs', 'grid', 'transferSection']" not in groups.group(1):
+    if not groups or "files: ['inboxSection', 'inboxGrid', 'librarySection', 'kindTabs', 'grid', 'filesPaging', 'transferSection']" not in groups.group(1):
         problems += fail("video and file type filters must stay inside the Files tab")
     if not groups or "music: ['musicSection']" not in groups.group(1):
         problems += fail("the Music tab must show only the music player and song list")

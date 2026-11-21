@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer">
+<title>PocketBridge · Share laptop screen</title>
+<style>
+:root{color-scheme:dark}body{margin:0;background:#091519;color:#e7f4f2;font:16px/1.5 system-ui}main{max-width:720px;margin:7vh auto;padding:20px}
+h1{font-size:clamp(26px,5vw,40px);margin:0}p{color:#bed4d7}button{background:#25b692;color:#041f1b;border:0;border-radius:10px;font:700 16px system-ui;padding:13px 20px;cursor:pointer;margin:0 8px 8px 0}button:disabled{opacity:.45}
+video{margin-top:12px;background:#000;max-height:50vh;width:100%;object-fit:contain;border-radius:8px}
+</style>
+</head>
+<body><main>
+<h1>Share laptop screen</h1>
+<p id="destination"></p>
+<button id="start" disabled>Choose screen or window</button><button id="stop" disabled>Stop sharing</button>
+<p id="status" role="status">Connecting to the PocketBridge tab…</p>
+<video playsinline muted autoplay hidden></video>
+</main>
+<script>
+(() => {
+  const start = document.querySelector('#start'), stop = document.querySelector('#stop');
+  const status = document.querySelector('#status'), preview = document.querySelector('video');
+  const args = new URLSearchParams(location.hash.slice(1));
+  const nonce = args.get('nonce'), destination = args.get('phone');
+  let phone;
+  try { phone = new URL(destination); } catch {}
+  const localHost = host => /^(10\.|127\.|172\.(1[6-9]|2\d|3[01])\.|192\.(168|0)\.|169\.254\.)/.test(host)
+      && /^\d{1,3}(\.\d{1,3}){3}$/.test(host);
+  if (!phone || phone.protocol !== 'http:' || !localHost(phone.hostname) || phone.port !== '43117' || phone.origin !== destination ||
+      !/^[0-9a-f]{32}$/.test(nonce) || !window.opener || window.top !== self) {
+    status.textContent = 'Open Screen in the paired PocketBridge tab, then choose Share laptop screen.';
+    return;
+  }
+  document.querySelector('#destination').textContent = 'Your selection will be visible on the phone at ' + phone.host + '.';
+  let channel, rpcId = 0, generation = 0, stream, peer, published = false;
+  const pending = new Map();
+  const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+  function rpc(action, values = {}) {
+    if (!channel || window.opener.closed) return Promise.reject(new Error('The paired PocketBridge tab closed.'));
+    const id = ++rpcId;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pending.delete(id); reject(new Error('The paired tab did not answer. Check the phone connection and try again.'));
+      }, 9000);
+      pending.set(id, reply => { clearTimeout(timer); reply.error ? reject(new Error(reply.error)) : resolve(reply.result); });
+      channel.postMessage({id, action, ...values});
+    });
+  }
+  function closePeer() {
+    if (peer) { peer.onconnectionstatechange = null; peer.close(); peer = null; }
+  }
+  async function finish(message) {
+    ++generation;
+    closePeer();
+    if (stream) {
+      stream.getTracks().forEach(track => { track.onended = null; track.stop(); });
+      stream = null;
+    }
+    preview.srcObject = null;
+    preview.hidden = true;
+    stop.disabled = true;
+    if (published) {
+      published = false;
+      try { await rpc('stop'); } catch {}
+    }
+    start.disabled = !channel;
+    status.textContent = message;
+  }
+  async function sendToViewer(gen, offer, viewer) {
+    closePeer();
+    const pc = new RTCPeerConnection({iceServers:[]});
+    peer = pc;
+    pc.onconnectionstatechange = () => {
+      if (peer !== pc) return;
+      if (pc.connectionState === 'connected') status.textContent = 'Your phone is receiving this screen.';
+      if (pc.connectionState === 'failed') status.textContent = 'Reconnecting to the phone…';
+    };
+    await pc.setRemoteDescription({type:'offer',sdp:offer});
+    pc.addTrack(stream.getVideoTracks()[0], stream);
+    await pc.setLocalDescription(await pc.createAnswer());
+    for (let i = 0; gen === generation && pc.iceGatheringState !== 'complete' && i < 45; i++) await delay(100);
+    if (gen !== generation) return;
+    if (!/^a=candidate:/m.test(pc.localDescription.sdp)) throw new Error('Edge found no local network route to the phone.');
+    await rpc('answer', {viewer, sdp:pc.localDescription.sdp});
+  }
+  async function present() {
+    const gen = ++generation;
+    start.disabled = true;
+    try {
+      // Invoke directly from the click so Edge can show its display picker.
+      const selected = await navigator.mediaDevices.getDisplayMedia({video:{frameRate:{ideal:30,max:30}},audio:false});
+      if (gen !== generation) { selected.getTracks().forEach(t => t.stop()); return; }
+      stream = selected;
+      stream.getVideoTracks()[0].onended = () => finish('Screen sharing stopped.');
+      preview.srcObject = stream;
+      preview.hidden = false;
+      await rpc('start');
+      if (gen !== generation) { await rpc('stop'); return; }
+      published = true;
+      stop.disabled = false;
+      status.textContent = 'On the phone, open Screen and tap Watch Edge screen.';
+      let previous = '', failures = 0;
+      while (gen === generation) {
+        try {
+          const result = await rpc('poll', {previous});
+          if (gen !== generation) return;
+          if (!result.viewer) {
+            closePeer();
+            previous = '';
+            status.textContent = 'On the phone, open Screen and tap Watch Edge screen.';
+          } else if (result.offer) {
+            await sendToViewer(gen, result.offer, result.viewer);
+            previous = result.viewer;
+          }
+          failures = 0;
+        } catch (error) {
+          if (gen !== generation) return;
+          if (++failures >= 3 || window.opener.closed) throw error;
+          status.textContent = 'The phone connection was interrupted. Retrying…';
+        }
+        await delay(peer?.connectionState === 'connected' ? 1700 : 550);
+      }
+    } catch (error) {
+      if (gen === generation) await finish(error.name === 'NotAllowedError' ? 'No screen was shared. Choose a screen when ready.' : error.message);
+    }
+  }
+  window.addEventListener('message', event => {
+    if (event.source !== window.opener || event.origin !== phone.origin || event.data?.type !== 'pb-present-port'
+        || event.data.nonce !== nonce || !event.ports[0] || channel) return;
+    channel = event.ports[0];
+    channel.onmessage = e => {
+      const accept = pending.get(e.data?.id);
+      if (accept) { pending.delete(e.data.id); accept(e.data); }
+    };
+    start.disabled = !navigator.mediaDevices?.getDisplayMedia;
+    status.textContent = start.disabled ? 'Open the presenter in current Microsoft Edge on this laptop.' : 'Choose what to share in Edge.';
+  });
+  start.addEventListener('click', present);
+  stop.addEventListener('click', () => finish('Screen sharing stopped.'));
+  window.addEventListener('pagehide', () => finish('Presenter closed.'));
+  window.opener.postMessage({type:'pb-present-ready', nonce}, phone.origin);
+})();
+</script>
+</body></html>

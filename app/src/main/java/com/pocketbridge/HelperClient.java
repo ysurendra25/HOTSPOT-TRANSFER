@@ -8,26 +8,15 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
-import java.net.Inet4Address;
-import java.net.InetAddress;
-import java.net.InterfaceAddress;
-import java.net.NetworkInterface;
+import java.net.Proxy;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Enumeration;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Set;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Talks to the Windows helper over the hotspot. One place for timeouts,
- * retries, error messages and finding the laptop, so files, the screen viewer
+ * retries, error messages and checking the pasted LAN link, so files, the screen viewer
  * and the power buttons behave the same way.
  *
  * Never call it on the main thread: every method may block on the network.
@@ -35,9 +24,6 @@ import java.util.concurrent.atomic.AtomicReference;
 final class HelperClient {
     static final int CONNECT_TIMEOUT_MS = 4000;
     static final int READ_TIMEOUT_MS = 15000;
-
-    private static volatile String cachedRaw;
-    private static volatile HelperLink cachedResolved;
 
     private HelperClient() { }
 
@@ -60,11 +46,16 @@ final class HelperClient {
     /** One HTTP exchange, retried on network errors and on 502/503/504. */
     static Response request(String method, String url, byte[] body, int connectTimeoutMs, int readTimeoutMs, int attempts)
             throws IOException {
+        return request(method, url, body, connectTimeoutMs, readTimeoutMs, attempts, 32 * 1024 * 1024);
+    }
+
+    private static Response request(String method, String url, byte[] body, int connectTimeoutMs, int readTimeoutMs,
+                                    int attempts, int maxResponseBytes) throws IOException {
         IOException last = null;
         for (int attempt = 1; attempt <= Math.max(1, attempts); attempt++) {
             HttpURLConnection connection = null;
             try {
-                connection = (HttpURLConnection) new URL(url).openConnection();
+                connection = (HttpURLConnection) new URL(url).openConnection(Proxy.NO_PROXY);
                 connection.setRequestMethod(method);
                 connection.setConnectTimeout(connectTimeoutMs);
                 connection.setReadTimeout(readTimeoutMs);
@@ -81,7 +72,7 @@ final class HelperClient {
                 }
                 int status = connection.getResponseCode();
                 InputStream stream = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
-                String text = stream == null ? "" : readText(stream, 32 * 1024 * 1024);
+                String text = stream == null ? "" : readText(stream, maxResponseBytes);
                 if ((status == 502 || status == 503 || status == 504) && attempt < attempts) {
                     sleepQuietly(400L * attempt);
                     continue;
@@ -143,133 +134,39 @@ final class HelperClient {
         return "Network error talking to the laptop: " + detail;
     }
 
-    /**
-     * Turns the pasted link into one that answers from this phone. A loopback
-     * link (127.0.0.1) or an address on another adapter is replaced by the
-     * laptop's address on this hotspot, found by asking each neighbour for the
-     * same access code.
-     */
-    static HelperLink resolve(String raw, StatusListener status) throws HelperException {
-        HelperLink link;
-        try { link = HelperLink.parse(raw); }
-        catch (IllegalArgumentException invalid) { throw new HelperException(invalid.getMessage(), 0); }
-        String key = raw == null ? "" : raw.trim();
-        HelperLink cached = cachedResolved;
-        if (cached != null && key.equals(cachedRaw) && answers(cached, 1500, 2500) == 200) return cached;
-
-        // Try the link as given first. On the phone a loopback link fails at
-        // once (nothing listens on the phone's own port 7070), so this costs
-        // nothing, and a link that works is never second-guessed.
-        int code = answers(link, link.isLoopback() ? 800 : 2500, 4000);
-        if (code == 200 || code == 404) { remember(key, link); return link; }
-        if (code == 401 || code == 403) {
-            throw new HelperException("The helper rejected this link's access code. Copy the current link from the Windows helper and paste it again.", code);
-        }
-        if (status != null) {
-            status.update(link.isLoopback()
-                    ? "That is the laptop's own address. Looking for the laptop on this hotspot…"
-                    : "The laptop did not answer at " + link.host + ". Looking for it on this hotspot…");
-        }
-        String found = discover(link.token, link.port, localPrefixes());
-        if (found == null) {
-            throw new HelperException(link.isLoopback()
-                    ? "That is the laptop's own address (127.0.0.1), so the phone cannot use it, and the laptop was not found on this hotspot. Copy a LAN link from the helper window instead, for example http://192.168.43.42:7070/?t=…"
-                    : "Could not reach the laptop helper at " + link.host + " or anywhere on this hotspot. Check that the helper is running, that the laptop joined this phone's hotspot, and that Windows Firewall allows port 7070 on private networks.", 0);
-        }
-        HelperLink resolved = link.withHost(found);
-        remember(key, resolved);
-        return resolved;
-    }
-
-    private static void remember(String raw, HelperLink link) {
-        cachedRaw = raw;
-        cachedResolved = link;
-    }
-
-    static void forget() {
-        cachedRaw = null;
-        cachedResolved = null;
-    }
-
-    /** HTTP status of a cheap request, or -1 when the laptop could not be reached. */
-    static int answers(HelperLink link, int connectMs, int readMs) {
-        try {
-            int code = request("GET", link.url("/ping"), null, connectMs, readMs, 1).status;
-            // Helpers older than 0.6.0.3 have no /ping; /screen is just as cheap.
-            if (code == 404) code = request("GET", link.url("/screen"), null, connectMs, readMs, 1).status;
-            return code;
-        } catch (IOException unreachable) {
-            return -1;
-        }
-    }
-
     interface StatusListener { void update(String message); }
 
-    /** "192.168.43." for every IPv4 interface of this phone, hotspot first. */
-    static List<String> localPrefixes() {
-        Set<String> prefixes = new LinkedHashSet<>();
+    /** Verify only the LAN address the owner copied from the Windows helper. */
+    static HelperLink resolve(String raw, StatusListener status) throws HelperException {
+        HelperLink link;
         try {
-            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
-            List<NetworkInterface> list = interfaces == null ? new ArrayList<>() : Collections.list(interfaces);
-            for (NetworkInterface network : list) {
-                if (!network.isUp() || network.isLoopback()) continue;
-                String name = network.getName() == null ? "" : network.getName();
-                if (name.startsWith("rmnet") || name.startsWith("ccmni") || name.startsWith("tun") || name.startsWith("dummy")) continue;
-                for (InterfaceAddress address : network.getInterfaceAddresses()) {
-                    InetAddress ip = address.getAddress();
-                    if (!(ip instanceof Inet4Address)) continue;
-                    String text = ip.getHostAddress();
-                    prefixes.add(text.substring(0, text.lastIndexOf('.') + 1));
-                }
-            }
-        } catch (Exception ignored) { }
-        return new ArrayList<>(prefixes);
+            link = HelperLink.parse(raw);
+            link.requireLanAddress();
+        } catch (IllegalArgumentException invalid) {
+            throw new HelperException(invalid.getMessage(), 0);
+        }
+        if (status != null) status.update("Checking the Windows helper at " + link.host + "…");
+        verifyIdentity(link);
+        return link;
     }
 
-    /** Scans each /24 for a helper that accepts this token. Returns the host or null. */
-    static String discover(String token, int port, List<String> prefixes) {
-        if (prefixes.isEmpty()) return null;
-        AtomicReference<String> found = new AtomicReference<>(null);
-        ExecutorService pool = Executors.newFixedThreadPool(32, runnable -> {
-            Thread thread = new Thread(runnable, "PocketBridge-helper-scan");
-            thread.setDaemon(true);
-            return thread;
-        });
+    static void verifyIdentity(HelperLink link) throws HelperException {
+        Response reply;
         try {
-            for (String prefix : prefixes) {
-                for (int host = 1; host <= 254; host++) {
-                    final String candidate = prefix + host;
-                    pool.execute(() -> {
-                        if (found.get() != null) return;
-                        HttpURLConnection probe = null;
-                        try {
-                            String url = "http://" + candidate + ":" + port + "/ping?t=" + HelperLink.encode(token);
-                            probe = (HttpURLConnection) new URL(url).openConnection();
-                            probe.setConnectTimeout(350);
-                            probe.setReadTimeout(900);
-                            probe.setRequestProperty("Accept", "application/json");
-                            int code = probe.getResponseCode();
-                            // 404 is an older helper without /ping that still accepted the token.
-                            if (code == 200 || code == 404) found.compareAndSet(null, candidate);
-                        } catch (Exception unreachable) {
-                            // Not this host.
-                        } finally {
-                            if (probe != null) probe.disconnect();
-                        }
-                    });
-                }
-            }
-            pool.shutdown();
-            long deadline = System.currentTimeMillis() + 9000;
-            while (found.get() == null && System.currentTimeMillis() < deadline && !pool.isTerminated()) {
-                pool.awaitTermination(100, TimeUnit.MILLISECONDS);
-            }
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-        } finally {
-            pool.shutdownNow();
+            reply = request("GET", link.url("/ping"), null, 2500, 4000, 1, 4096);
+        } catch (IOException unavailable) {
+            throw new HelperException("Could not verify the Windows helper at " + link.host
+                    + ". Keep the laptop on the hotspot, check its firewall and copy the LAN link for its Wi-Fi adapter.", 0);
         }
-        return found.get();
+        if (reply.status == 401 || reply.status == 403) {
+            throw new HelperException(errorMessage(reply.status, ""), reply.status);
+        }
+        JSONObject identity = reply.json();
+        if (reply.status != 200 || !Boolean.TRUE.equals(identity.opt("ok"))
+                || !"PocketBridge Windows Control".equals(identity.opt("app"))) {
+            throw new HelperException("This address did not identify itself as PocketBridge Windows Control. "
+                    + "Start the helper bundled with this app and paste its current LAN link.", reply.status);
+        }
     }
 
     /** One page of the helper's shared-folder listing. */

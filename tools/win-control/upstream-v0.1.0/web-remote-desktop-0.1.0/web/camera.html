@@ -46,69 +46,177 @@
 </main>
 <script>
 (() => {
-  const phoneInput=document.querySelector('#phone'), codeInput=document.querySelector('#code');
-  const localVideo=document.querySelector('#local'), remoteVideo=document.querySelector('#remote');
-  const connectButton=document.querySelector('#connect'), stopButton=document.querySelector('#stop'), status=document.querySelector('#status');
-  let peer=null, localStream=null, phoneOrigin='', phoneCode='', stopping=false, phoneSessionRequested=false;
-  const say=text=>{status.textContent=text;};
-  function endpoint(path){return `${phoneOrigin}${path}?code=${encodeURIComponent(phoneCode)}`;}
-  function waitForIce(pc,timeout=12000){return new Promise(resolve=>{
-    if(pc.iceGatheringState==='complete'){resolve();return;}
-    let settled=false;const done=()=>{if(settled)return;settled=true;clearTimeout(timer);pc.removeEventListener('icegatheringstatechange',check);resolve();};
-    const check=()=>{if(pc.iceGatheringState==='complete')done();};
-    const timer=setTimeout(()=>{if(settled)return;settled=true;pc.removeEventListener('icegatheringstatechange',check);resolve(false);},timeout);
-    pc.addEventListener('icegatheringstatechange',check);
-  });}
-  async function stop(notify=true){
-    if(stopping)return;stopping=true;
-    const old=peer;peer=null;
-    if(old){try{old.ontrack=null;old.onconnectionstatechange=null;old.close();}catch{}}
-    if(localStream){for(const track of localStream.getTracks())track.stop();localStream=null;}
-    localVideo.srcObject=null;remoteVideo.srcObject=null;
-    if(notify&&phoneOrigin&&phoneCode&&phoneSessionRequested){try{await fetch(endpoint('/api/camera/stop'),{method:'POST',mode:'cors',keepalive:true});}catch{}}
-    phoneSessionRequested=false;
-    connectButton.disabled=false;stopButton.disabled=true;stopping=false;
-    say('Camera share stopped. Both camera indicators should turn off.');
+  const phone = document.querySelector('#phone');
+  const code = document.querySelector('#code');
+  const localVideo = document.querySelector('#local');
+  const remoteVideo = document.querySelector('#remote');
+  const connect = document.querySelector('#connect');
+  const stopButton = document.querySelector('#stop');
+  const status = document.querySelector('#status');
+  const pairedPage = location.pathname === '/capture-camera';
+  let openerOrigin, bridge, active, nextId = 0;
+  const requests = new Map();
+  const say = message => { status.textContent = message; };
+
+  if (pairedPage) {
+    phone.parentElement.querySelectorAll('label,input').forEach(el => el.hidden = true);
+    connect.disabled = true;
+    try {
+      const addr = new URL(decodeURIComponent(location.hash.slice(1)));
+      const host = addr.hostname;
+      const localHost = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|192\.0\.0\.)/.test(host) && /^\d+\.\d+\.\d+\.\d+$/.test(host);
+      if (!window.opener || addr.protocol !== 'http:' || !localHost || addr.origin !== addr.href.slice(0, -1)) throw new Error();
+      openerOrigin = addr.origin;
+      say('Waiting for the hotspot page at ' + openerOrigin + '…');
+      window.addEventListener('message', event => {
+        if (bridge || event.origin !== openerOrigin || event.source !== window.opener ||
+            event.data !== 'pb-camera-paired' || event.ports.length !== 1) return;
+        bridge = event.ports[0];
+        bridge.onmessage = ({data}) => {
+          if (data.closed) {
+            const old = bridge;
+            bridge = null;
+            old.close();
+            stopLocal();
+            requests.forEach(request => request.reject(new Error('Hotspot tab closed.')));
+            requests.clear();
+            connect.disabled = true;
+            say('The hotspot tab closed. Open Camera again from the phone link.');
+            return;
+          }
+          const request = requests.get(data.id);
+          if (!request) return;
+          requests.delete(data.id);
+          if (data.ok) request.resolve(data.body);
+          else request.reject(new Error(data.body.error || 'Phone rejected the camera request.'));
+        };
+        connect.disabled = false;
+        say('Paired with ' + openerOrigin + '. Start Camera on the phone, then approve the webcam here.');
+      });
+      window.opener.postMessage('pb-camera-ready', openerOrigin);
+    } catch {
+      say('Open this window from the Camera tab on your phone’s hotspot page.');
+    }
   }
-  connectButton.addEventListener('click',async()=>{
-    if(peer)return;
-    let raw=phoneInput.value.trim();phoneCode=codeInput.value.trim();
-    const pastedCode=/\bcode\s*[:=]?\s*(\d{6})\b/i.exec(raw);
-    if(!phoneCode&&pastedCode)phoneCode=pastedCode[1];
-    if(pastedCode)raw=raw.slice(0,pastedCode.index).trim();
-    if(!raw||!/^\d{6}$/.test(phoneCode)){say('Enter the phone link and its six-digit PocketBridge code.');return;}
-    let parsed;try{parsed=new URL(raw);}catch{say('That phone link is not a valid address.');return;}
-    if(parsed.protocol!=='http:'||!parsed.hostname){say('Enter the local http:// phone link shown by PocketBridge.');return;}
-    phoneOrigin=parsed.origin;
-    if(['localhost','127.0.0.1','::1'].includes(parsed.hostname)){say('Use the phone address from PocketBridge, not localhost on the laptop.');return;}
-    connectButton.disabled=true;say('Checking that the phone camera session is ready…');
-    try{
-      const readiness=await fetch(endpoint('/api/camera/status'),{cache:'no-store',mode:'cors'});
-      const state=await readiness.json();
-      if(!readiness.ok)throw new Error(state.error||`Phone replied with HTTP ${readiness.status}.`);
-      if(!state.ready)throw new Error(state.status||'Start the camera session and approve Android camera access on the phone first.');
-      say('Requesting Edge camera permission…');
-      localStream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},frameRate:{ideal:24,max:30}},audio:false});
-      localVideo.srcObject=localStream;await localVideo.play();
-      peer=new RTCPeerConnection({iceServers:[]});
-      peer.ontrack=event=>{remoteVideo.srcObject=event.streams&&event.streams[0]?event.streams[0]:new MediaStream([event.track]);remoteVideo.play().catch(()=>{});say('Connected. Both cameras are sharing directly over the local network.');};
-      peer.onconnectionstatechange=()=>{if(!peer)return;const state=peer.connectionState;if(state==='connected')say('Connected. Both cameras are sharing directly over the local network.');else if(state==='failed')say('Connection failed. Keep both devices on the same hotspot and retry.');else if(state==='disconnected')say('Local link interrupted. Waiting for the hotspot to reconnect…');};
-      for(const track of localStream.getTracks())peer.addTrack(track,localStream);
-      stopButton.disabled=false;say('Preparing a direct local connection…');
-      await peer.setLocalDescription(await peer.createOffer());
-      if(await waitForIce(peer)===false)throw new Error('The laptop could not prepare a direct hotspot candidate. Keep both devices on the same hotspot; disconnect a VPN if it blocks local-network traffic.');
-      phoneSessionRequested=true;
-      const response=await fetch(endpoint('/api/camera/offer'),{method:'POST',mode:'cors',headers:{'Content-Type':'application/json'},body:JSON.stringify({sdp:peer.localDescription.sdp})});
-      const answer=await response.json();if(!response.ok)throw new Error(answer.error||`Phone replied with HTTP ${response.status}.`);
-      await peer.setRemoteDescription({type:answer.type||'answer',sdp:answer.sdp});
-      say('Offer accepted. Waiting for the phone camera to connect…');
-    }catch(error){
-      const message=error&&error.name==='NotAllowedError'?'Edge camera permission was denied. Allow camera access in Edge and try again.':(error.message||String(error));
-      await stop(phoneSessionRequested);say(message);
+
+  async function signal(action, session, sdp) {
+    if (pairedPage) {
+      if (!bridge) throw new Error('The hotspot tab is closed. Reopen Camera there.');
+      const id = ++nextId;
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => { requests.delete(id); reject(new Error('Phone did not answer. Retry on the same hotspot.')); }, 32000);
+        requests.set(id, {
+          resolve: value => { clearTimeout(timer); resolve(value); },
+          reject: error => { clearTimeout(timer); reject(error); }
+        });
+        bridge.postMessage({id, action, sdp});
+      });
+    }
+    const url = session.origin + '/api/camera/' + action + '?code=' + encodeURIComponent(session.code);
+    const options = {method: action === 'status' ? 'GET' : 'POST', cache: 'no-store', signal: AbortSignal.timeout(30000)};
+    if (sdp) { options.headers = {'Content-Type':'application/json'}; options.body = JSON.stringify({sdp}); }
+    const res = await fetch(url, options);
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.error || 'Phone replied with HTTP ' + res.status);
+    return result;
+  }
+
+  function stopLocal() {
+    const previous = active;
+    active = null;
+    if (previous) {
+      previous.abort.abort();
+      previous.stream?.getTracks().forEach(track => track.stop());
+      if (previous.pc) { previous.pc.ontrack = null; previous.pc.onconnectionstatechange = null; previous.pc.close(); }
+    }
+    localVideo.srcObject = remoteVideo.srcObject = null;
+    connect.disabled = pairedPage && !bridge;
+    stopButton.disabled = true;
+    return previous;
+  }
+
+  async function stop() {
+    const session = stopLocal();
+    if (!session) return;
+    if (session.offered) {
+      connect.disabled = true;
+      try { await signal('stop', session); } catch { /* The local feeds are already closed. */ }
+      if (active) return;
+      connect.disabled = pairedPage && !bridge;
+    }
+    say('Camera share stopped.');
+  }
+
+  function gather(pc, abort) {
+    return new Promise((resolve, reject) => {
+      function finish(error) {
+        clearTimeout(timer);
+        pc.removeEventListener('icegatheringstatechange', changed);
+        abort.removeEventListener('abort', cancelled);
+        error ? reject(error) : resolve();
+      }
+      function cancelled() { finish(new Error('Camera share stopped.')); }
+      function changed() { if (pc.iceGatheringState === 'complete') finish(); }
+      const timer = setTimeout(() => {
+        if (pc.localDescription?.sdp.includes('a=candidate:')) finish();
+        else finish(new Error('No local network candidate. Check that the laptop is on the phone hotspot.'));
+      }, 6000);
+      abort.addEventListener('abort', cancelled);
+      pc.addEventListener('icegatheringstatechange', changed);
+      if (abort.aborted) cancelled(); else changed();
+    });
+  }
+
+  connect.addEventListener('click', async () => {
+    if (active) return;
+    const session = {abort:new AbortController(), offered:false};
+    if (!pairedPage) {
+      const parts = phone.value.trim().split(/\s*code\s*[:=]?\s*/i);
+      try { session.origin = new URL(parts[0]).origin; } catch { say('Enter the phone’s hotspot link.'); return; }
+      session.code = code.value.trim() || parts[1] || '';
+      if (!session.origin.startsWith('http://') || !/^\d{6}$/.test(session.code)) { say('Enter the phone link and its six-digit code.'); return; }
+    }
+    active = session;
+    connect.disabled = true;
+    stopButton.disabled = false;
+    say('Checking the phone camera…');
+    try {
+      const state = await signal('status', session);
+      if (session !== active) return;
+      if (!state.ready) throw new Error(state.status || 'Choose Camera and start the camera session on the phone.');
+      say('Allow Edge to share this webcam with ' + (openerOrigin || session.origin) + '.');
+      const stream = await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:24}}, audio:false});
+      if (session !== active) { stream.getTracks().forEach(t => t.stop()); return; }
+      session.stream = stream;
+      localVideo.srcObject = stream;
+      const pc = new RTCPeerConnection({iceServers:[]});
+      session.pc = pc;
+      pc.ontrack = event => {
+        if (session !== active) return;
+        remoteVideo.srcObject = event.streams[0] || new MediaStream([event.track]);
+        remoteVideo.play().catch(() => {});
+      };
+      pc.onconnectionstatechange = () => {
+        if (session !== active) return;
+        if (pc.connectionState === 'connected') say('Connected. Both cameras use the hotspot.');
+        if (pc.connectionState === 'failed') { stopLocal(); say('Camera connection failed. Check the hotspot, then retry.'); }
+      };
+      for (const track of stream.getVideoTracks()) pc.addTrack(track, stream);
+      say('Connecting both cameras…');
+      await pc.setLocalDescription(await pc.createOffer());
+      await gather(pc, session.abort.signal);
+      if (session !== active) return;
+      session.offered = true;
+      const answer = await signal('offer', session, pc.localDescription.sdp);
+      if (session === active) await pc.setRemoteDescription({type:'answer', sdp:answer.sdp});
+    } catch (error) {
+      if (session !== active) return;
+      stopLocal();
+      say(error.name === 'NotAllowedError' ? 'Camera permission was declined. Choose Connect to try again.' : error.message);
     }
   });
-  stopButton.addEventListener('click',()=>stop(true));
-  window.addEventListener('pagehide',()=>{if(peer)stop(true);});
+  stopButton.addEventListener('click', stop);
+  window.addEventListener('pagehide', stop);
 })();
 </script>
 </body>
