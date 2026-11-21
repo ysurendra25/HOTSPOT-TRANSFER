@@ -851,7 +851,7 @@ public final class MainActivity extends Activity {
         parent.addView(fullscreen, matchWrap());
 
         TextView help = new TextView(this);
-        help.setText("On the laptop, run the matching Windows helper. In the PocketBridge hotspot page choose Camera, open the camera window and allow Edge to use the webcam. Keep that hotspot tab open during the call.");
+        help.setText("Run the Windows helper from this APK on the laptop. In Edge open Camera, then Open offline camera workspace. Enter the phone code and choose the laptop webcam or a screen. Your phone shows the selected source here.");
         help.setTextColor(COLOR_MUTED);
         help.setTextSize(12);
         help.setLineSpacing(dp(3), 1f);

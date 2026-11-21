@@ -12,6 +12,7 @@
 </head>
 <body>
 <video autoplay muted playsinline></video>
+<img id="preview" hidden alt="Laptop screen" style="position:fixed;inset:0;width:100%;height:100%;object-fit:contain;background:black">
 <div id="status" role="status">Checking for a laptop presentation…</div>
 <script>
 (() => {
@@ -83,6 +84,25 @@
       body:JSON.stringify({action:'leave',viewer}), keepalive:true}).catch(() => {});
     clear();
   });
+  async function previewLoop() {
+    const image = document.querySelector('#preview');
+    let frameNumber = 0, lastSession = '';
+    while (running) {
+      const live = peer?.connectionState === 'connected' && video.readyState >= 2;
+      if (live) image.hidden = true;
+      else {
+        try {
+          const next = await exchange('preview', {session:lastSession,frameNumber});
+          if (!running) break;
+          if (next.jpeg) { image.src=next.jpeg; image.hidden=false; status.textContent='Local screen preview'; }
+          if (!next.session) { image.hidden=true; image.removeAttribute('src'); }
+          frameNumber=next.frameNumber; lastSession=next.session;
+        } catch { image.hidden=true; }
+      }
+      await delay(live ? 1000 : 200);
+    }
+  }
+  previewLoop();
   poll();
 })();
 </script>

@@ -304,6 +304,8 @@
       <summary>Set up the Windows helper for screen and camera sharing</summary>
       <p>Download the helper from this phone, extract the ZIP on your laptop and open Start-Control.bat. Keep the helper running while you share.</p>
       <a class="btn btn-outline" id="helperDownload" download>Download Windows helper</a>
+      <a class="btn" id="offlineWorkspace" target="_blank" rel="noopener noreferrer" hidden>Open laptop workspace</a>
+      <p id="offlineInstructions" role="status"></p>
     </details>
 
     <section class="screen-card transfer-card" id="transferSection">
@@ -420,6 +422,7 @@
       <select id="playbackSpeed" class="toolbar-select" aria-label="Playback speed"><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select>
       <label class="volume-control" for="videoVolume">Volume <input id="videoVolume" type="range" min="0" max="1" step="0.01" value="1" aria-label="Video volume"></label>
       <button class="ctrl" id="pictureInPicture" type="button" title="Picture in picture">PiP</button>
+      <button class="ctrl" id="compatPlay" type="button" hidden>Try compatible playback</button>
     </div>
   </div>
 </div>
@@ -472,6 +475,20 @@
   themeToggle.addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark', true));
 
   const hasToken = TOKEN && !TOKEN.startsWith('__');
+
+  function openLocalSetup(feature, port) {
+    const details = document.getElementById('helperSetup');
+    details.open = true;
+    const link = document.getElementById('offlineWorkspace');
+    const address = new URL('/offline-' + feature, 'http://127.0.0.1:' + port);
+    address.hash = new URLSearchParams({phone:location.origin});
+    link.href = address.href;
+    link.hidden = false;
+    link.textContent = 'Open offline ' + feature + ' workspace';
+    document.getElementById('offlineInstructions').textContent = 'Run the helper from this APK on the laptop first. Then open the workspace and enter the phone code. The workspace runs on this laptop and uses only your hotspot.';
+    details.scrollIntoView({block:'nearest'});
+    link.focus();
+  }
 
   function endpoint(path) {
     const sep = path.includes('?') ? '&' : '?';
@@ -974,6 +991,32 @@
     const {signal} = playerEvents;
     const onMedia = (name, callback) => element.addEventListener(name, callback, {signal});
     let wantsPlayback = false, needsGesture = false;
+    const compat = document.getElementById('compatPlay');
+    const supportsCopy = kind === 'video' && file.allowCompatibility !== false;
+    let stallTimer;
+    function hideFallback() { clearTimeout(stallTimer); compat.hidden = true; }
+    function showFallbackIfStalled() {
+      hideFallback();
+      if (supportsCopy && !element.dataset.compatibilityAttempted) stallTimer = setTimeout(() => {
+        if (!signal.aborted && element.readyState < 3) {
+          compat.hidden = false;
+          modal.classList.remove('player-controls-hidden');
+        }
+      }, 6000);
+    }
+    function useCompatible() {
+      hideFallback();
+      element.dataset.compatibilityAttempted = 'yes';
+      timeLabel.textContent = 'Preparing compatible playback on the phone…';
+      element.src = endpoint('/api/video/compatible/' + encodeURIComponent(file.id));
+      element.load();
+      if (wantsPlayback) requestPlayback();
+    }
+    compat.onclick = () => { wantsPlayback = true; useCompatible(); };
+    onMedia('loadstart', showFallbackIfStalled);
+    onMedia('waiting', showFallbackIfStalled);
+    onMedia('canplay', hideFallback);
+    signal.addEventListener('abort', hideFallback, {once:true});
     function requestPlayback() {
       wantsPlayback = true;
       needsGesture = false;
@@ -1040,11 +1083,7 @@
       const mediaError = element.error;
       const code = mediaError ? mediaError.code : 0;
       if (kind === 'video' && file.allowCompatibility !== false && (code === 3 || code === 4) && element.dataset.compatibilityAttempted !== 'yes') {
-        element.dataset.compatibilityAttempted = 'yes';
-        timeLabel.textContent = 'This browser cannot decode the original. Preparing a compatible copy on the phone…';
-        element.src = endpoint('/api/video/compatible/' + encodeURIComponent(file.id));
-        element.load();
-        if (wantsPlayback) requestPlayback();
+        useCompatible();
         return;
       }
       timeLabel.textContent = code === 4

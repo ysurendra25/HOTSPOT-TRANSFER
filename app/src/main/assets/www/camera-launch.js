@@ -9,6 +9,7 @@
   let timeout;
 
   button.addEventListener('click', () => {
+    if (document.getElementById('offlineWorkspace')) { openLocalSetup('camera', new URL(helperOrigin).port); return; }
     if (popup && !popup.closed && port) { popup.focus(); return; }
     clearTimeout(timeout);
     if (port) port.close();

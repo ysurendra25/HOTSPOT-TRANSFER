@@ -17,6 +17,18 @@ public class LaptopCastTest {
         return cast.exchange(req, phone, now++);
     }
 
+    @Test public void fallbackIsRequestedByPhoneAndClearedOnStop() throws Exception {
+        String pub = call(false,"start").getString("publisher");
+        assertEquals(403,assertThrows(LaptopCast.Refused.class,()->call(false,"preview")).status);
+        call(true,"preview");
+        assertTrue(call(false,"poll","publisher",pub).getBoolean("needsFrame"));
+        String jpeg = "data:image/jpeg;base64,/9j/test";
+        call(false,"frame","publisher",pub,"jpeg",jpeg);
+        assertEquals(jpeg,call(true,"preview").getString("jpeg"));
+        call(false,"stop","publisher",pub);
+        assertFalse(call(true,"preview").has("jpeg"));
+    }
+
     @Test public void browserAndLocalViewerNegotiateAndLeave() throws Exception {
         String publisher = call(false, "start").getString("publisher");
         String session = call(true, "view").getString("session");

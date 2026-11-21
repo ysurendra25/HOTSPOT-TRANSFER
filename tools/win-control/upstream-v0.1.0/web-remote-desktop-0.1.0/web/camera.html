@@ -39,11 +39,13 @@
     <input id="phone" inputmode="url" autocomplete="url" placeholder="http://192.168.43.1:43117">
     <label for="code">Six-digit code shown in PocketBridge</label>
     <input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456">
-    <div class="actions"><button id="connect">Connect · approve camera</button><button id="stop" class="secondary" disabled>Stop camera share</button></div>
+    <label for="source">Send to phone</label><select id="source"><option value="camera">Laptop webcam</option><option value="screen">Edge tab, window or entire screen</option></select>
+    <div class="actions"><button id="connect">Connect and share</button><button id="stop" class="secondary" disabled>Stop sharing</button></div>
     <div id="status" role="status" aria-live="polite">Waiting. No camera is active yet.</div>
     <p class="consent">The phone owner must first tap Start camera session and approve Android's camera prompt. The laptop owner approves separately in Edge. Either person can stop the camera at any time. This camera view does not control either device.</p>
   </section>
 </main>
+<script src="/capture-signal.js"></script>
 <script>
 (() => {
   const phone = document.querySelector('#phone');
@@ -58,6 +60,7 @@
   const requests = new Map();
   const say = message => { status.textContent = message; };
 
+  if (location.pathname === '/offline-camera') phone.value = new URLSearchParams(location.hash.slice(1)).get('phone') || '';
   if (pairedPage) {
     phone.parentElement.querySelectorAll('label,input').forEach(el => el.hidden = true);
     connect.disabled = true;
@@ -112,6 +115,7 @@
         bridge.postMessage({id, action, sdp});
       });
     }
+    if (location.pathname === '/offline-camera') return localSignal({phone:session.origin,code:session.code,feature:'camera',action,sdp});
     const url = session.origin + '/api/camera/' + action + '?code=' + encodeURIComponent(session.code);
     const options = {method: action === 'status' ? 'GET' : 'POST', cache: 'no-store', signal: AbortSignal.timeout(30000)};
     if (sdp) { options.headers = {'Content-Type':'application/json'}; options.body = JSON.stringify({sdp}); }
@@ -181,11 +185,18 @@
     stopButton.disabled = false;
     say('Checking the phone camera…');
     try {
+      const shareDisplay = document.querySelector('#source').value === 'screen';
+      if (shareDisplay) {
+        const display = await navigator.mediaDevices.getDisplayMedia({video:true, audio:false});
+        if (session !== active) {display.getTracks().forEach(t => t.stop());return;}
+        session.stream = display;
+        display.getVideoTracks()[0].onended = stop;
+      }
       const state = await signal('status', session);
       if (session !== active) return;
       if (!state.ready) throw new Error(state.status || 'Choose Camera and start the camera session on the phone.');
       say('Allow Edge to share this webcam with ' + (openerOrigin || session.origin) + '.');
-      const stream = await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:24}}, audio:false});
+      const stream = session.stream || await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:24}}, audio:false});
       if (session !== active) { stream.getTracks().forEach(t => t.stop()); return; }
       session.stream = stream;
       localVideo.srcObject = stream;

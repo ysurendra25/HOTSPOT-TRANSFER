@@ -12,30 +12,44 @@ video{margin-top:12px;background:#000;max-height:50vh;width:100%;object-fit:cont
 <body><main>
 <h1>Share laptop screen</h1>
 <p id="destination"></p>
+<section id="pair" hidden><label>Phone hotspot link <input id="phone" type="url"></label>
+<label>Phone code <input id="code" inputmode="numeric" maxlength="6" autocomplete="off"></label></section>
 <button id="start" disabled>Choose screen or window</button><button id="stop" disabled>Stop sharing</button>
 <p id="status" role="status">Connecting to the PocketBridge tab…</p>
 <video playsinline muted autoplay hidden></video>
 </main>
+<script src="/capture-signal.js"></script>
 <script>
 (() => {
   const start = document.querySelector('#start'), stop = document.querySelector('#stop');
   const status = document.querySelector('#status'), preview = document.querySelector('video');
   const args = new URLSearchParams(location.hash.slice(1));
+  const standalone = location.pathname === '/offline-screen';
   const nonce = args.get('nonce'), destination = args.get('phone');
   let phone;
   try { phone = new URL(destination); } catch {}
   const localHost = host => /^(10\.|127\.|172\.(1[6-9]|2\d|3[01])\.|192\.(168|0)\.|169\.254\.)/.test(host)
       && /^\d{1,3}(\.\d{1,3}){3}$/.test(host);
-  if (!phone || phone.protocol !== 'http:' || !localHost(phone.hostname) || phone.port !== '43117' || phone.origin !== destination ||
-      !/^[0-9a-f]{32}$/.test(nonce) || !window.opener || window.top !== self) {
+  if (window.top !== self || (!standalone && (!phone || phone.protocol !== 'http:' || !localHost(phone.hostname) || phone.port !== '43117' || phone.origin !== destination ||
+      !/^[0-9a-f]{32}$/.test(nonce) || !window.opener))) {
     status.textContent = 'Open Screen in the paired PocketBridge tab, then choose Share laptop screen.';
     return;
   }
-  document.querySelector('#destination').textContent = 'Your selection will be visible on the phone at ' + phone.host + '.';
+  const form = document.querySelector('#pair');
+  const phoneField = document.querySelector('#phone'), codeField = document.querySelector('#code');
+  form.hidden = !standalone;
+  phoneField.value = phone?.origin || '';
+  document.querySelector('#destination').textContent = standalone ? 'Enter the hotspot link and the current code from PocketBridge on the phone.' : 'Your selection will be visible on the phone at ' + phone.host + '.';
+  let pairing, localPublisher = '';
   let channel, rpcId = 0, generation = 0, stream, peer, published = false;
   const pending = new Map();
   const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-  function rpc(action, values = {}) {
+  async function rpc(action, values = {}) {
+    if (standalone) {
+      const response = await localSignal({...pairing, feature:'screen', data:{action, ...values, publisher:localPublisher}});
+      if (action === 'start') localPublisher = response.publisher;
+      return response;
+    }
     if (!channel || window.opener.closed) return Promise.reject(new Error('The paired PocketBridge tab closed.'));
     const id = ++rpcId;
     return new Promise((resolve, reject) => {
@@ -63,7 +77,7 @@ video{margin-top:12px;background:#000;max-height:50vh;width:100%;object-fit:cont
       published = false;
       try { await rpc('stop'); } catch {}
     }
-    start.disabled = !channel;
+    start.disabled = !standalone && !channel;
     status.textContent = message;
   }
   async function sendToViewer(gen, offer, viewer) {
@@ -84,6 +98,10 @@ video{margin-top:12px;background:#000;max-height:50vh;width:100%;object-fit:cont
     await rpc('answer', {viewer, sdp:pc.localDescription.sdp});
   }
   async function present() {
+    if (standalone) {
+      pairing = {phone:phoneField.value.trim(), code:codeField.value.trim()};
+      if (!/^\d{6}$/.test(pairing.code) || !pairing.phone) { status.textContent='Enter the phone link and six-digit code first.'; return; }
+    }
     const gen = ++generation;
     start.disabled = true;
     try {
@@ -100,10 +118,22 @@ video{margin-top:12px;background:#000;max-height:50vh;width:100%;object-fit:cont
       stop.disabled = false;
       status.textContent = 'On the phone, open Screen and tap Watch Edge screen.';
       let previous = '', failures = 0;
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      let previewNeeded = false;
       while (gen === generation) {
         try {
           const result = await rpc('poll', {previous});
           if (gen !== generation) return;
+          previewNeeded = result.needsFrame && standalone;
+          if (previewNeeded && preview.videoWidth && preview.readyState >= 2) {
+            const scale = Math.min(1, 960 / Math.max(preview.videoWidth, preview.videoHeight));
+            canvas.width = Math.max(1,Math.round(preview.videoWidth * scale));
+            canvas.height = Math.max(1,Math.round(preview.videoHeight * scale));
+            ctx.drawImage(preview,0,0,canvas.width,canvas.height);
+            const jpeg = canvas.toDataURL('image/jpeg',0.64);
+            if (jpeg.length <= 192000) await rpc('frame',{jpeg});
+          }
           if (!result.viewer) {
             closePeer();
             previous = '';
@@ -115,10 +145,10 @@ video{margin-top:12px;background:#000;max-height:50vh;width:100%;object-fit:cont
           failures = 0;
         } catch (error) {
           if (gen !== generation) return;
-          if (++failures >= 3 || window.opener.closed) throw error;
+          if (++failures >= 3 || (!standalone && window.opener.closed)) throw error;
           status.textContent = 'The phone connection was interrupted. Retrying…';
         }
-        await delay(peer?.connectionState === 'connected' ? 1700 : 550);
+        await delay(previewNeeded ? 140 : peer?.connectionState === 'connected' ? 1700 : 550);
       }
     } catch (error) {
       if (gen === generation) await finish(error.name === 'NotAllowedError' ? 'No screen was shared. Choose a screen when ready.' : error.message);
@@ -138,7 +168,10 @@ video{margin-top:12px;background:#000;max-height:50vh;width:100%;object-fit:cont
   start.addEventListener('click', present);
   stop.addEventListener('click', () => finish('Screen sharing stopped.'));
   window.addEventListener('pagehide', () => finish('Presenter closed.'));
-  window.opener.postMessage({type:'pb-present-ready', nonce}, phone.origin);
+  if (standalone) {
+    start.disabled = !navigator.mediaDevices?.getDisplayMedia;
+    status.textContent = 'Choose a display, then tap Screen → Watch Edge screen on the phone.';
+  } else window.opener.postMessage({type:'pb-present-ready', nonce}, phone.origin);
 })();
 </script>
 </body></html>

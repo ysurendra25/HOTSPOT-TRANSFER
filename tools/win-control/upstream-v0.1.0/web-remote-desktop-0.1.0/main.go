@@ -124,6 +124,10 @@ func newMux() *http.ServeMux {
 	protect := func(h http.Handler) http.Handler { return cors(auth(h)) }
 	mux.Handle("/", protect(http.FileServer(http.FS(sub))))
 	mux.HandleFunc("/capture-camera", localCapturePage("camera.html"))
+	mux.HandleFunc("/offline-camera", localCapturePage("camera.html"))
+	mux.HandleFunc("/offline-screen", localCapturePage("present.html"))
+	mux.HandleFunc("/phone-signal", phoneSignal)
+	mux.HandleFunc("/capture-signal.js", localCapturePage("capture-signal.js"))
 	mux.HandleFunc("/present.html", localCapturePage("present.html"))
 	mux.Handle("/ping", protect(http.HandlerFunc(pingHandler)))
 	mux.Handle("/input", protect(http.HandlerFunc(inputHandler)))
@@ -143,7 +147,7 @@ func newMux() *http.ServeMux {
 }
 
 // helperVersion is reported by /ping so the phone can show which helper answered.
-const helperVersion = "0.6.0.9"
+const helperVersion = "0.6.0.10"
 
 // pingHandler is the cheap reachability check the phone uses to find the
 // helper and to tell "wrong link" from "laptop asleep". It touches no disk and

@@ -206,6 +206,7 @@ final class MediaHttpServer {
         openSockets.clear();
         if (watchdogThread != null) watchdogThread.interrupt();
         clients.shutdownNow();
+        videoCompatibility.stop();
         thumbCache.evictAll();
         previewCache.evictAll();
     }
@@ -474,8 +475,20 @@ final class MediaHttpServer {
                     return;
                 }
                 try {
-                    File compatible = videoCompatibility.makeBrowserCopy(item);
-                    streamFile(output, method, headers, compatible, "video/mp4", item.name + ".browser.mp4");
+                    VideoCompatibility.Job job = videoCompatibility.prepare(item);
+                    String range = headers.get("range");
+                    if (job.done || (range != null && !range.equals("bytes=0-"))) {
+                        streamFile(output, method, headers, job.awaitComplete(), "video/mp4", item.name + ".browser.mp4");
+                    } else if (method.equals("HEAD")) {
+                        writeHead(output, 200, "video/mp4", -1, null, null);
+                    } else {
+                        try (InputStream growing = job.openGrowing()) {
+                            writeHead(output, 200, "video/mp4", -1, null, null);
+                            output.flush();
+                            // Headers are committed. Terminate this stream on disconnect or conversion failure.
+                            try { job.copyGrowing(growing, output); } catch (IOException disconnected) { return; }
+                        }
+                    }
                 } catch (Exception conversionError) {
                     JSONObject failure = new JSONObject().put("error", conversionError.getMessage() == null
                             ? "The phone could not prepare this video for browser playback." : conversionError.getMessage());

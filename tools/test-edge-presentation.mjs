@@ -30,21 +30,40 @@ async function serve(handler) {
   await once(server, 'listening');
   return server;
 }
-let viewer = '', offer = '', answer = '', active = false;
+let viewer = '', offer = '', answer = '', active = false, wantsPreview=false, jpeg='', frameNumber=0;
+let permitOffer = false;
 function exchange(data) {
   switch (data.action) {
     case 'start': active = true; return {publisher:'sender'};
-    case 'poll': return {viewer,offer:viewer !== data.previous ? offer : ''};
+    case 'preview': wantsPreview=true;return {session:active?'session':'',frameNumber,jpeg:active?jpeg:''};
+    case 'frame': assert.equal(data.publisher,'sender');jpeg=data.jpeg;frameNumber++;return {};
+    case 'poll': assert.equal(data.publisher,'sender');return {viewer,needsFrame:wantsPreview,offer:viewer !== data.previous ? offer : ''};
     case 'answer': answer = data.sdp; return {};
     case 'stop': active = false; viewer = offer = answer = ''; return {};
     case 'view': return {session:active ? 'session' : '', viewer, answer};
-    case 'offer': offer = data.sdp; viewer = 'viewer'; return {session:'session', viewer};
+    case 'offer': if (!permitOffer) throw new Error('Direct transport unavailable'); offer = data.sdp; viewer = 'viewer'; return {session:'session', viewer};
     case 'leave': viewer = offer = answer = ''; return {};
     default: throw new Error('unexpected action');
   }
 }
 function html(res, body) { res.setHeader('Content-Type','text/html; charset=utf-8'); res.end(body); }
-const helper = await serve((req, res) => html(res, presentPage));
+const signalJS = await source('tools/win-control/upstream-v0.1.0/web-remote-desktop-0.1.0/web/capture-signal.js');
+const cameraPage = await source('tools/win-control/upstream-v0.1.0/web-remote-desktop-0.1.0/web/camera.html');
+let receiveCamera;
+const helper = await serve(async (req, res) => {
+  if(req.url === '/phone-signal') {
+    let body = ''; for await (const chunk of req) body += chunk;
+    const message = JSON.parse(body);
+    assert.equal(message.phone, hotspotOrigin); assert.equal(message.code,'123456');
+    res.setHeader('Content-Type','application/json');
+    if (message.feature === 'camera') {
+      const body = message.action === 'offer' ? await receiveCamera(message.sdp) : {ready:true};
+      res.end(JSON.stringify(body));
+    } else res.end(JSON.stringify(exchange(message.data)));
+  } else if(req.url === '/capture-signal.js') {
+    res.setHeader('Content-Type','text/javascript'); res.end(signalJS);
+  } else html(res, req.url.startsWith('/offline-camera') ? cameraPage : presentPage);
+});
 const helperOrigin = 'http://127.0.0.1:' + helper.address().port;
 // A loopback-only HTTP proxy represents the phone's hotspot IP. This exercises
 // a genuinely insecure browser origin without binding a test server to Wi-Fi.
@@ -152,7 +171,11 @@ try {
   await page.evaluate(`document.querySelector('#tabbar [data-tab="screen"]').click()`);
   assert.equal(await page.evaluate("document.querySelector('#shareLaptopScreen').checkVisibility()"), true);
   await page.evaluate("document.querySelector('#shareLaptopScreen').click()");
+  assert.equal(await page.evaluate("document.querySelector('#helperSetup').open"), true);
+  await page.evaluate("document.querySelector('#offlineWorkspace').click()");
   const popup = await client(await waitFor(async () => (await list()).find(x => x.url.startsWith(helperOrigin))));
+  await waitFor(() => popup.evaluate("!!document.querySelector('#code')"));
+  await popup.evaluate("document.querySelector('#code').value = '123456'");
   await waitFor(() => popup.evaluate('document.querySelector("#start")?.disabled === false'));
   await popup.evaluate(`navigator.mediaDevices.getDisplayMedia = async () => { throw new DOMException('Cancelled', 'NotAllowedError'); };
     document.querySelector('#start').click();`);
@@ -166,7 +189,10 @@ try {
     draw(); window.testTimer = setInterval(draw, 120); return canvas.captureStream(12); };
     document.querySelector('#start').click();`);
   const view = await create(origin + '/watch-laptop.html?code=123456');
+  await waitFor(()=>view.evaluate("!document.querySelector('#preview').hidden && document.querySelector('#preview').naturalWidth === 320"));
+  permitOffer = true;
   await waitFor(() => view.evaluate('document.querySelector("video")?.videoWidth === 320'), 36000);
+  assert.ok(await view.evaluate("document.querySelector('#preview') !== null"));
   const decoded = await view.evaluate(`(async () => {
     const v=document.querySelector('video'), c=document.createElement('canvas'), ctx=c.getContext('2d');
     const colours=new Set();
@@ -177,6 +203,27 @@ try {
   await popup.evaluate('document.querySelector("#stop").click()');
   await waitFor(() => view.evaluate('document.querySelector("video").srcObject === null'));
   assert.equal(active, false);
+  await page.evaluate("document.querySelector('#tabbar [data-tab=camera]').click(); document.querySelector('#launchCamera').click(); document.querySelector('#offlineWorkspace').click()");
+  const camera = await client(await waitFor(async () => (await list()).find(t=>t.url.startsWith(helperOrigin+'/offline-camera'))));
+  receiveCamera = sdp => view.evaluate(`(async()=>{
+    const pc = window.cameraPeer = new RTCPeerConnection({iceServers:[]});
+    pc.ontrack = e=>{document.querySelector('video').srcObject=new MediaStream([e.track]);};
+    await pc.setRemoteDescription({type:'offer',sdp:${JSON.stringify(sdp)}});
+    const canvas=document.createElement('canvas');canvas.width=96;canvas.height=64;
+    const paint=()=>canvas.getContext('2d').fillRect(0,0,96,64);paint();window.cameraPaint=setInterval(paint,100);
+    const feed=canvas.captureStream(10);pc.addTrack(feed.getVideoTracks()[0],feed);
+    await pc.setLocalDescription(await pc.createAnswer());
+    while(pc.iceGatheringState!=='complete')await new Promise(r=>setTimeout(r,60));
+    return {sdp:pc.localDescription.sdp};
+  })()`);
+  await camera.evaluate(`document.querySelector('#code').value='123456';document.querySelector('#source').value='screen';
+    navigator.mediaDevices.getDisplayMedia=async()=>{const c=document.createElement('canvas');c.width=160;c.height=90;
+      setInterval(()=>c.getContext('2d').fillRect(0,0,160,90),100);return c.captureStream(10)};
+    document.querySelector('#connect').click()`);
+  await waitFor(()=>camera.evaluate("document.querySelector('#remote').videoWidth===96"),25000);
+  await waitFor(()=>view.evaluate("document.querySelector('video').videoWidth===160"),25000);
+  await camera.evaluate("document.querySelector('#stop').click()");
+  console.log('Edge: offline Camera workspace sent the selected display and decoded the returning phone-camera fixture.');
   assert.deepEqual(errors, []);
   console.log('Edge: approved synthetic presenter, decoded changing 320×180 frames on receiver and cleared on stop.');
   browser = await client(await (await fetch(debug + '/json/version')).json(), false);

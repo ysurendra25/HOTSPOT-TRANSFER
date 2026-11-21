@@ -1,130 +1,128 @@
 package com.pocketbridge;
 
 import android.content.Context;
+import android.media.MediaExtractor;
+import android.media.MediaFormat;
 import android.os.StatFs;
-
 import com.arthenica.ffmpegkit.FFmpegKit;
+import com.arthenica.ffmpegkit.FFmpegKitConfig;
 import com.arthenica.ffmpegkit.FFmpegSession;
 import com.arthenica.ffmpegkit.ReturnCode;
-
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
+import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.util.Arrays;
-import java.util.Locale;
-import java.util.concurrent.CountDownLatch;
+import java.util.*;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 
-/** Creates an on-phone H.264/AAC MP4 only when a browser cannot play the original. */
+/** One encoder per sharing session; concurrent requests for a movie reuse its job. */
 final class VideoCompatibility {
-    private static final long MIN_FREE_BYTES = 96L * 1024 * 1024;
-    private static final long CACHE_LIMIT_BYTES = 512L * 1024 * 1024;
-    private static final long CACHE_MAX_AGE_MS = TimeUnit.DAYS.toMillis(7);
-    private static final long CONVERSION_TIMEOUT_MINUTES = 30;
     private final Context context;
+    private Job active;
+    private boolean closed;
 
     VideoCompatibility(Context context) { this.context = context.getApplicationContext(); }
 
-    File makeBrowserCopy(MediaRepository.Item item) throws Exception {
-        if (item == null || !"video".equals(item.kind)) throw new IOException("This item is not a video.");
-        File directory = new File(context.getCacheDir(), "browser-video");
-        if (!directory.exists() && !directory.mkdirs()) throw new IOException("Could not create temporary video storage.");
-        String id = cacheId(item);
-        File output = new File(directory, id + ".mp4");
-        synchronized (output.getAbsolutePath().intern()) {
-            if (output.isFile() && output.length() > 0) return output;
-            pruneCache(directory, null);
-            File source = new File(directory, id + ".source");
-            File partial = new File(directory, id + ".partial.mp4");
-            source.delete();
-            partial.delete();
-            ensureFreeSpace(directory, item.size);
-            try {
-                copySource(item, source);
-                transcode(source, partial);
-                if (!partial.isFile() || partial.length() < 1024) {
-                    throw new IOException("The phone could not convert this video into a browser-compatible format.");
+    static final class Job {
+        final File output, partial;
+        volatile boolean done;
+        volatile String error;
+        FFmpegSession encoder;
+        Job(File directory, String id) {
+            output = new File(directory, id + ".mp4");
+            partial = new File(directory, id + "." + UUID.randomUUID() + ".partial");
+        }
+        File awaitComplete() throws Exception {
+            while (!done) Thread.sleep(120);
+            if (error != null) throw new IOException(error);
+            return output;
+        }
+        InputStream openGrowing() throws Exception {
+            while (!done) {
+                if (partial.length() > 4096) {
+                    try { return new FileInputStream(partial); }
+                    catch (FileNotFoundException renamed) { /* finishing conversion */ }
                 }
-                if (!partial.renameTo(output)) throw new IOException("Could not save the converted video in temporary storage.");
-                pruneCache(directory, output);
-                return output;
-            } finally {
-                source.delete();
-                partial.delete();
+                Thread.sleep(100);
+            }
+            return new FileInputStream(awaitComplete());
+        }
+        void copyGrowing(InputStream input, OutputStream output) throws Exception {
+            byte[] buffer = new byte[128 * 1024];
+            while (true) {
+                // Observe completion before reading so the final bytes are always drained.
+                boolean finished = done;
+                int n = input.read(buffer);
+                if (n > 0) { output.write(buffer, 0, n); output.flush(); }
+                else if (finished) { if (error != null) throw new IOException(error); return; }
+                else Thread.sleep(80);
             }
         }
     }
 
-    private void pruneCache(File directory, File keep) {
-        File[] cached = directory.listFiles((dir, name) -> name.endsWith(".mp4"));
-        if (cached == null) return;
-        Arrays.sort(cached, (a, b) -> Long.compare(a.lastModified(), b.lastModified()));
-        long total = 0;
-        for (File file : cached) total += file.length();
-        long cutoff = System.currentTimeMillis() - CACHE_MAX_AGE_MS;
-        for (File file : cached) {
-            if (keep != null && file.equals(keep)) continue;
-            if (file.lastModified() < cutoff || total > CACHE_LIMIT_BYTES) {
-                long length = file.length();
-                if (file.delete()) total -= length;
+    synchronized Job prepare(MediaRepository.Item item) throws Exception {
+        if (closed) throw new IOException("Sharing has stopped.");
+        File dir = new File(context.getCacheDir(), "browser-video");
+        if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("Temporary storage is unavailable.");
+        String key = item.key + ":" + item.size + ":" + item.modified;
+        byte[] digest = MessageDigest.getInstance("SHA-256").digest(key.getBytes(StandardCharsets.UTF_8));
+        StringBuilder id = new StringBuilder();
+        for (byte b : digest) id.append(String.format(Locale.ROOT, "%02x", b & 255));
+        Job job = new Job(dir,id.toString());
+        if (job.output.isFile() && job.output.length()>0) {job.done=true;return job;}
+        if (active != null && !active.done) {
+            if (job.output.equals(active.output)) return active;
+            throw new IOException("Another movie is being prepared. Retry after it finishes.");
+        }
+        File[] old = dir.listFiles();
+        if (old != null) for (File f : old) {
+            if (f.getName().endsWith(".mp4") || f.lastModified()<System.currentTimeMillis()-TimeUnit.DAYS.toMillis(1)) f.delete();
+        }
+        if (new StatFs(dir.getPath()).getAvailableBytes() < 96L*1024*1024) throw new IOException("Free some phone storage for compatibility playback.");
+        active = job;
+        Thread worker = new Thread(() -> convert(item,job),"PocketBridge-video");
+        worker.start();
+        return job;
+    }
+
+    private boolean hasAvcVideo(MediaRepository.Item item) {
+        MediaExtractor extractor = new MediaExtractor();
+        try {
+            extractor.setDataSource(context,item.uri,null);
+            for(int i=0;i<extractor.getTrackCount();i++) {
+                String mime=extractor.getTrackFormat(i).getString(MediaFormat.KEY_MIME);
+                if(mime!=null && mime.startsWith("video/")) return "video/avc".equals(mime);
             }
-        }
+        } catch(Exception ignored) { }
+        finally {extractor.release();}
+        return false;
     }
 
-    private void ensureFreeSpace(File directory, long sourceSize) throws IOException {
-        long available = new StatFs(directory.getAbsolutePath()).getAvailableBytes();
-        long needed = Math.max(MIN_FREE_BYTES, sourceSize > 0 && sourceSize < Long.MAX_VALUE / 2 ? sourceSize * 2 : MIN_FREE_BYTES);
-        if (available < needed) throw new IOException("The phone needs more free storage to make a browser-compatible video copy.");
+    private void convert(MediaRepository.Item item,Job job) {
+        try {
+            String input = "file".equals(item.uri.getScheme()) ? item.uri.getPath() : FFmpegKitConfig.getSafParameterForRead(context,item.uri);
+            List<String> args=new ArrayList<>(Arrays.asList("-nostdin","-y","-i",input,"-map","0:v:0","-map","0:a:0?","-sn"));
+            if(hasAvcVideo(item)) Collections.addAll(args,"-c:v","copy");
+            else Collections.addAll(args,"-c:v","h264_mediacodec","-b:v","10M","-pix_fmt","yuv420p");
+            Collections.addAll(args,"-c:a","aac","-b:a","160k","-movflags","+frag_keyframe+empty_moov+default_base_moof",
+                    "-frag_duration","1000000","-flush_packets","1","-f","mp4",job.partial.getPath());
+            java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
+            synchronized(this) {
+                if(closed) throw new IOException("Sharing stopped.");
+                job.encoder=FFmpegKit.executeWithArgumentsAsync(args.toArray(new String[0]),s -> done.countDown());
+            }
+            done.await();
+            if (!ReturnCode.isSuccess(job.encoder.getReturnCode()) || job.partial.length()<1024)
+                throw new IOException("This phone could not convert the video. Download the original to play it locally.");
+            synchronized(this) {
+                if(closed || !job.partial.renameTo(job.output)) throw new IOException("Could not save the playback copy.");
+            }
+        } catch(Exception | LinkageError e) {
+            job.error = e.getMessage()==null ? "Video conversion failed." : e.getMessage();
+        } finally { job.done=true; job.partial.delete(); }
     }
 
-    private void copySource(MediaRepository.Item item, File target) throws IOException {
-        try (InputStream input = context.getContentResolver().openInputStream(item.uri);
-             FileOutputStream output = new FileOutputStream(target)) {
-            if (input == null) throw new IOException("The original video is no longer available on the phone.");
-            byte[] buffer = new byte[256 * 1024];
-            int count;
-            while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
-            output.getFD().sync();
-        }
-    }
-
-    private void transcode(File source, File output) throws Exception {
-        CountDownLatch done = new CountDownLatch(1);
-        AtomicReference<ReturnCode> returnCode = new AtomicReference<>();
-        AtomicReference<String> failure = new AtomicReference<>();
-        String[] args = {
-                "-nostdin", "-y", "-i", source.getAbsolutePath(),
-                "-map", "0:v:0", "-map", "0:a:0?", "-sn",
-                "-c:v", "h264_mediacodec", "-b:v", "10M",
-                "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k",
-                "-movflags", "+faststart", "-f", "mp4", output.getAbsolutePath()
-        };
-        FFmpegSession session = FFmpegKit.executeWithArgumentsAsync(args, completed -> {
-            returnCode.set(completed.getReturnCode());
-            String details = completed.getFailStackTrace();
-            if (details != null && !details.trim().isEmpty()) failure.set(details);
-            done.countDown();
-        });
-        if (!done.await(CONVERSION_TIMEOUT_MINUTES, TimeUnit.MINUTES)) {
-            FFmpegKit.cancel(session.getSessionId());
-            throw new IOException("Video conversion took too long. Download the original file instead.");
-        }
-        if (!ReturnCode.isSuccess(returnCode.get())) {
-            String detail = failure.get();
-            throw new IOException(detail == null || detail.isEmpty()
-                    ? "This phone could not convert the video. Download the original and play it in a media player."
-                    : "This phone could not convert the video: " + detail);
-        }
-    }
-
-    private String cacheId(MediaRepository.Item item) throws Exception {
-        String source = item.key + ":" + item.size + ":" + item.modified;
-        byte[] digest = MessageDigest.getInstance("SHA-256").digest(source.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-        StringBuilder hex = new StringBuilder(digest.length * 2);
-        for (byte value : digest) hex.append(String.format(Locale.ROOT, "%02x", value & 0xff));
-        return hex.toString();
+    synchronized void stop() {
+        closed=true;
+        if(active!=null && !active.done && active.encoder!=null) FFmpegKit.cancel(active.encoder.getSessionId());
     }
 }

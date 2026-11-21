@@ -21,6 +21,7 @@
     sender = null;
   }
   function openSender() {
+    if (document.getElementById('offlineWorkspace')) { openLocalSetup('screen', new URL(helperOrigin).port); return; }
     if (sender && !sender.closed && port) { sender.focus(); return; }
     disconnect();
     nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, '0')).join('');

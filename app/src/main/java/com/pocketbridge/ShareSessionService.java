@@ -69,6 +69,7 @@ public final class ShareSessionService extends Service {
     private String currentDiag = "";
     private boolean starting;
     private int sessionGeneration;
+    private int scanRevision;
     private String addressLead;
     private final Runnable refreshAddress = this::refreshCurrentAddress;
     private final Runnable retryHealth = () -> { if (currentUrl != null) verifyServer(); };
@@ -216,6 +217,12 @@ public final class ShareSessionService extends Service {
                     useExistingHotspot(note);
                 }
             }, handler);
+            handler.postDelayed(() -> {
+                if (generation == sessionGeneration && starting) {
+                    starting = false;
+                    useExistingHotspot("Android has not reported a new hotspot yet.");
+                }
+            }, 8000);
         } catch (SecurityException | IllegalStateException | UnsupportedOperationException error) {
             starting = false;
             useExistingHotspot("Android could not create a private hotspot.");
@@ -268,10 +275,11 @@ public final class ShareSessionService extends Service {
 
     private void scanAddresses(Consumer<List<Addr>> callback) {
         int generation = sessionGeneration;
+        int revision = ++scanRevision;
         addressScanner.execute(() -> {
             List<Addr> addresses = allAddresses();
             handler.post(() -> {
-                if (generation == sessionGeneration && server != null) callback.accept(addresses);
+                if (generation == sessionGeneration && revision == scanRevision && server != null) callback.accept(addresses);
             });
         });
     }
@@ -439,7 +447,13 @@ public final class ShareSessionService extends Service {
                 for (InetAddress address : Collections.list(network.getInetAddresses())) {
                     if (!(address instanceof Inet4Address)) continue;
                     String ip = address.getHostAddress();
-                    if (ip.startsWith("127.") || !seen.add(ip)) continue;
+                    if (ip.startsWith("127.")) continue;
+                    // WifiInfo sometimes reports the AP's own IP as a client IP.
+                    // Prefer positive evidence from its tethering interface.
+                    if (!seen.add(ip)) {
+                        if (!isAccessPointInterface(name)) continue;
+                        addresses.removeIf(a -> a.ip.equals(ip));
+                    }
                     addresses.add(new Addr(ip, name));
                 }
             }
