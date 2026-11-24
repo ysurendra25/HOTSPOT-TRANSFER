@@ -64,3 +64,16 @@ test('Phone reports capture error and lets Edge retry immediately', async () => 
   assert.equal(h.node('watchButton').disabled, false);
   assert.deepEqual(h.calls, []);
 });
+
+test('fragmented JPEG fallback retains only the latest complete frame and keeps decoder bytes stable', () => {
+  const code = html.slice(html.indexOf('  const PART_HEADER_END'), html.indexOf('  function stopWatching'));
+  const feed = vm.runInNewContext(code + '\nscreenChunkReader()', {TextDecoder, Uint8Array});
+  const frame = (byte,n) => Buffer.concat([Buffer.from('--pb\r\nContent-Length: '+n+'\r\n\r\n'),Buffer.alloc(n,byte),Buffer.from('\r\n')]);
+  const first = frame(13, 250000), second = frame(27, 130000), third = frame(42, 500);
+  let decoded;
+  for (let offset=0; offset<first.length; offset+=1013) decoded = feed(first.subarray(offset,offset+1013)) || decoded;
+  assert.equal(decoded.length,250000);
+  const newest = feed(Buffer.concat([second,third]));
+  assert.ok(newest.length === 500 && newest.every(v=>v===42));
+  assert.ok(decoded.every(v=>v===13));
+});

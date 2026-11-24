@@ -6,6 +6,7 @@ import http from 'node:http';
 import {readFile, mkdtemp, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
 import {checkPlayer} from './test-edge-player.mjs';
@@ -68,6 +69,7 @@ const helperOrigin = 'http://127.0.0.1:' + helper.address().port;
 // A loopback-only HTTP proxy represents the phone's hotspot IP. This exercises
 // a genuinely insecure browser origin without binding a test server to Wi-Fi.
 const hotspotOrigin = 'http://192.168.49.1:43117';
+let listedFiles = [], suppliedBytes = null, jobSent = false, fileOwner = '';
 const phone = await serve(async (req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1');
   if (url.hostname !== '127.0.0.1' && url.origin !== hotspotOrigin) {
@@ -79,6 +81,26 @@ const phone = await serve(async (req, res) => {
     res.end((path === '/laptop-cast.js' ? browserJS : cameraJS).replace('__PB_HELPER_PORT__', String(helper.address().port)));
   } else if ((path.startsWith('/api/') || path === '/watch-laptop.html') && url.searchParams.get('code') !== '123456') {
     res.writeHead(403); res.end();
+  } else if (path === '/api/edge-files') {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    const message = JSON.parse(body);
+    let reply = {};
+    if (message.action === 'publish') { listedFiles = message.files; fileOwner = message.owner; }
+    else if (message.owner !== fileOwner) { res.writeHead(403); res.end('{}'); return; }
+    else if (message.action === 'stop') listedFiles = [];
+    else if (message.action === 'next') {
+      const movie = listedFiles.find(f => f.name === 'long-film.webm');
+      if (movie && !jobSent) { jobSent = true; reply = {job:'read', file:movie.id, offset:1500, size:901}; }
+      else await sleep(150);
+    }
+    res.setHeader('Content-Type','application/json');res.end(JSON.stringify(reply));
+  } else if (path === '/api/edge-chunk/read') {
+    assert.equal(req.headers['x-edge-owner'], fileOwner);
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    suppliedBytes = Buffer.concat(chunks);
+    res.end('{}');
   } else if (path === '/api/laptop-cast') {
     let body = '';
     for await (const chunk of req) body += chunk;
@@ -167,6 +189,16 @@ try {
   assert.equal(await page.evaluate('window.isSecureContext'), false);
   await page.evaluate(`document.querySelector('#codeInput').value = '123456'; document.querySelector('#unlockBtn').click()`);
   await waitFor(() => page.evaluate("document.querySelector('#app').style.display === 'block'"));
+  await page.evaluate("document.querySelector('#tabbar [data-tab=connect]').click()");
+  const {root: dom} = await page.command('DOM.getDocument');
+  const {nodeId} = await page.command('DOM.querySelector',{nodeId:dom.nodeId,selector:'#edgeFolderPicker'});
+  await page.command('DOM.setFileInputFiles',{nodeId, files:[fileURLToPath(new URL('tools/fixtures/', root))]});
+  await waitFor(() => suppliedBytes);
+  assert.equal(listedFiles.find(f => f.name === 'long-film.webm').path,'fixtures/long-film.webm');
+  assert.deepEqual(suppliedBytes, clips.get('long-film').subarray(1500,2401));
+  await page.evaluate("document.querySelector('#stopEdgeFiles').click()");
+  await waitFor(() => !listedFiles.length);
+  console.log('Edge shared the selected folder, served the requested original bytes and withdrew it on stop.');
   await checkPlayer(page, waitFor);
   await page.evaluate(`document.querySelector('#tabbar [data-tab="screen"]').click()`);
   assert.equal(await page.evaluate("document.querySelector('#shareLaptopScreen').checkVisibility()"), true);

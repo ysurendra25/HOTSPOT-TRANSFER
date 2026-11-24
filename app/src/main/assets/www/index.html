@@ -317,6 +317,16 @@
       <input id="sendFile" type="file" hidden>
       <span id="sendStatus" role="status" aria-live="polite"></span>
     </section>
+    <section class="screen-card" id="edgeFilesSection" hidden>
+      <div class="screen-copy"><div><div class="screen-title">Share laptop files with the phone</div>
+        <div class="screen-desc">Choose a folder once. Its files appear in the phone’s Library. Keep this tab open while browsing.</div></div></div>
+      <label class="btn btn-soft" for="edgeFolderPicker">Share folder</label>
+      <input id="edgeFolderPicker" type="file" webkitdirectory multiple hidden>
+      <label class="btn btn-outline" for="edgeFilePicker">Share individual files</label>
+      <input id="edgeFilePicker" type="file" multiple hidden>
+      <button class="btn btn-outline" id="stopEdgeFiles" type="button" hidden>Stop sharing files</button>
+      <span id="edgeFilesState" role="status"></span>
+    </section>
     <section class="library-head" id="inboxSection"><div><span class="section-title">Received on phone</span><span class="count" id="inboxCount">—</span></div><button class="btn btn-soft" id="refreshInbox" type="button">Refresh inbox</button></section>
     <section class="grid" id="inboxGrid"><div class="loading">Checking received files…</div></section>
     <section class="library-head" id="chatSection"><div><span class="section-title">Share chat</span><span class="count">Messages stay on this phone</span></div></section>
@@ -546,6 +556,7 @@
     if (event.key === 'Enter') unlock(event.currentTarget.value, true);
   });
   document.getElementById('lockBtn').addEventListener('click', () => {
+    stopEdgeFiles();
     try { localStorage.removeItem(CODE_KEY); } catch (e) {}
     code = '';
     app.style.display = 'none';
@@ -1414,7 +1425,7 @@
       const reader = response.body.getReader();
       screenReader = reader;
       const context = canvas.getContext('2d');
-      let pending = new Uint8Array(0);
+      const parseChunk = screenChunkReader();
       while (viewer === activeViewer && !controller.signal.aborted) {
         const {done, value} = await reader.read();
         if (viewer !== activeViewer || controller.signal.aborted) return;
@@ -1422,17 +1433,7 @@
         // Keep consuming the network while a JPEG is decoding. If the phone or
         // hotspot is faster than this browser, only the newest frame is drawn;
         // decoding a queue of old frames is what made the view several seconds late.
-        const merged = new Uint8Array(pending.length + value.length);
-        merged.set(pending, 0);
-        merged.set(value, pending.length);
-        // Take whole parts by their Content-Length. Searching for JPEG end
-        // markers could end a frame early, and drawing a cut JPEG shows only
-        // its top part. Older frames in the same chunk are skipped.
-        let latest = null;
-        let rest = merged;
-        let part;
-        while ((part = takeScreenPart(rest))) { latest = part.frame; rest = part.rest; }
-        pending = rest.length > 48 * 1024 * 1024 ? new Uint8Array(0) : rest;
+        const latest = parseChunk(value);
         if (latest) { latestScreenJpeg = latest; drawLatestScreenFrame(canvas, context, state); }
       }
     } catch (error) {
@@ -1493,6 +1494,37 @@
     return -1;
   }
 
+  // Reuse storage across network chunks. A large frame arriving in small pieces
+  // must not be recopied in full on every read.
+  function screenChunkReader() {
+    const limit = 48 * 1024 * 1024;
+    let buffer = new Uint8Array(64 * 1024), start = 0, end = 0;
+    return chunk => {
+      const required = end - start + chunk.length;
+      if (required > limit) throw new Error('Screen frame exceeds the viewer limit.');
+      if (end + chunk.length > buffer.length) {
+        if (required <= buffer.length) buffer.copyWithin(0, start, end);
+        else {
+          const grown = new Uint8Array(Math.min(limit, Math.max(required, buffer.length * 2)));
+          grown.set(buffer.subarray(start, end));
+          buffer = grown;
+        }
+        end -= start;
+        start = 0;
+      }
+      buffer.set(chunk, end);
+      end += chunk.length;
+      let latest = null, part;
+      while ((part = takeScreenPart(buffer.subarray(start, end)))) {
+        latest = part.frame;
+        start = end - part.rest.length;
+      }
+      if (start === end) start = end = 0;
+      // The decoder may still be using these bytes when the next read reuses buffer.
+      return latest && latest.slice();
+    };
+  }
+
   // One multipart part from the front of the buffer, or null while incomplete.
   function takeScreenPart(bytes) {
     const headEnd = indexOfBytes(bytes, PART_HEADER_END, 0);
@@ -1504,12 +1536,12 @@
       if (start < 0) return null;
       const finish = indexOfJpegEnd(bytes, start);
       if (finish < 0) return null;
-      return {frame: bytes.slice(start, finish + 2), rest: bytes.subarray(finish + 2)};
+      return {frame: bytes.subarray(start, finish + 2), rest: bytes.subarray(finish + 2)};
     }
     const length = Number(match[1]);
     const begin = headEnd + 4;
     if (bytes.length < begin + length) return null;
-    return {frame: bytes.slice(begin, begin + length), rest: bytes.subarray(begin + length)};
+    return {frame: bytes.subarray(begin, begin + length), rest: bytes.subarray(begin + length)};
   }
 
   function indexOfJpegStart(bytes, from) {
@@ -1557,6 +1589,85 @@
     box.classList.toggle('focused', document.fullscreenElement === box);
     fitVideoStage();
   });
+  const edgePicker = document.getElementById('edgeFilePicker');
+  const edgeFolder = document.getElementById('edgeFolderPicker');
+  const edgeState = document.getElementById('edgeFilesState');
+  const edgeStop = document.getElementById('stopEdgeFiles');
+  let edgeShare = null;
+  const edgeId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2,'0')).join('');
+  async function edgeAction(owner, action, fields = {}, keepalive = false) {
+    const response = await fetch(endpoint('/api/edge-files'), {method:'POST', keepalive,
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify({owner, action, ...fields}),
+      signal:AbortSignal.timeout(18000)});
+    const result = await response.json();
+    if (!response.ok) throw Object.assign(new Error(result.error || 'Reconnect to the phone and choose the files again.'), {status:response.status});
+    return result;
+  }
+  async function serveEdgeFiles(share) {
+    let failures = 0;
+    while (edgeShare === share) {
+      try {
+        const job = await edgeAction(share.owner, 'next');
+        if (edgeShare !== share) return;
+        if (job.job) {
+          const file = share.files.get(job.file);
+          const chunk = file && file.slice(job.offset, job.offset + job.size);
+          const reply = await fetch(endpoint('/api/edge-chunk/' + encodeURIComponent(job.job)), {
+            method:'POST', headers:{'X-Edge-Owner':share.owner}, body:chunk, signal:AbortSignal.timeout(16000)});
+          if (!reply.ok && reply.status !== 410 && reply.status !== 400) throw new Error('File transfer interrupted.');
+        }
+        failures = 0;
+        edgeState.textContent = share.files.size + ' available in the phone Library';
+      } catch (error) {
+        if (share !== edgeShare) return;
+        if ([403,410,429].includes(error.status) || ++failures >= 4) {
+          stopEdgeFiles();
+          edgeState.textContent = 'File sharing ended. Reconnect and choose the files again.';
+          return;
+        }
+        edgeState.textContent = 'Reconnecting to the phone…';
+        await new Promise(resolve => setTimeout(resolve, 750 * failures));
+      }
+    }
+  }
+  function stopEdgeFiles() {
+    const share = edgeShare;
+    edgeShare = null;
+    if (share) edgeAction(share.owner, 'stop', {}, true).catch(() => {});
+    edgeStop.hidden = true;
+    edgePicker.disabled = edgeFolder.disabled = false;
+    edgeState.textContent = 'File sharing stopped.';
+  }
+  edgeStop.onclick = stopEdgeFiles;
+  addEventListener('pagehide', stopEdgeFiles);
+  edgeFolder.onchange = edgePicker.onchange = async event => {
+    const picker = event.currentTarget;
+    const files = new Map(Array.from(picker.files, file => [edgeId(), file]));
+    picker.value = '';
+    if (edgeShare) return;
+    if (!files.size || files.size > 50000) {
+      edgeState.textContent = 'Choose a folder containing 1 to 50,000 files.';
+      return;
+    }
+    edgePicker.disabled = edgeFolder.disabled = true;
+    const owner = edgeId(), share = {owner, files};
+    const entries = Array.from(files, ([id, f]) => ({id, name:f.name, path:f.webkitRelativePath || f.name, size:f.size}));
+    try {
+      for (let i = 0; i < entries.length; i += 100) {
+        const batch = entries.slice(i, i + 100);
+        await edgeAction(owner, i ? 'append' : 'publish', {files:batch});
+        if (!i) { edgeShare = share; serveEdgeFiles(share); }
+        if (edgeShare !== share) return;
+        edgeState.textContent = 'Listing files: ' + (i + batch.length) + ' / ' + entries.length;
+      }
+      edgeStop.hidden = false;
+      edgeState.textContent = files.size + ' available in the phone Library';
+    } catch (error) {
+      if (edgeShare === share) stopEdgeFiles();
+      edgePicker.disabled = edgeFolder.disabled = false;
+      edgeState.textContent = error.message;
+    }
+  };
   document.getElementById('sendFile').addEventListener('change', async event => {
     const file = event.target.files && event.target.files[0];
     if (!file) return;
@@ -1760,10 +1871,10 @@
 
   /* ---------- sections behind the tab bar ---------- */
   const TAB_GROUPS = {
-    connect: ['heroSection', 'transferSection'],
+    connect: ['heroSection', 'transferSection', 'edgeFilesSection'],
     screen: ['screenSection', 'laptopScreenSection', 'screenView', 'helperSetup'],
     camera: ['cameraSection', 'helperSetup'],
-    files: ['inboxSection', 'inboxGrid', 'librarySection', 'kindTabs', 'grid', 'filesPaging', 'transferSection'],
+    files: ['inboxSection', 'inboxGrid', 'librarySection', 'kindTabs', 'grid', 'filesPaging', 'transferSection', 'edgeFilesSection'],
     chat: ['chatSection', 'chatCard'],
     music: ['musicSection']
   };

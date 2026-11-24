@@ -174,6 +174,12 @@ public final class MainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        chatHandler.removeCallbacks(edgePoll);
+        edgePoll.run();
+        if (tabViews != null && tabViews[3].getVisibility() == View.VISIBLE) {
+            chatHandler.removeCallbacks(chatPoll);
+            chatPoll.run();
+        }
         refreshScreenButton();
         CameraSessionService.attachRenderers(phoneCameraPreview, laptopCameraPreview);
         refreshCameraStatus();
@@ -225,6 +231,7 @@ public final class MainActivity extends Activity {
             unregisterReceiver(statusReceiver);
             receiverRegistered = false;
         }
+        chatHandler.removeCallbacks(edgePoll);
         super.onStop();
     }
 
@@ -784,7 +791,6 @@ public final class MainActivity extends Activity {
         if (tabViews == null) return;
         for (int i = 0; i < tabViews.length; i++) tabViews[i].setVisibility(i == index ? View.VISIBLE : View.GONE);
         if (index == 3) {
-            refreshChat();
             if (chatNeedsBottomScroll && chatMessageScroll != null) chatMessageScroll.post(() -> {
                 chatMessageScroll.scrollTo(0, chatList.getBottom());
                 chatNeedsBottomScroll = false;
@@ -797,7 +803,13 @@ public final class MainActivity extends Activity {
                 tabButtons[i].setCompoundDrawableTintList(android.content.res.ColorStateList.valueOf(tint));
             }
         }
+        chatHandler.removeCallbacks(edgePoll);
         if (index == 1 || index == 2) syncHelperLinkFields();
+        if (index == 2) {
+            edgePoll.run();
+            if (helperLoad.isEnabled() && laptopFileAdapter.getTotalCount() == 0
+                    && !libraryHelperLink.getText().toString().trim().isEmpty()) helperLoad.performClick();
+        }
         if (index == 3) {
             refreshChat();
             chatHandler.removeCallbacks(chatPoll);
@@ -992,6 +1004,16 @@ public final class MainActivity extends Activity {
         laptopLibrarySection.setOrientation(LinearLayout.VERTICAL);
         parent.addView(laptopLibrarySection, matchWrap());
 
+        edgeStatus = new TextView(this);
+        edgeStatus.setTextColor(COLOR_MUTED);
+        edgeStatus.setText("Checking files shared from Edge…");
+        addCard(laptopLibrarySection, "SHARED FROM EDGE", edgeStatus);
+        edgeList = newLaptopList();
+        edgeList.setVisibility(View.GONE);
+        edgeAdapter = new LaptopFileAdapter();
+        edgeList.setAdapter(edgeAdapter);
+        laptopLibrarySection.addView(edgeList);
+
         TextView laptopIntro = new TextView(this);
         laptopIntro.setText("Browse the laptop from this phone. Leave the folder path empty for the helper's shared folder, or paste a Windows folder or file path. Searching is performed on the laptop.");
         laptopIntro.setTextColor(COLOR_MUTED);
@@ -1044,28 +1066,13 @@ public final class MainActivity extends Activity {
         laptopStatusView.setPadding(dp(4), 0, dp(4), dp(10));
         laptopLibrarySection.addView(laptopStatusView);
 
-        laptopFileList = new ListView(this) {
-            @Override public boolean dispatchTouchEvent(android.view.MotionEvent event) {
-                android.view.ViewParent parent = getParent();
-                if (parent != null) {
-                    int action = event.getActionMasked();
-                    if (action == android.view.MotionEvent.ACTION_DOWN || action == android.view.MotionEvent.ACTION_MOVE) {
-                        parent.requestDisallowInterceptTouchEvent(true);
-                    } else if (action == android.view.MotionEvent.ACTION_UP || action == android.view.MotionEvent.ACTION_CANCEL) {
-                        parent.requestDisallowInterceptTouchEvent(false);
-                    }
-                }
-                return super.dispatchTouchEvent(event);
-            }
-        };
-        laptopFileList.setDivider(new android.graphics.drawable.ColorDrawable(COLOR_LINE));
-        laptopFileList.setDividerHeight(dp(1));
-        laptopFileList.setLayoutParams(new LinearLayout.LayoutParams(-1, dp(380)));
+        laptopFileList = newLaptopList();
         laptopFileAdapter = new LaptopFileAdapter();
         laptopFileList.setAdapter(laptopFileAdapter);
         addCard(laptopLibrarySection, "LAPTOP FILES", laptopFileList);
 
         Button loadLaptop = button("Load laptop files", COLOR_GREEN);
+        helperLoad = loadLaptop;
         loadLaptop.setOnClickListener(v -> {
             String link = libraryHelperLink.getText().toString().trim();
             if (link.isEmpty()) {
@@ -1087,6 +1094,65 @@ public final class MainActivity extends Activity {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) { filterLaptopRows(); }
             @Override public void afterTextChanged(android.text.Editable s) { }
+        });
+    }
+
+    private ListView newLaptopList() {
+        ListView list = new ListView(this) {
+            @Override public boolean dispatchTouchEvent(android.view.MotionEvent event) {
+                android.view.ViewParent parent = getParent();
+                if (parent != null) {
+                    int action = event.getActionMasked();
+                    if (action == android.view.MotionEvent.ACTION_DOWN || action == android.view.MotionEvent.ACTION_MOVE) {
+                        parent.requestDisallowInterceptTouchEvent(true);
+                    } else if (action == android.view.MotionEvent.ACTION_UP || action == android.view.MotionEvent.ACTION_CANCEL) {
+                        parent.requestDisallowInterceptTouchEvent(false);
+                    }
+                }
+                return super.dispatchTouchEvent(event);
+            }
+        };
+        list.setDivider(new android.graphics.drawable.ColorDrawable(COLOR_LINE));
+        list.setDividerHeight(dp(1));
+        list.setLayoutParams(new LinearLayout.LayoutParams(-1, dp(380)));
+        return list;
+    }
+
+    private LaptopFileAdapter edgeAdapter;
+    private ListView edgeList;
+    private TextView edgeStatus;
+    private Button helperLoad;
+    private EdgeFiles lastEdge;
+    private long edgeRevision = -1, edgeChatRevision = -1;
+    private boolean edgeReading;
+    private final Runnable edgePoll = new Runnable() {
+        @Override public void run() {
+            if (tabViews == null || tabViews[2].getVisibility() != View.VISIBLE || !receiverRegistered) return;
+            refreshEdgeFiles();
+            chatHandler.postDelayed(this, 1000);
+        }
+    };
+
+    private void refreshEdgeFiles() {
+        EdgeFiles edge = MediaHttpServer.activeEdgeFiles;
+        long revision = edge == null ? 0 : edge.revision();
+        long chatRevision = ChatStore.version();
+        if (edgeReading || (lastEdge == edge && edgeRevision == revision && edgeChatRevision == chatRevision)) return;
+        edgeReading = true;
+        background.execute(() -> {
+            List<JSONObject> rows = edge == null ? new ArrayList<>() : edge.snapshot();
+            rows.addAll(EdgeInbox.list(this));
+            runOnUiThread(() -> {
+                edgeReading = false;
+                if (isDestroyed() || edge != MediaHttpServer.activeEdgeFiles) return;
+                edgeRevision = revision;
+                edgeChatRevision = chatRevision;
+                lastEdge = edge;
+                edgeAdapter.setItems(rows, null);
+                edgeList.setVisibility(rows.isEmpty() ? View.GONE : View.VISIBLE);
+                edgeStatus.setText(rows.isEmpty() ? "In Edge, open Connect → Share folder. Its files will appear here automatically."
+                        : rows.size() + " laptop files. Tap a file to open it, or use its save button.");
+            });
         });
     }
 
@@ -1159,6 +1225,7 @@ public final class MainActivity extends Activity {
     /** Applies type/search filters to recycled laptop-file rows. */
     private void filterLaptopRows() {
         if (laptopFileAdapter == null || laptopFilter == null) return;
+        if (edgeAdapter != null) edgeAdapter.filter(laptopFilter.getText().toString(), laptopFilterKind);
         int shown = laptopFileAdapter.filter(laptopFilter.getText().toString(), laptopFilterKind);
         if (laptopStatus != null && laptopFileAdapter.getTotalCount() > 0) {
             laptopStatus.setText(shown + " of " + laptopFileAdapter.getTotalCount()
@@ -1179,17 +1246,20 @@ public final class MainActivity extends Activity {
         background.execute(() -> {
             try {
                 HelperLink helper = HelperClient.resolve(link, message -> runOnUiThread(() -> status.setText(message)));
-                String selectedPath = requestedPath.isEmpty() ? "@default" : requestedPath;
-                byte[] payload = new JSONObject().put("share_dir", selectedPath).toString()
-                        .getBytes(java.nio.charset.StandardCharsets.UTF_8);
-                HelperClient.Response chosen = HelperClient.request("POST", helper.url("/settings"), payload,
-                        HelperClient.CONNECT_TIMEOUT_MS, HelperClient.READ_TIMEOUT_MS, 2);
-                if (!chosen.ok()) throw new HelperClient.HelperException(HelperClient.errorMessage(chosen.status, chosen.body), chosen.status);
-                String exactFile = chosen.json().optString("share_file", "");
+                String exactFile = "";
+                if (!requestedPath.isEmpty()) {
+                    byte[] payload = new JSONObject().put("share_dir", requestedPath).toString()
+                            .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                    HelperClient.Response chosen = HelperClient.request("POST", helper.url("/settings"), payload,
+                            HelperClient.CONNECT_TIMEOUT_MS, HelperClient.READ_TIMEOUT_MS, 2);
+                    if (!chosen.ok()) throw new HelperClient.HelperException(HelperClient.errorMessage(chosen.status, chosen.body), chosen.status);
+                    exactFile = chosen.json().optString("share_file", "");
+                }
+                final boolean exact = !exactFile.isEmpty();
                 String effectiveQuery = exactFile.isEmpty() ? initialQuery : "";
                 runOnUiThread(() -> status.setText(requestedPath.isEmpty()
                         ? "Loading the helper's default shared folder…"
-                        : exactFile.isEmpty() ? "Location selected. Loading its files…" : "Exact file selected. Loading it…"));
+                        : !exact ? "Location selected. Loading its files…" : "Exact file selected. Loading it…"));
                 int offset = 0;
                 int shown = 0;
                 boolean truncated = false;
@@ -1333,27 +1403,24 @@ public final class MainActivity extends Activity {
             final String relative = item.optString("url", "");
             final String openMime = mime;
             final HelperLink currentHelper = helper;
-            final String downloadKey = currentHelper == null || relative.isEmpty() ? relative : currentHelper.url(relative);
-            boolean downloading = laptopDownloadsInProgress.contains(downloadKey);
-            boolean downloaded = laptopDownloadsComplete.contains(downloadKey);
-            download.setText(downloading ? "Downloading…" : downloaded ? "Downloaded · in chat" : "Download to phone");
-            download.setEnabled(currentHelper != null && !relative.isEmpty() && !downloading);
+            boolean local = item.has("attachmentId");
+            String url = currentHelper != null ? currentHelper.url(relative)
+                    : "http://127.0.0.1:" + MediaHttpServer.PORT + relative;
+            boolean ready = currentHelper != null || (relative.startsWith("/api/edge-media/") && MediaHttpServer.activeEdgeFiles != null);
+            boolean downloading = laptopDownloadsInProgress.contains(url);
+            boolean downloaded = laptopDownloadsComplete.contains(url);
+            download.setText(local ? "Save a copy" : downloading ? "Downloading…" : downloaded ? "Saved in chat" : "Download to phone");
+            download.setEnabled(local || (ready && !downloading));
             download.setOnClickListener(view -> {
-                if (currentHelper == null || relative.isEmpty()) {
-                    Toast.makeText(MainActivity.this, "Reload laptop files to refresh this link.", Toast.LENGTH_SHORT).show();
-                    return;
-                }
-                if (laptopDownloadsInProgress.add(downloadKey)) {
-                    filterLaptopRows();
-                    downloadLaptopFile(currentHelper, relative, downloadKey, name, item.optLong("size", -1));
+                if (local) { requestSaveChatAttachment(item); return; }
+                if (ready && laptopDownloadsInProgress.add(url)) {
+                    notifyDataSetChanged();
+                    downloadLaptopFile(url, name, item.optLong("size", -1));
                 }
             });
             row.setOnClickListener(view -> {
-                if (currentHelper == null || relative.isEmpty()) {
-                    Toast.makeText(MainActivity.this, "Reload laptop files to refresh this link.", Toast.LENGTH_SHORT).show();
-                    return;
-                }
-                openLaptopFile(android.net.Uri.parse(currentHelper.url(relative)), openMime);
+                if (local) { openChatAttachment(item); return; }
+                if (ready) openLaptopFile(android.net.Uri.parse(url), openMime);
             });
             return row;
         }
@@ -1376,28 +1443,29 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private void downloadLaptopFile(HelperLink helper, String relativeUrl, String downloadKey, String name, long listedSize) {
+    private void downloadLaptopFile(String url, String name, long listedSize) {
         background.execute(() -> {
             java.io.File received = null;
             try {
-                String url = helper.url(relativeUrl);
                 received = LaptopFileTransfer.download(this, url,
                         new java.io.File(getFilesDir(), "received"), name, listedSize);
                 long bytes = received.length();
                 ChatStore.appendFile(this, LaptopFileTransfer.safeName(name), received.getName(), bytes, "laptop");
-                laptopDownloadsInProgress.remove(downloadKey);
-                laptopDownloadsComplete.add(downloadKey);
+                laptopDownloadsInProgress.remove(url);
+                laptopDownloadsComplete.add(url);
                 runOnUiThread(() -> {
                     if (laptopFileAdapter != null) laptopFileAdapter.notifyDataSetChanged();
+                    if (edgeAdapter != null) edgeAdapter.notifyDataSetChanged();
                     Toast.makeText(this, "Saved on this phone and added to Share chat.", Toast.LENGTH_LONG).show();
                     showTab(3);
                 });
             } catch (Exception error) {
                 if (received != null) { /*noinspection ResultOfMethodCallIgnored*/ received.delete(); }
-                laptopDownloadsInProgress.remove(downloadKey);
+                laptopDownloadsInProgress.remove(url);
                 String message = error.getMessage() == null ? "Could not download this laptop file." : error.getMessage();
                 runOnUiThread(() -> {
                     if (laptopFileAdapter != null) laptopFileAdapter.notifyDataSetChanged();
+                    if (edgeAdapter != null) edgeAdapter.notifyDataSetChanged();
                     Toast.makeText(this, message, Toast.LENGTH_LONG).show();
                 });
             }
@@ -1737,7 +1805,7 @@ public final class MainActivity extends Activity {
 
     private void requestSaveChatAttachment(JSONObject attachment) {
         String id = attachment.optString("id", "");
-        if (!id.matches("[A-Za-z0-9._-]+") || id.equals(".") || id.equals("..")) {
+        if (!EdgeInbox.validId(id)) {
             Toast.makeText(this, "This chat file has an invalid local name.", Toast.LENGTH_LONG).show();
             return;
         }
@@ -2015,21 +2083,14 @@ public final class MainActivity extends Activity {
 
     private void openChatAttachment(JSONObject attachment) {
         String id = attachment.optString("id", "");
-        String code = codeText == null ? "" : codeText.getText().toString().replaceAll("\\s", "");
-        String url = "http://127.0.0.1:" + MediaHttpServer.PORT + "/api/inbox/"
-                + android.net.Uri.encode(id) + "?code=" + android.net.Uri.encode(code);
-        String mime = attachment.optString("mime", "application/octet-stream");
-        if (mime.startsWith("video/")) {
-            openVideoWithChoice(android.net.Uri.parse(url), mime, 0);
-            return;
-        }
-        Intent view = new Intent(Intent.ACTION_VIEW);
-        view.setDataAndType(android.net.Uri.parse(url), mime);
+        if (!EdgeInbox.validId(id)) return;
+        android.net.Uri uri = new android.net.Uri.Builder().scheme("content")
+                .authority(getPackageName() + ".received").appendPath(id).build();
+        String mime = MediaTypeClassifier.mimeType(attachment.optString("name", EdgeInbox.name(id)), attachment.optString("mime", ""));
+        Intent view = new Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime);
+        view.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
         try { startActivity(Intent.createChooser(view, "Open with")); }
-        catch (Exception typed) {
-            try { startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))); }
-            catch (Exception ignored) { Toast.makeText(this, "Could not open the shared file.", Toast.LENGTH_SHORT).show(); }
-        }
+        catch (Exception unavailable) { Toast.makeText(this, "No installed app can open this file type.", Toast.LENGTH_SHORT).show(); }
     }
 
     /** Always show Android's resolver so the user can choose any compatible installed player. */

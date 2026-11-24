@@ -160,6 +160,65 @@ public class ServerFunctionalTest {
         assertEquals("bytes", range.body);
     }
 
+    @Test public void edgeFolderListsWithoutCopyingAndStreamsTheRequestedMovieBytes() throws Exception {
+        String owner = "a".repeat(32), id = "b".repeat(32), second = "c".repeat(32);
+        long size = 30L * 1024 * 1024 * 1024;
+        String api = withCode("/api/edge-files");
+        String file = "/api/edge-media/" + id;
+        org.json.JSONObject item = new org.json.JSONObject().put("id", id).put("name", "Film.mp4")
+                .put("size", size).put("path", "Movies/A/Film.mp4");
+        org.json.JSONObject command = new org.json.JSONObject().put("owner", owner).put("action", "publish")
+                .put("files", new org.json.JSONArray().put(item));
+        assertEquals(403, send("POST", "/api/edge-files", command.toString(), null).status);
+        assertEquals(200, send("POST", api, command.toString(), null).status);
+        assertEquals(200, send("POST", api, command.put("action", "append")
+                .put("files", new org.json.JSONArray().put(item.put("id", second).put("path", "Movies/B/Film.mp4"))).toString(), null).status);
+        java.util.List<org.json.JSONObject> files = MediaHttpServer.activeEdgeFiles.snapshot();
+        assertEquals(2, files.size());
+        assertEquals("Movies/A/Film.mp4", files.get(0).getString("path"));
+        assertEquals("Movies/B/Film.mp4", files.get(1).getString("path"));
+        assertEquals(200, send("HEAD", file, null, null).status);
+        assertEquals(416, send("GET", file, null, "bytes=" + size + "-").status);
+        String expected = "frame at end";
+        long offset = size - expected.length();
+        java.util.concurrent.CompletableFuture<Response> reader = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+            try { return send("GET", file, null, "bytes=" + offset + "-"); }
+            catch (Exception err) { throw new RuntimeException(err); }
+        });
+        Response next = send("POST", api, command.put("action", "next").toString(), null);
+        org.json.JSONObject request = new org.json.JSONObject(next.body);
+        assertEquals(offset, request.getLong("offset"));
+        assertEquals(id, request.getString("file"));
+        HttpURLConnection chunk = (HttpURLConnection) new URL(BASE + withCode("/api/edge-chunk/" + request.getString("job"))).openConnection();
+        try {
+            chunk.setRequestMethod("POST");
+            chunk.setRequestProperty("X-Edge-Owner", owner);
+            chunk.setDoOutput(true);
+            try (OutputStream out = chunk.getOutputStream()) { out.write(expected.getBytes(StandardCharsets.UTF_8)); }
+            assertEquals(200, chunk.getResponseCode());
+        } finally { chunk.disconnect(); }
+        Response delivered = reader.get(5, java.util.concurrent.TimeUnit.SECONDS);
+        assertEquals(206, delivered.status);
+        assertEquals(expected, delivered.body);
+        assertEquals(200, send("POST", api, command.put("action", "stop").toString(), null).status);
+        assertEquals(404, send("GET", file, null, null).status);
+        assertTrue(MediaHttpServer.activeEdgeFiles.snapshot().isEmpty());
+    }
+
+    @Test public void receivedEdgeFileOpensAfterDisconnectWithOriginalNameAndBytes() throws Exception {
+        String name = "Lecture part 1..final.pdf";
+        assertEquals(201, send("POST", withCode("/api/upload?name=" + java.net.URLEncoder.encode(name, "UTF-8")),
+                "pdf-bytes", null).status);
+        org.json.JSONObject received = EdgeInbox.list(context).get(0);
+        assertEquals(name, received.getString("name"));
+        server.stop();
+        server = null;
+        android.net.Uri uri = new android.net.Uri.Builder().scheme("content").authority(context.getPackageName() + ".received")
+                .appendPath(received.getString("id")).build();
+        assertEquals("application/pdf", context.getContentResolver().getType(uri));
+        try (InputStream bytes = context.getContentResolver().openInputStream(uri)) { assertEquals("pdf-bytes", readAll(bytes)); }
+    }
+
     private MediaHttpServer server;
     private Context context;
 

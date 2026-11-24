@@ -31,7 +31,7 @@ public class ScreenStreamTuningTest {
         String tuned = ScreenStreamTuning.tuneOffer(OFFER);
         assertFalse(tuned.contains("b=AS:"));
         assertFalse(tuned.contains("b=TIAS:"));
-        String params = "x-google-start-bitrate=5000;x-google-min-bitrate=500;x-google-max-bitrate=12000";
+        String params = "x-google-start-bitrate=2000;x-google-min-bitrate=200;x-google-max-bitrate=12000";
         assertTrue("VP8 gets its own fmtp line", tuned.contains("a=rtpmap:96 VP8/90000\r\na=fmtp:96 " + params));
         assertTrue("H.264 keeps its profile and gains bitrates",
                 tuned.contains("a=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f;" + params));

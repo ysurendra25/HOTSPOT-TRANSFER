@@ -22,9 +22,9 @@ final class ScreenStreamTuning {
     /** A practical hotspot ceiling; WebRTC congestion control may go lower as conditions change. */
     static final int MAX_KBPS = 12_000;
     /** Start sharp, while leaving headroom for the link's congestion controller. */
-    static final int START_KBPS = 5_000;
+    static final int START_KBPS = 2_000;
     /** Low enough to recover quickly when the hotspot is briefly congested. */
-    static final int MIN_KBPS = 500;
+    static final int MIN_KBPS = 200;
     static final int MAX_FRAMERATE = 30;
 
     private static final Set<String> VIDEO_CODECS = new HashSet<>();

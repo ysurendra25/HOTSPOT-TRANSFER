@@ -71,6 +71,8 @@ final class MediaHttpServer {
     private final String code;
     private final String token;
     private final MediaRepository media;
+    private final EdgeFiles edgeFiles = new EdgeFiles();
+    static volatile EdgeFiles activeEdgeFiles;
     private static volatile MediaRepository activeLibrary;
     static MediaRepository activeLibrary() { return activeLibrary; }
     private final VideoCompatibility videoCompatibility;
@@ -134,6 +136,7 @@ final class MediaHttpServer {
         serverSocket = java.nio.channels.ServerSocketChannel.open().socket();
         serverSocket.setReuseAddress(true);
         serverSocket.bind(new InetSocketAddress("0.0.0.0", PORT), 24);
+        activeEdgeFiles = edgeFiles;
         activeLibrary = media;
         running.set(true);
         acceptThread = new Thread(() -> {
@@ -196,6 +199,8 @@ final class MediaHttpServer {
     int openConnectionCount() { return openSockets.size(); }
 
     void stop() {
+        edgeFiles.clear();
+        if (activeEdgeFiles == edgeFiles) activeEdgeFiles = null;
         if (activeLibrary == media) activeLibrary = null;
         running.set(false);
         try { if (serverSocket != null) serverSocket.close(); } catch (Exception ignored) { }
@@ -257,8 +262,7 @@ final class MediaHttpServer {
                         uploadRequest ? "{\"error\":\"Upload must include a valid, non-empty file size.\"}" : "{\"error\":\"Request body is too large.\"}", null);
                 return;
             }
-            int contentLength = uploadRequest ? 0 : (int) Math.max(0, declaredLength);
-            byte[] body = method.equals("POST") && !uploadRequest ? readBytes(input, contentLength) : new byte[0];
+
 
             // The page itself carries no data, so it loads before the code is entered.
             if ((path.equals("/camera-launch.js") || path.equals("/laptop-cast.js")) && method.equals("GET")) {
@@ -287,6 +291,12 @@ final class MediaHttpServer {
             if (path.equals("/health")) { respond(output, 200, "application/json", "{\"ok\":true}", null); return; }
             if (path.equals("/favicon.ico")) { writeHead(output, 204, "text/plain", 0, null, null); output.flush(); return; }
 
+            // A local media player receives only its opaque, session-scoped file URL.
+            if (path.startsWith("/api/edge-media/") && (method.equals("GET") || method.equals("HEAD"))) {
+                if (!socket.getInetAddress().isLoopbackAddress()) { respond(output, 403, "text/plain", "Phone playback only", null); return; }
+                streamEdgeFile(output, method, headers, path.substring("/api/edge-media/".length()));
+                return;
+            }
             // While locked out, no six-digit code is checked at all, not even the
             // right one; otherwise the lockout only slowed a guesser down without
             // stopping one. The long token (from the phone's own link) still works.
@@ -305,6 +315,9 @@ final class MediaHttpServer {
                         "{\"error\":\"Enter the code shown in PocketBridge on the phone.\"}", null);
                 return;
             }
+
+            int contentLength = uploadRequest ? 0 : (int) Math.max(0, declaredLength);
+            byte[] body = method.equals("POST") && !uploadRequest ? readBytes(input, contentLength) : new byte[0];
 
             if (path.equals("/api/windows-helper") && (method.equals("GET") || method.equals("HEAD"))) {
                 try (android.content.res.AssetFileDescriptor archive = context.getAssets().openFd("PocketBridge-Windows-Control.zip")) {
@@ -379,6 +392,31 @@ final class MediaHttpServer {
                 return;
             }
 
+            if (path.equals("/api/edge-files") && method.equals("POST")) {
+                try {
+                    JSONObject request = new JSONObject(new String(body, StandardCharsets.UTF_8));
+                    String owner = request.optString("owner");
+                    JSONObject result = new JSONObject();
+                    switch (request.optString("action")) {
+                        case "publish": case "append":
+                            edgeFiles.publish(owner, request.optJSONArray("files"), "append".equals(request.optString("action"))); break;
+                        case "next": result = edgeFiles.next(owner); break;
+                        case "stop": edgeFiles.stopOwner(owner); break;
+                        default: throw new EdgeFiles.Failure(400, "Unknown file action.");
+                    }
+                    respond(output, 200, "application/json", result.toString(), "Cache-Control: no-store\r\n");
+                } catch (EdgeFiles.Failure error) {
+                    respond(output, error.status, "application/json", new JSONObject().put("error", error.getMessage()).toString(), null);
+                } catch (org.json.JSONException invalid) { respond(output, 400, "application/json", "{}", null); }
+                return;
+            }
+            if (path.startsWith("/api/edge-chunk/") && method.equals("POST")) {
+                try {
+                    edgeFiles.deliver(headers.get("x-edge-owner"), path.substring("/api/edge-chunk/".length()), body);
+                    respond(output, 200, "application/json", "{}", null);
+                } catch (EdgeFiles.Failure error) { respond(output, error.status, "text/plain", error.getMessage(), null); }
+                return;
+            }
             if (path.equals("/api/upload") && method.equals("POST")) {
                 if (!uploadAllowed(declaredLength)) {
                     respond(output, 413, "application/json; charset=utf-8", "{\"error\":\"Upload must include a valid, non-empty file size.\"}", null);
@@ -396,9 +434,10 @@ final class MediaHttpServer {
                     respond(output, 507, "application/json; charset=utf-8", "{\"error\":\"The phone needs more free storage for this file.\"}", null);
                     return;
                 }
-                File destination = new File(inbox, System.currentTimeMillis() + "-" + safeName);
+                File destination = new File(inbox, "edge-" + java.util.UUID.randomUUID().toString().replace("-", "") + "-" + safeName);
+                File partial = File.createTempFile("pb-upload-", ".part", context.getCacheDir());
                 long receivedBytes = 0;
-                try (java.io.FileOutputStream file = new java.io.FileOutputStream(destination)) {
+                try (java.io.FileOutputStream file = new java.io.FileOutputStream(partial)) {
                     // A 1 MiB streaming buffer keeps multi-gigabyte hotspot uploads
                     // from paying a read/write round trip for every 64 KiB chunk.
                     byte[] buffer = new byte[1024 * 1024];
@@ -415,10 +454,15 @@ final class MediaHttpServer {
                 } catch (Exception uploadError) {
                     // Never leave a truncated file in the recipient's inbox.
                     //noinspection ResultOfMethodCallIgnored
-                    destination.delete();
+                    partial.delete();
                     int status = uploadError instanceof StorageFullException ? 507 : 400;
                     String message = status == 507 ? "The phone ran out of free storage. Free space and try again." : "The upload did not finish. Try sending the file again.";
                     respond(output, status, "application/json; charset=utf-8", new JSONObject().put("error", message).toString(), null);
+                    return;
+                }
+                if (!partial.renameTo(destination)) {
+                    partial.delete();
+                    respond(output, 500, "application/json", "{\"error\":\"Could not save the uploaded file. Try a shorter filename.\"}", null);
                     return;
                 }
                 ChatStore.appendFile(context, safeName, destination.getName(), receivedBytes, "laptop");
@@ -432,7 +476,7 @@ final class MediaHttpServer {
                 File[] entries = inbox.listFiles(File::isFile);
                 if (entries != null) {
                     java.util.Arrays.sort(entries, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
-                    for (File entry : entries) received.put(new JSONObject().put("name", entry.getName().replaceFirst("^[0-9]+-", ""))
+                    for (File entry : entries) received.put(new JSONObject().put("name", EdgeInbox.name(entry.getName()))
                             .put("id", entry.getName()).put("size", entry.length()).put("modified", entry.lastModified()));
                 }
                 respond(output, 200, "application/json; charset=utf-8", new JSONObject().put("files", received).toString(), null);
@@ -461,7 +505,7 @@ final class MediaHttpServer {
                 }
                 File received = new File(new File(context.getFilesDir(), "received"), id);
                 if (!received.isFile()) { respond(output, 404, "text/plain", "Received file not found", null); return; }
-                String receivedName = id.replaceFirst("^[0-9]+-", "");
+                String receivedName = EdgeInbox.name(id);
                 // The real type lets the phone and the laptop open a received photo,
                 // video or PDF directly instead of only offering a download.
                 streamFile(socket, output, method, headers, received, MediaTypeClassifier.mimeType(receivedName, null), receivedName);
@@ -962,6 +1006,34 @@ final class MediaHttpServer {
         }
     }
 
+    private void streamEdgeFile(OutputStream out, String method, Map<String, String> headers, String id) throws Exception {
+        JSONObject item = edgeFiles.find(id);
+        if (item == null) { respond(out, 404, "text/plain", "The Edge tab is no longer sharing this file.", null); return; }
+        long size = item.getLong("size");
+        ByteRange range = ByteRange.parse(headers.get("range"), size);
+        if (range.unsatisfiable) { writeHead(out, 416, "text/plain", 0, "Content-Range: bytes */" + size + "\r\n", null); return; }
+        long offset = range.start;
+        long remaining = size == 0 ? 0 : range.end - offset + 1;
+        String extra = "Cache-Control: private, no-store\r\nAccept-Ranges: bytes\r\n";
+        if (range.partial) extra += "Content-Range: bytes " + offset + "-" + range.end + "/" + size + "\r\n";
+        byte[] part = null;
+        if (remaining > 0 && !"HEAD".equals(method)) {
+            try { part = edgeFiles.read(id, offset, (int)Math.min(remaining, EdgeFiles.CHUNK)); }
+            catch (EdgeFiles.Failure unavailable) { respond(out, unavailable.status, "text/plain", unavailable.getMessage(), null); return; }
+        }
+        writeHead(out, range.partial ? 206 : 200, item.getString("mime"), remaining, extra, null);
+        out.flush();
+        try {
+            while (part != null) {
+                out.write(part);
+                out.flush();
+                offset += part.length;
+                remaining -= part.length;
+                part = remaining == 0 ? null : edgeFiles.read(id, offset, (int)Math.min(remaining, EdgeFiles.CHUNK));
+            }
+        } catch (IOException ended) { /* A phone seek, stopped transfer or closed Edge tab ends this response. */ }
+    }
+
     private void streamMedia(Socket socket, OutputStream output, String method, Map<String, String> headers, MediaRepository.Item item) throws Exception {
         long total = Math.max(0, item.size);
         if (total == 0) {
@@ -1052,7 +1124,7 @@ final class MediaHttpServer {
             // Android only hands over a frame when the screen changes, so a still
             // screen would leave the browser on one frozen picture and could let
             // the connection look dead. Repeat the last picture now and then.
-            if (!wrote && android.os.SystemClock.elapsedRealtime() - lastWrite >= 700) {
+            if (!wrote && android.os.SystemClock.elapsedRealtime() - lastWrite >= 5000) {
                 timedFrameWrite(socket, output, lastBytes);
                 lastWrite = android.os.SystemClock.elapsedRealtime();
             }

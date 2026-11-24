@@ -95,7 +95,7 @@ def main():
     if "if (!confirm('Download " in html:
         problems += fail("recipient file download still requires a second confirmation instead of one deliberate click")
     groups = re.search(r"const TAB_GROUPS = \{(.*?)\n  \};", html, re.S)
-    if not groups or "files: ['inboxSection', 'inboxGrid', 'librarySection', 'kindTabs', 'grid', 'filesPaging', 'transferSection']" not in groups.group(1):
+    if not groups or "files: ['inboxSection', 'inboxGrid', 'librarySection', 'kindTabs', 'grid', 'filesPaging', 'transferSection', 'edgeFilesSection']" not in groups.group(1):
         problems += fail("video and file type filters must stay inside the Files tab")
     if not groups or "music: ['musicSection']" not in groups.group(1):
         problems += fail("the Music tab must show only the music player and song list")

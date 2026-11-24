@@ -163,6 +163,31 @@ public class MainActivityTabsTest {
         }
     }
 
+    @Test public void openingLibraryAutomaticallyListsTheReceiversFolder() throws Exception {
+        EdgeFiles share = new EdgeFiles();
+        share.publish("1".repeat(32), new org.json.JSONArray().put(new org.json.JSONObject()
+                .put("id", "2".repeat(32)).put("name", "Film.mp4").put("size", 1000)
+                .put("path", "Receiver/Movies/Film.mp4")), false);
+        MediaHttpServer.activeEdgeFiles = share;
+        ActivityController<MainActivity> controller = launch();
+        try {
+            View root = controller.get().findViewById(android.R.id.content);
+            buttonsLabelled(root, "Library").get(0).performClick();
+            java.lang.reflect.Field field = MainActivity.class.getDeclaredField("edgeList");
+            field.setAccessible(true);
+            android.widget.ListView list = (android.widget.ListView)field.get(controller.get());
+            for (int i = 0; i < 60 && list.getCount() == 0; i++) {
+                org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();
+                Thread.sleep(10);
+            }
+            assertEquals(View.VISIBLE, list.getVisibility());
+            assertEquals("Receiver/Movies/Film.mp4", ((org.json.JSONObject)list.getItemAtPosition(0)).getString("path"));
+        } finally {
+            controller.pause().stop().destroy();
+            MediaHttpServer.activeEdgeFiles = null;
+        }
+    }
+
     @Test public void theLibraryTabExplainsAnEmptyLibraryInsteadOfCrashing() {
         ActivityController<MainActivity> controller = launch();
         Activity activity = controller.get();
