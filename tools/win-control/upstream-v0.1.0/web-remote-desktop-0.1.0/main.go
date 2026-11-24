@@ -147,7 +147,7 @@ func newMux() *http.ServeMux {
 }
 
 // helperVersion is reported by /ping so the phone can show which helper answered.
-const helperVersion = "0.6.0.10"
+const helperVersion = "0.6.0.11"
 
 // pingHandler is the cheap reachability check the phone uses to find the
 // helper and to tell "wrong link" from "laptop asleep". It touches no disk and

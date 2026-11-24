@@ -47,7 +47,7 @@ public class ShareAddressTest {
     }
 
     @Test public void onlyAnUnambiguousExistingAccessPointSkipsPrivateHotspotCreation() {
-        for (String name : Arrays.asList("ap0", "ap_br_wlan2", "softap0", "swlan0", "wlan_ap0", "br_wlan0")) {
+        for (String name : Arrays.asList("ap0", "ap_br_wlan2", "softap0", "wlan_softap0", "swlan0", "wlan_ap0", "br_wlan0")) {
             assertTrue(name, ShareSessionService.isAccessPointInterface(name));
         }
         for (String name : Arrays.asList("wifi", "wlan0", "wlan1", "apn0", "eth0", "rmnet0", "wlan0-p2p0")) {

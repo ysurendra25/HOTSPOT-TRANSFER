@@ -60,6 +60,23 @@ export async function checkPlayer(page, waitFor) {
   assert.equal(await run("document.querySelector('#stage video').videoWidth"),64);
   await click('closeModal');
   await waitFor(() => run("!document.fullscreenElement && !document.querySelector('#stage video')"));
+  await run(`document.querySelector('[data-preview="long-film"]').click()`);
+  await playing();
+  const landing = await run(`(() => {
+    const video = document.querySelector('#stage video'), seek = document.querySelector('#seek');
+    video.pause();
+    const before = video.currentTime;
+    for (const v of [100, 2500, 4500]) { seek.value = v; seek.dispatchEvent(new Event('input')); }
+    const previewOnly = video.currentTime === before && document.querySelector('#time').textContent === '1:15:00 / 3:00:00';
+    seek.dispatchEvent(new Event('change'));
+    return {previewOnly, duration:video.duration, position:video.currentTime};
+  })()`);
+  assert.ok(landing.previewOnly);
+  assert.equal(landing.duration,10800);
+  assert.ok(landing.position === 4500);
+  await waitFor(() => run("!document.querySelector('#stage video').seeking && document.querySelector('#stage video').readyState >= 2"));
+  await click('closeModal');
+  console.log('Edge decoded the selected position around 1:15:00 in a three-hour indexed movie.');
   await run(`document.querySelector('[data-preview="unsupported"]').click()`);
   await playing();
   assert.ok(await run("document.querySelector('#stage video').currentSrc.includes('/api/video/compatible/unsupported')"));

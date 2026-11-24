@@ -54,7 +54,7 @@ public final class ShareSessionService extends Service {
     private static final String CHANNEL_ID = "pocketbridge_share";
     private static final int NOTIFICATION_ID = 1201;
     private static final String MODE_WIFI = "Wi-Fi network";
-    private static final String MODE_HOTSPOT = "Phone hotspot";
+    static final String MODE_HOTSPOT = "Phone hotspot";
     private static final String WIFI_PASSWORD_HINT = "Use your usual Wi-Fi password on the laptop, if asked";
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService addressScanner = Executors.newSingleThreadExecutor();
@@ -153,12 +153,10 @@ public final class ShareSessionService extends Service {
         scanAddresses(addresses -> {
             // A laptop already joined to Android's own hotspot must stay on that
             // same AP, even on phones that can create a second local-only AP.
-            for (Addr address : addresses) {
-                if (isAccessPointInterface(address.name)) {
-                    starting = false;
-                    useExistingHotspot("Using the phone’s existing hotspot.");
-                    return;
-                }
+            if (selectAddress(addresses, true) != null) {
+                starting = false;
+                useExistingHotspot("Using the phone’s existing hotspot.");
+                return;
             }
             requestLocalHotspot(generation);
         });
@@ -480,7 +478,7 @@ public final class ShareSessionService extends Service {
     static boolean isAccessPointInterface(String name) {
         return name.equals("ap") || name.matches("ap[0-9]+")
                 || name.startsWith("ap_br_") || name.startsWith("br_wlan") || name.startsWith("ap_wlan")
-                || name.startsWith("softap") || name.startsWith("br_softap")
+                || name.startsWith("wlan_softap") || name.startsWith("softap") || name.startsWith("br_softap")
                 || name.startsWith("wlan_ap") || name.startsWith("swlan");
     }
 

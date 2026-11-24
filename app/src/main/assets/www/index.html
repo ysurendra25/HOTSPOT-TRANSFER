@@ -539,7 +539,7 @@
     document.getElementById('helperDownload').href = endpoint('/api/windows-helper');
     gate.style.display = 'none';
     app.style.display = 'block';
-    loadFiles();
+    if (document.querySelector('#tabbar .active')?.dataset.tab === 'files') loadFiles();
   }
   document.getElementById('unlockBtn').addEventListener('click', () => unlock(document.getElementById('codeInput').value, true));
   document.getElementById('codeInput').addEventListener('keydown', (event) => {
@@ -563,10 +563,10 @@
       visibleLimit = PAGE_SIZE;
       grid.innerHTML = '<div class="loading">Loading your library…</div>';
     }
-    const limit = search.value.trim() || currentKind === 'recent' ? MAX_PAGE_SIZE : PAGE_SIZE;
+    const limit = currentKind === 'recent' ? MAX_PAGE_SIZE : PAGE_SIZE;
     try {
       const query = '/api/files?kind=' + encodeURIComponent(currentKind === 'recent' ? 'all' : currentKind) +
-        '&offset=' + nextOffset + '&limit=' + limit;
+        '&offset=' + nextOffset + '&limit=' + limit + '&q=' + encodeURIComponent(search.value.trim());
       const response = await fetch(endpoint(query), {cache:'no-store'});
       if (sequence !== loadSequence) return;
       if (response.status === 403) {
@@ -630,7 +630,8 @@
     if (!shown.length) {
       grid.innerHTML = missingAccessHint() ||
         '<div class="empty"><strong>Nothing here yet</strong>Try another tab or search term.</div>';
-      loadMoreWrap.hidden = true;
+      loadMoreWrap.hidden = !hasMore;
+      loadMoreButton.textContent = 'Load more from phone';
       return;
     }
     const visible = shown.slice(0, visibleLimit);
@@ -704,46 +705,13 @@
       image.src = endpoint(file.preview || file.url);
       return;
     }
-    if (file.kind === 'audio') {
-      // Not every track carries album art; show the note icon when it does not.
-      image.addEventListener('error', () => image.replaceWith(filePlaceholder('audio')), {once:true});
-      return;
-    }
-    // Some phone MediaStore providers do not generate video thumbnails. Ask
-    // the browser for one frame from the original file, using range requests.
-    if (file.kind === 'video' && image.dataset.retried !== 'yes') {
-      image.dataset.retried = 'yes';
-      const preview = document.createElement('video');
-      preview.muted = true;
-      preview.playsInline = true;
-      preview.preload = 'metadata';
-      preview.src = endpoint(file.url);
-      preview.addEventListener('loadedmetadata', () => {
-        try { preview.currentTime = Number.isFinite(preview.duration) ? Math.min(1, Math.max(0, preview.duration / 2)) : 0; }
-        catch (error) { image.replaceWith(filePlaceholder('video')); }
-      }, {once:true});
-      preview.addEventListener('seeked', () => {
-        try {
-          if (!preview.videoWidth || !preview.videoHeight) throw new Error('Video frame is not available');
-          const canvas = document.createElement('canvas');
-          canvas.width = 480;
-          canvas.height = Math.max(1, Math.round(480 * preview.videoHeight / preview.videoWidth));
-          canvas.getContext('2d').drawImage(preview, 0, 0, canvas.width, canvas.height);
-          image.src = canvas.toDataURL('image/jpeg', 0.78);
-        } catch (error) { image.replaceWith(filePlaceholder('video')); }
-        preview.removeAttribute('src');
-        preview.load();
-      }, {once:true});
-      preview.addEventListener('error', () => image.replaceWith(filePlaceholder('video')), {once:true});
-      return;
-    }
     image.replaceWith(filePlaceholder(file.kind));
   }
 
   function filePlaceholder(kind) {
     const placeholder = document.createElement('div');
     placeholder.className = 'file-icon';
-    placeholder.textContent = kind === 'video' ? '▶' : kind === 'image' ? '🖼' : '📄';
+    placeholder.textContent = kind === 'video' ? '▶' : kind === 'image' ? '🖼' : kind === 'audio' ? '♫' : '📄';
     return placeholder;
   }
 
@@ -816,7 +784,7 @@
   loadMoreButton.addEventListener('click', () => {
     const shownCount = files.filter(file => (file.name || '').toLowerCase().includes(search.value.trim().toLowerCase())).length;
     if (visibleLimit < shownCount) { visibleLimit += PAGE_SIZE; renderFiles(); }
-    else loadFiles(false);
+    else { visibleLimit += PAGE_SIZE; loadFiles(false); }
   });
   document.getElementById('sizeFilter').addEventListener('change', renderFiles);
   const layoutToggle = document.getElementById('layoutToggle');
@@ -851,9 +819,10 @@
   function formatTime(seconds) {
     if (!isFinite(seconds) || seconds < 0) seconds = 0;
     const total = Math.floor(seconds);
-    const mins = Math.floor(total / 60);
-    const secs = total % 60;
-    return mins + ':' + String(secs).padStart(2, '0');
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor(total / 60) % 60;
+    const prefix = hours ? hours + ':' + String(minutes).padStart(2, '0') : String(minutes);
+    return prefix + ':' + String(total % 60).padStart(2, '0');
   }
 
   function releaseMedia() {
@@ -1035,6 +1004,13 @@
         }
       });
     }
+    let scrubbing = false;
+    const updateSeekRange = () => {
+      seek.disabled = !Number.isFinite(element.duration) || element.duration <= 0;
+      if (!seek.disabled) seek.max = String(element.duration);
+    };
+    onMedia('durationchange', updateSeekRange);
+    updateSeekRange();
     seek.value = 0;
     timeLabel.textContent = '0:00 / 0:00';
     playPause.textContent = 'Play';
@@ -1069,9 +1045,9 @@
       if (element.paused && element.currentTime === 0) timeLabel.textContent = 'Ready · press Play';
     });
     onMedia('timeupdate', () => {
-      if (needsGesture) return;
+      if (needsGesture || scrubbing) return;
       if (isFinite(element.duration) && element.duration > 0) {
-        seek.value = String(Math.round((element.currentTime / element.duration) * 1000));
+        seek.value = String(Math.round(element.currentTime));
       }
       timeLabel.textContent = formatTime(element.currentTime) + ' / ' + formatTime(element.duration);
     });
@@ -1106,11 +1082,17 @@
       const limit = isFinite(element.duration) ? element.duration : element.currentTime + 10;
       element.currentTime = Math.min(limit, element.currentTime + 10);
     };
+    const scrubTime = () => Math.min(Number(seek.value), element.duration);
     seek.oninput = () => {
-      if (isFinite(element.duration) && element.duration > 0) {
-        element.currentTime = (Number(seek.value) / 1000) * element.duration;
-      }
+      if (!Number.isFinite(element.duration)) return;
+      scrubbing = true;
+      timeLabel.textContent = formatTime(scrubTime()) + ' / ' + formatTime(element.duration);
     };
+    seek.onchange = () => {
+      scrubbing = false;
+      if (Number.isFinite(element.duration)) element.currentTime = scrubTime();
+    };
+    seek.onpointercancel = () => { scrubbing = false; };
     const fsButton = document.getElementById('fullscreen');
     const ratioSelect = document.getElementById('aspectRatio');
     ratioSelect.style.display = kind === 'video' ? 'inline-flex' : 'none';
@@ -1793,6 +1775,7 @@
       if (node) node.hidden = !active.includes(id);
     });
     try { localStorage.setItem('pb_tab', name); } catch (e) {}
+    if (name === 'files' && app.style.display === 'block') loadFiles();
     if (name === 'music' && musicFiles.length === 0) loadMusic();
     if (name === 'chat') {
       refreshMessages();

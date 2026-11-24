@@ -71,6 +71,8 @@ final class MediaHttpServer {
     private final String code;
     private final String token;
     private final MediaRepository media;
+    private static volatile MediaRepository activeLibrary;
+    static MediaRepository activeLibrary() { return activeLibrary; }
     private final VideoCompatibility videoCompatibility;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicInteger badCodes = new AtomicInteger(0);
@@ -129,9 +131,10 @@ final class MediaHttpServer {
     void start() throws Exception {
         // setReuseAddress lets a quick restart rebind the port instead of failing
         // with "Address already in use" while the old socket is still closing.
-        serverSocket = new ServerSocket();
+        serverSocket = java.nio.channels.ServerSocketChannel.open().socket();
         serverSocket.setReuseAddress(true);
         serverSocket.bind(new InetSocketAddress("0.0.0.0", PORT), 24);
+        activeLibrary = media;
         running.set(true);
         acceptThread = new Thread(() -> {
             while (running.get()) {
@@ -139,9 +142,6 @@ final class MediaHttpServer {
                     Socket socket = serverSocket.accept();
                     socket.setSoTimeout(40000);
                     socket.setTcpNoDelay(true);
-                    // Keep screen-stream latency bounded when a phone hotspot is slow.
-                    // A large TCP queue makes the viewer show frames several seconds late.
-                    socket.setSendBufferSize(128 * 1024);
                     openSockets.add(socket);
                     try {
                         clients.execute(() -> handle(socket));
@@ -196,6 +196,7 @@ final class MediaHttpServer {
     int openConnectionCount() { return openSockets.size(); }
 
     void stop() {
+        if (activeLibrary == media) activeLibrary = null;
         running.set(false);
         try { if (serverSocket != null) serverSocket.close(); } catch (Exception ignored) { }
         // Blocking socket I/O ignores thread interrupts, so a playing video or a
@@ -453,7 +454,7 @@ final class MediaHttpServer {
                 respond(output, 201, "application/json; charset=utf-8", "{\"ok\":true}", null);
                 return;
             }
-            if (path.startsWith("/api/inbox/") && method.equals("GET")) {
+            if (path.startsWith("/api/inbox/") && (method.equals("GET") || method.equals("HEAD"))) {
                 String id = Uri.decode(path.substring("/api/inbox/".length()));
                 if (id.contains("/") || id.contains("\\") || id.contains("..")) {
                     respond(output, 400, "text/plain", "Invalid file name", null); return;
@@ -463,7 +464,7 @@ final class MediaHttpServer {
                 String receivedName = id.replaceFirst("^[0-9]+-", "");
                 // The real type lets the phone and the laptop open a received photo,
                 // video or PDF directly instead of only offering a download.
-                streamFile(output, method, headers, received, MediaTypeClassifier.mimeType(receivedName, null), receivedName);
+                streamFile(socket, output, method, headers, received, MediaTypeClassifier.mimeType(receivedName, null), receivedName);
                 return;
             }
 
@@ -478,7 +479,7 @@ final class MediaHttpServer {
                     VideoCompatibility.Job job = videoCompatibility.prepare(item);
                     String range = headers.get("range");
                     if (job.done || (range != null && !range.equals("bytes=0-"))) {
-                        streamFile(output, method, headers, job.awaitComplete(), "video/mp4", item.name + ".browser.mp4");
+                        streamFile(socket, output, method, headers, job.awaitComplete(), "video/mp4", item.name + ".browser.mp4");
                     } else if (method.equals("HEAD")) {
                         writeHead(output, 200, "video/mp4", -1, null, null);
                     } else {
@@ -507,9 +508,9 @@ final class MediaHttpServer {
             if (path.equals("/api/files") && method.equals("GET")) {
                 String kind = target.getQueryParameter("kind");
                 if (kind == null) kind = "all";
-                int offset = queryInt(target, "offset", 0, 0, 20_000);
+                int offset = queryInt(target, "offset", 0, 0, Integer.MAX_VALUE);
                 int limit = queryInt(target, "limit", 120, 1, 5_000);
-                MediaRepository.Page page = media.listPage(kind, offset, limit);
+                MediaRepository.Page page = media.listPage(kind, offset, limit, target.getQueryParameter("q"));
                 JSONObject response = new JSONObject()
                         .put("files", media.listJson(page))
                         .put("nextOffset", page.nextOffset)
@@ -550,7 +551,7 @@ final class MediaHttpServer {
                 String key = Uri.decode(path.substring("/api/media/".length()));
                 MediaRepository.Item item = media.find(key);
                 if (item == null) { respond(output, 404, "text/plain", "Media not found or permission is missing", null); return; }
-                streamMedia(output, method, headers, item);
+                streamMedia(socket, output, method, headers, item);
                 return;
             }
             if (path.equals("/api/screen/status") && method.equals("GET")) {
@@ -961,7 +962,7 @@ final class MediaHttpServer {
         }
     }
 
-    private void streamMedia(OutputStream output, String method, Map<String, String> headers, MediaRepository.Item item) throws Exception {
+    private void streamMedia(Socket socket, OutputStream output, String method, Map<String, String> headers, MediaRepository.Item item) throws Exception {
         long total = Math.max(0, item.size);
         if (total == 0) {
             // A provider can expose a readable file but omit its size. Do not
@@ -970,7 +971,7 @@ final class MediaHttpServer {
             writeHead(output, 200, item.mime, -1,
                     "Content-Disposition: inline; filename=\"" + safeName + "\"\r\n", null);
             output.flush();
-            if (!method.equals("HEAD")) copyMediaRange(output, item, 0, Long.MAX_VALUE);
+            if (!method.equals("HEAD")) copyMediaRange(socket, output, item, 0, Long.MAX_VALUE);
             return;
         }
         ByteRange range = ByteRange.parse(headers.get("range"), total);
@@ -989,10 +990,10 @@ final class MediaHttpServer {
         writeHead(output, partial ? 206 : 200, item.mime, length, extra, null);
         output.flush();
         if (method.equals("HEAD") || length == 0) return;
-        copyMediaRange(output, item, start, length);
+        copyMediaRange(socket, output, item, start, length);
     }
 
-    private void streamFile(OutputStream output, String method, Map<String, String> headers, File file,
+    private void streamFile(Socket socket, OutputStream output, String method, Map<String, String> headers, File file,
                             String mime, String downloadName) throws Exception {
         long total = file.length();
         ByteRange range = ByteRange.parse(headers.get("range"), total);
@@ -1008,8 +1009,7 @@ final class MediaHttpServer {
         output.flush();
         if (method.equals("HEAD") || length == 0) return;
         try (FileInputStream input = new FileInputStream(file)) {
-            input.getChannel().position(range.start);
-            copyBytes(input, output, length);
+            sendFileRange(socket, input, output, range.start, length);
         }
     }
 
@@ -1019,6 +1019,7 @@ final class MediaHttpServer {
      * lower frame rate instead of an ever-growing delay.
      */
     private void streamScreen(Socket socket, OutputStream output) throws Exception {
+        socket.setSendBufferSize(128 * 1024);
         // Do not stop/start the MediaProjection capture on viewer connection.
         // Rebuilding its virtual display stalls the first frame on some phones.
         ScreenCaptureService.JpegFrame frame = ScreenCaptureService.awaitJpegFrame(-1, 6000);
@@ -1106,7 +1107,7 @@ final class MediaHttpServer {
         Set<String> used = new HashSet<>();
         for (MediaRepository.Item item : items) {
             zip.putNextEntry(new ZipEntry(uniqueEntryName(item.name, used)));
-            copyMediaRange(zip, item, 0, Long.MAX_VALUE);
+            copyMediaRange(null, zip, item, 0, Long.MAX_VALUE);
             zip.closeEntry();
         }
         zip.finish();
@@ -1125,7 +1126,7 @@ final class MediaHttpServer {
         return candidate;
     }
 
-    private void copyMediaRange(OutputStream output, MediaRepository.Item item, long start, long length) throws Exception {
+    private void copyMediaRange(Socket socket, OutputStream output, MediaRepository.Item item, long start, long length) throws Exception {
         ParcelFileDescriptor descriptor = null;
         FileInputStream file = null;
         try {
@@ -1138,7 +1139,7 @@ final class MediaHttpServer {
                 try { channel.position(start); seekable = true; }
                 catch (IOException notSeekable) { /* provider returned a pipe */ }
                 if (seekable) {
-                    copyBytes(file, output, length);
+                    sendFileRange(socket, file, output, start, length);
                     return;
                 }
             }
@@ -1150,6 +1151,32 @@ final class MediaHttpServer {
             if (fallback == null) return;
             skipFully(fallback, start);
             copyBytes(fallback, output, length);
+        }
+    }
+
+    // Headers are already flushed by the caller. Transfer directly from disk to the
+    // socket when the platform supports it. ZIP and provider pipes use the stream path.
+    private static void sendFileRange(Socket socket, FileInputStream input, OutputStream output,
+                                      long start, long length) throws IOException {
+        FileChannel file = input.getChannel();
+        long position = start;
+        long remaining = length;
+        if (socket != null && socket.getChannel() != null && length != Long.MAX_VALUE) {
+            while (remaining > 0) {
+                long sent;
+                try {
+                    sent = file.transferTo(position, Math.min(remaining, 8L * 1024 * 1024), socket.getChannel());
+                } catch (UnsupportedOperationException unavailable) {
+                    break;
+                }
+                if (sent == 0) break;
+                position += sent;
+                remaining -= sent;
+            }
+        }
+        if (remaining > 0) {
+            file.position(position);
+            copyBytes(input, output, remaining);
         }
     }
 

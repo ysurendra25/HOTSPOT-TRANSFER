@@ -2,20 +2,17 @@ package com.pocketbridge;
 
 import android.Manifest;
 import android.content.ContentUris;
-import android.content.ContentResolver;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
-import android.os.Bundle;
 import android.provider.MediaStore;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 
@@ -80,27 +77,98 @@ final class MediaRepository {
     private final Context context;
     MediaRepository(Context context) { this.context = context.getApplicationContext(); }
 
+    private final java.util.Map<String, Item> picked = new java.util.LinkedHashMap<>();
+
+    void addDocument(Uri uri) throws java.io.IOException {
+        String[] columns = {android.provider.OpenableColumns.DISPLAY_NAME, android.provider.OpenableColumns.SIZE};
+        try (Cursor cursor = context.getContentResolver().query(uri, columns, null, null, null)) {
+            if (cursor == null || !cursor.moveToFirst()) throw new java.io.IOException("Cannot read selected document");
+            String key = "picked:" + java.util.UUID.nameUUIDFromBytes(uri.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            Item item = new Item(key, value(cursor, 0, "File"), context.getContentResolver().getType(uri), "file",
+                    resolveSize(uri, number(cursor, 1)), System.currentTimeMillis() / 1000, uri);
+            synchronized (picked) { picked.put(key, item); }
+        }
+    }
+
     Page listPage(String kind, int offset, int requestedLimit) {
-        int safeOffset = Math.max(0, Math.min(20_000, offset));
-        int limit = Math.max(1, Math.min(5_000, requestedLimit));
-        int queryLimit = Math.min(5_000, safeOffset + limit + 1);
-        // Accept both "image" and "images" (and friends) so the phone UI, the web
-        // page and older callers all land on the same branch.
+        return listPage(kind, offset, requestedLimit, "");
+    }
+
+    Page listPage(String kind, int offset, int requestedLimit, String query) {
         String filter = normalizeKind(kind);
-        List<Item> output = new ArrayList<>();
-        if ("all".equals(filter) || "images".equals(filter)) collect(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image", "image", queryLimit, output);
-        if ("all".equals(filter) || "videos".equals(filter)) collect(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, "video", "video", queryLimit, output);
-        if ("all".equals(filter) || "audio".equals(filter)) collect(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, "audio", "audio", queryLimit, output);
-        if ("all".equals(filter) || "files".equals(filter) || "images".equals(filter)
-                || "videos".equals(filter) || "audio".equals(filter)) collectDocuments(queryLimit, output);
-        if ("images".equals(filter)) output.removeIf(item -> !"image".equals(item.kind));
-        else if ("videos".equals(filter)) output.removeIf(item -> !"video".equals(item.kind));
-        else if ("audio".equals(filter)) output.removeIf(item -> !"audio".equals(item.kind));
-        else if ("files".equals(filter)) output.removeIf(item -> !"file".equals(item.kind));
-        Collections.sort(output, (a, b) -> Long.compare(b.modified, a.modified));
-        int from = Math.min(safeOffset, output.size());
-        int to = Math.min(from + limit, output.size());
-        return new Page(new ArrayList<>(output.subList(from, to)), to, output.size() > to);
+        String term = query == null ? "" : query.trim();
+        String[] projection = {MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME,
+                MediaStore.MediaColumns.MIME_TYPE, MediaStore.MediaColumns.SIZE, MediaStore.MediaColumns.DATE_MODIFIED,
+                MediaStore.Files.FileColumns.MEDIA_TYPE};
+        Uri collection = MediaStore.Files.getContentUri("external");
+        String type = MediaStore.Files.FileColumns.MEDIA_TYPE;
+        // Unclassified files can still be movies or music. Classify those by MIME and extension.
+        String types = "images".equals(filter) ? "0,6,1" : "videos".equals(filter) ? "0,6,3"
+                : "audio".equals(filter) ? "0,6,2" : "files".equals(filter) ? "0,6" : "0,1,2,3,6";
+        String selection = "(" + type + " IS NULL OR " + type + " IN (" + types + "))";
+        String[] args = null;
+        if (!term.isEmpty()) {
+            selection += " AND " + MediaStore.MediaColumns.DISPLAY_NAME + " LIKE ?";
+            // LIKE is a prefilter. The literal comparison below also handles filenames containing % or _.
+            args = new String[]{"%" + term + "%"};
+        }
+        String order = MediaStore.MediaColumns.DATE_MODIFIED + " DESC, " + MediaStore.MediaColumns._ID + " DESC";
+        List<Item> selected = new ArrayList<>();
+        String needle = term.toLowerCase(Locale.ROOT);
+        synchronized (picked) {
+            for (Item item : picked.values()) {
+                if (("all".equals(filter) || normalizeKind(item.kind).equals(filter))
+                        && item.name.toLowerCase(Locale.ROOT).contains(needle)) selected.add(item);
+            }
+        }
+        int start = Math.max(0, offset);
+        int limit = Math.max(1, Math.min(5000, requestedLimit));
+        int first = Math.min(start, selected.size());
+        int count = Math.min(limit, selected.size() - first);
+        List<Item> result = new ArrayList<>(selected.subList(first, first + count));
+        boolean more = selected.size() > first + count;
+        if (!more) {
+            try (Cursor cursor = context.getContentResolver().query(collection, projection, selection, args, order)) {
+                Page mediaPage = readPage(cursor, filter, Math.max(0, start - selected.size()), limit - count, term);
+                result.addAll(mediaPage.items);
+                more = mediaPage.hasMore;
+            } catch (SecurityException denied) {
+                // System-picker grants remain readable when the user denies broad media access.
+            }
+        }
+        return new Page(result, start + result.size(), more);
+    }
+
+    static Page readPage(Cursor cursor, String filter, int offset, int limit, String term) {
+        List<Item> items = new ArrayList<>();
+        int matched = 0;
+        String needle = term.toLowerCase(Locale.ROOT);
+        while (cursor != null && cursor.moveToNext()) {
+            String name = value(cursor, 1, "");
+            if (name.isEmpty() || !name.toLowerCase(Locale.ROOT).contains(needle)) continue;
+            int type = cursor.getInt(5);
+            String prefix;
+            Uri base;
+            switch (type) {
+                case MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE:
+                    prefix = "image"; base = MediaStore.Images.Media.EXTERNAL_CONTENT_URI; break;
+                case MediaStore.Files.FileColumns.MEDIA_TYPE_AUDIO:
+                    prefix = "audio"; base = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI; break;
+                case MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO:
+                    prefix = "video"; base = MediaStore.Video.Media.EXTERNAL_CONTENT_URI; break;
+                default:
+                    prefix = "file"; base = MediaStore.Files.getContentUri("external"); break;
+            }
+            String mime = value(cursor, 2, "");
+            String classified = MediaTypeClassifier.kind(MediaTypeClassifier.mimeType(name, mime), name, prefix);
+            if (!"all".equals(filter) && !normalizeKind(classified).equals(filter)) continue;
+            if (matched++ < offset) continue;
+            if (items.size() == limit) return new Page(items, matched - 1, true);
+            long id = number(cursor, 0);
+            items.add(new Item(prefix + ":" + id, name, mime, classified, number(cursor, 3),
+                    number(cursor, 4), ContentUris.withAppendedId(base, id)));
+        }
+        return new Page(items, matched, false);
     }
 
     /** Maps singular and plural kind names onto the plural form listPage uses. */
@@ -173,6 +241,7 @@ final class MediaRepository {
 
     Item find(String key) {
         if (key == null) return null;
+        if (key.startsWith("picked:")) { synchronized (picked) { return picked.get(key); } }
         int split = key.indexOf(':');
         if (split < 1) return null;
         String type = key.substring(0, split);
@@ -199,66 +268,6 @@ final class MediaRepository {
         JSONArray array = new JSONArray();
         for (Item item : page.items) array.put(item.toJson());
         return array;
-    }
-
-    private void collect(Uri collection, String prefix, String kind, int maxRows, List<Item> output) {
-        String[] projection = {MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME,
-                MediaStore.MediaColumns.MIME_TYPE, MediaStore.MediaColumns.SIZE, MediaStore.MediaColumns.DATE_MODIFIED};
-        try (Cursor cursor = queryPage(collection, projection, null, null, maxRows)) {
-            if (cursor == null) return;
-            int limit = maxRows;
-            while (cursor.moveToNext() && limit-- > 0) {
-                long id = number(cursor, 0);
-                Uri itemUri = ContentUris.withAppendedId(collection, id);
-                String mime = value(cursor, 2, "application/octet-stream");
-                output.add(new Item(prefix + ":" + id, value(cursor, 1, "File"), mime, kind,
-                        resolveSize(itemUri, number(cursor, 3)), number(cursor, 4), itemUri));
-            }
-        } catch (SecurityException ignored) { }
-    }
-
-    /** Non-media files the media store knows about (documents, archives, and so on). */
-    private void collectDocuments(int maxRows, List<Item> output) {
-        Uri collection = MediaStore.Files.getContentUri("external");
-        String[] projection = {MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME,
-                MediaStore.MediaColumns.MIME_TYPE, MediaStore.MediaColumns.SIZE, MediaStore.MediaColumns.DATE_MODIFIED};
-        String selection = MediaStore.Files.FileColumns.MEDIA_TYPE + " IS NULL OR "
-                + MediaStore.Files.FileColumns.MEDIA_TYPE + " = 0 OR "
-                + MediaStore.Files.FileColumns.MEDIA_TYPE + " = " + MediaStore.Files.FileColumns.MEDIA_TYPE_DOCUMENT;
-        try (Cursor cursor = queryPage(collection, projection, selection, null, maxRows)) {
-            if (cursor == null) return;
-            int limit = maxRows;
-            while (cursor.moveToNext() && limit-- > 0) {
-                long id = number(cursor, 0);
-                String name = value(cursor, 1, "File");
-                String mime = value(cursor, 2, "application/octet-stream");
-                // Skip anything that already appears in the photo, video or audio tabs.
-                String providerMime = mime.trim().toLowerCase(Locale.ROOT);
-                if (providerMime.startsWith("image/") || providerMime.startsWith("video/") || providerMime.startsWith("audio/")) continue;
-                Uri itemUri = ContentUris.withAppendedId(collection, id);
-                output.add(new Item("file:" + id, name, mime, "file",
-                        resolveSize(itemUri, number(cursor, 3)), number(cursor, 4), itemUri));
-            }
-        } catch (SecurityException ignored) { }
-    }
-
-    private Cursor queryPage(Uri collection, String[] projection, String selection,
-                             String[] selectionArgs, int limit) {
-        Bundle args = new Bundle();
-        args.putInt(ContentResolver.QUERY_ARG_LIMIT, limit);
-        args.putStringArray(ContentResolver.QUERY_ARG_SORT_COLUMNS,
-                new String[]{MediaStore.MediaColumns.DATE_MODIFIED, MediaStore.MediaColumns._ID});
-        args.putInt(ContentResolver.QUERY_ARG_SORT_DIRECTION, ContentResolver.QUERY_SORT_DIRECTION_DESCENDING);
-        if (selection != null) args.putString(ContentResolver.QUERY_ARG_SQL_SELECTION, selection);
-        if (selectionArgs != null) args.putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, selectionArgs);
-        try {
-            return context.getContentResolver().query(collection, projection, args, null);
-        } catch (IllegalArgumentException unsupportedArgs) {
-            // Some vendor media providers ignore query bundles; retain the older
-            // query path and stop after `limit` rows in collect().
-            return context.getContentResolver().query(collection, projection, selection, selectionArgs,
-                    MediaStore.MediaColumns.DATE_MODIFIED + " DESC");
-        }
     }
 
     private static String value(Cursor cursor, int index, String fallback) {

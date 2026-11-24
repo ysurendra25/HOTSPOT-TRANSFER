@@ -80,6 +80,86 @@ public class ServerFunctionalTest {
         assertEquals(410, send("POST", path + "?code=" + CODE, "{\"action\":\"poll\"}", null).status);
     }
 
+    @Test public void largeMovieSupportsResumingBeyondFourGiB() throws Exception {
+        File inbox = new File(context.getFilesDir(), "received");
+        assertTrue(inbox.mkdirs() || inbox.isDirectory());
+        File movie = new File(inbox, "movie.mkv");
+        long length = 30L * 1024 * 1024 * 1024;
+        byte[] marker = "final frame".getBytes(StandardCharsets.UTF_8);
+        try (java.nio.channels.FileChannel file = java.nio.channels.FileChannel.open(movie.toPath(),
+                java.nio.file.StandardOpenOption.CREATE_NEW, java.nio.file.StandardOpenOption.WRITE,
+                java.nio.file.StandardOpenOption.SPARSE)) {
+            file.position(length - marker.length);
+            file.write(java.nio.ByteBuffer.wrap(marker));
+        }
+        String path = withCode("/api/inbox/movie.mkv");
+        HttpURLConnection head = (HttpURLConnection) new URL(BASE + path).openConnection();
+        try {
+            head.setRequestMethod("HEAD");
+            assertEquals(200, head.getResponseCode());
+            assertEquals(length, head.getContentLengthLong());
+            assertEquals("bytes", head.getHeaderField("Accept-Ranges"));
+        } finally { head.disconnect(); }
+        Response tail = send("GET", path, null, "bytes=" + (length - marker.length) + "-");
+        assertEquals(206, tail.status);
+        assertEquals("final frame", tail.body);
+        assertEquals(416, send("GET", path, null, "bytes=" + length + "-").status);
+    }
+
+    @Test public void libraryPagesBeyondFiveThousandAndFindsUnclassifiedMovies() {
+        try (android.database.MatrixCursor rows = new android.database.MatrixCursor(
+                new String[]{"_id", "_display_name", "mime_type", "_size", "date_modified", "media_type"})) {
+            for (int i = 0; i < 5010; i++)
+                rows.addRow(new Object[]{i, i == 5007 ? "Old movie_1.mkv" : "clip" + i + ".mp4",
+                        "application/octet-stream", 100L, 123L, i == 5007 ? 0 : 3});
+            MediaRepository.Page page = MediaRepository.readPage(rows, "videos", 5006, 2, "");
+            assertEquals(5008, page.nextOffset);
+            assertTrue(page.hasMore);
+            assertEquals("file:5007", page.items.get(1).key);
+            rows.moveToPosition(-1);
+            page = MediaRepository.readPage(rows, "videos", 0, 10, "MOVIE_1");
+            assertEquals(1, page.items.size());
+            assertFalse(page.hasMore);
+            assertEquals("video", page.items.get(0).kind);
+        }
+    }
+
+    @Test public void pickedDocumentIsSearchableAndStreamedFromTheOriginal() throws Exception {
+        File document = new File(context.getCacheDir(), "picker-test.mkv");
+        java.nio.file.Files.write(document.toPath(), "movie-bytes".getBytes(StandardCharsets.UTF_8));
+        android.net.Uri uri = android.net.Uri.parse("content://pocketbridge-test/document/23");
+        android.content.ContentProvider provider = new android.content.ContentProvider() {
+            @Override public boolean onCreate() { return true; }
+            @Override public String getType(android.net.Uri target) { return "application/octet-stream"; }
+            @Override public android.database.Cursor query(android.net.Uri target, String[] columns,
+                    String where, String[] args, String order) {
+                android.database.MatrixCursor rows = new android.database.MatrixCursor(columns);
+                rows.addRow(new Object[]{"Picked Movie.mkv", document.length()});
+                return rows;
+            }
+            @Override public android.os.ParcelFileDescriptor openFile(android.net.Uri target, String mode)
+                    throws java.io.FileNotFoundException {
+                return android.os.ParcelFileDescriptor.open(document, android.os.ParcelFileDescriptor.MODE_READ_ONLY);
+            }
+            @Override public android.net.Uri insert(android.net.Uri target, android.content.ContentValues values) { throw new UnsupportedOperationException(); }
+            @Override public int update(android.net.Uri target, android.content.ContentValues v, String w, String[] a) { throw new UnsupportedOperationException(); }
+            @Override public int delete(android.net.Uri target, String w, String[] a) { throw new UnsupportedOperationException(); }
+        };
+        android.content.pm.ProviderInfo info = new android.content.pm.ProviderInfo();
+        info.authority = uri.getAuthority();
+        provider.attachInfo(context, info);
+        org.robolectric.shadows.ShadowContentResolver.registerProviderInternal(info.authority, provider);
+        MediaHttpServer.activeLibrary().addDocument(uri);
+        Response found = send("GET", withCode("/api/files?kind=videos&q=picked"), null, null);
+        assertEquals(200, found.status);
+        org.json.JSONObject item = new org.json.JSONObject(found.body).getJSONArray("files").getJSONObject(0);
+        assertEquals("Picked Movie.mkv", item.getString("name"));
+        assertEquals("video", item.getString("kind"));
+        Response range = send("GET", withCode(item.getString("url")), null, "bytes=6-10");
+        assertEquals(206, range.status);
+        assertEquals("bytes", range.body);
+    }
+
     private MediaHttpServer server;
     private Context context;
 

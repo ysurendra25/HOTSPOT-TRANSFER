@@ -20,7 +20,7 @@ const browserJS = await source(app + 'laptop-cast.js');
 const cameraJS = await source(app + 'camera-launch.js');
 const viewerPage = await source(app + 'watch-laptop.html');
 const clips = new Map();
-for (const name of ['landscape','portrait']) clips.set(name, await readFile(new URL('tools/fixtures/' + name + '.webm', root)));
+for (const name of ['landscape','portrait','long-film']) clips.set(name, await readFile(new URL('tools/fixtures/' + name + '.webm', root)));
 
 async function serve(handler) {
   const server = http.createServer(async (req, res) => {

@@ -38,6 +38,8 @@ import org.json.JSONObject;
 public final class MainActivity extends Activity {
     private static final int REQUEST_PERMISSIONS = 40;
     private static final int REQUEST_SCREEN_CAPTURE = 41;
+    private static final int REQUEST_LIBRARY_FILES = 49;
+    private MediaRepository pickerLibrary;
     private static final int REQUEST_SEND_FILE = 42;
     private static final int REQUEST_QR_SEND_FILE = 43;
     private static final int REQUEST_QR_RECEIVE_SAVE = 45;
@@ -137,7 +139,11 @@ public final class MainActivity extends Activity {
                       + "\nPassword  " + valueOr(password, "…")
                       + (address.isEmpty() ? "" : "\nPhone address  " + address)
                     : "Pick a mode below to see what the laptop should join.");
-            linkText.setText(url == null || url.isEmpty() ? "The link appears here when sharing starts." : url);
+            boolean waitingForHotspotLink = ShareSessionService.MODE_HOTSPOT.equals(mode) && code != null && !code.isEmpty();
+            String waitingLink = waitingForHotspotLink
+                    ? "On the connected laptop, run ipconfig. In Edge enter http:// followed by the Wi-Fi IPv4 Default Gateway and :43117."
+                    : "The link appears here when sharing starts.";
+            linkText.setText(url == null || url.isEmpty() ? waitingLink : url);
             codeText.setText(code == null || code.isEmpty() ? "— — — — — —" : code);
             modeText.setText(mode == null || mode.isEmpty() ? "Not sharing" : mode);
             sharing = url != null && !url.isEmpty();
@@ -374,8 +380,19 @@ public final class MainActivity extends Activity {
         content.addView(copyButton, copyGap);
 
         Button sendFromPhone = button("Choose a file to send to laptop", COLOR_GREEN);
-        sendFromPhone.setOnClickListener(v -> choosePhoneFileForLaptop());
+        sendFromPhone.setOnClickListener(v -> choosePhoneFiles(REQUEST_SEND_FILE));
         content.addView(sendFromPhone, matchWrap());
+
+        Button shareInFiles = button("Add files to Edge for this session", COLOR_GREEN);
+        shareInFiles.setOnClickListener(v -> {
+            pickerLibrary = MediaHttpServer.activeLibrary();
+            if (pickerLibrary == null) {
+                Toast.makeText(this, "Start Wi-Fi or hotspot sharing first.", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            choosePhoneFiles(REQUEST_LIBRARY_FILES);
+        });
+        content.addView(shareInFiles, matchWrap());
 
         LinearLayout qrCard = new LinearLayout(this);
         qrCard.setOrientation(LinearLayout.VERTICAL);
@@ -1523,7 +1540,7 @@ public final class MainActivity extends Activity {
 
         Button attach = button("＋ Share a photo, video or file", COLOR_SOFT);
         attach.setTextColor(COLOR_INK);
-        attach.setOnClickListener(v -> choosePhoneFileForLaptop());
+        attach.setOnClickListener(v -> choosePhoneFiles(REQUEST_SEND_FILE));
         LinearLayout.LayoutParams attachGap = matchWrap();
         attachGap.topMargin = dp(8);
         parent.addView(attach, attachGap);
@@ -1770,12 +1787,12 @@ public final class MainActivity extends Activity {
         });
     }
 
-    private void choosePhoneFileForLaptop() {
+    private void choosePhoneFiles(int request) {
         Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         picker.setType("*/*");
         picker.addCategory(Intent.CATEGORY_OPENABLE);
         picker.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
-        try { startActivityForResult(picker, REQUEST_SEND_FILE); }
+        try { startActivityForResult(picker, request); }
         catch (Exception error) { Toast.makeText(this, "Could not open the file picker.", Toast.LENGTH_SHORT).show(); }
     }
 
@@ -2138,7 +2155,7 @@ public final class MainActivity extends Activity {
             pendingQrMime = null;
             return;
         }
-        if (requestCode == REQUEST_SEND_FILE) {
+        if (requestCode == REQUEST_SEND_FILE || requestCode == REQUEST_LIBRARY_FILES) {
             if (resultCode == RESULT_OK && data != null) {
                 List<android.net.Uri> selected = new ArrayList<>();
                 android.content.ClipData clip = data.getClipData();
@@ -2148,6 +2165,24 @@ public final class MainActivity extends Activity {
                         if (uri != null) selected.add(uri);
                     }
                 } else if (data.getData() != null) selected.add(data.getData());
+                if (requestCode == REQUEST_LIBRARY_FILES) {
+                    MediaRepository library = pickerLibrary;
+                    pickerLibrary = null;
+                    if (library == null || library != MediaHttpServer.activeLibrary()) {
+                        Toast.makeText(this, "The session changed. Select the files again.", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    phoneUploadQueue.execute(() -> {
+                        int added = 0;
+                        for (android.net.Uri uri : selected) {
+                            try { library.addDocument(uri); added++; }
+                            catch (Exception unavailable) { android.util.Log.w("PocketBridge", "Selected document unavailable", unavailable); }
+                        }
+                        String result = added + " of " + selected.size() + " available. Open Files in Edge.";
+                        runOnUiThread(() -> Toast.makeText(this, result, Toast.LENGTH_LONG).show());
+                    });
+                    return;
+                }
                 for (android.net.Uri uri : selected) savePhoneFileForLaptop(uri);
                 if (selected.size() > 1) Toast.makeText(this, "Queued " + selected.size() + " files in order.", Toast.LENGTH_SHORT).show();
             }
