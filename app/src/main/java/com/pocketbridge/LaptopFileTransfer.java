@@ -20,6 +20,11 @@ final class LaptopFileTransfer {
     private LaptopFileTransfer() { }
 
     static File download(Context context, String url, File inbox, String requestedName, long listedSize) throws IOException {
+        return download(context, url, inbox, requestedName, listedSize, null);
+    }
+
+    static File download(Context context, String url, File inbox, String requestedName, long listedSize,
+                         DownloadPublisher.Progress progress) throws IOException {
         if (!inbox.exists() && !inbox.mkdirs()) throw new IOException("Could not create the phone's receive folder.");
         String name = safeName(requestedName);
         File target = new File(inbox, System.currentTimeMillis() + "-" + name);
@@ -55,6 +60,7 @@ final class LaptopFileTransfer {
                 while ((read = input.read(buffer)) != -1) {
                     output.write(buffer, 0, read);
                     copied += read;
+                    if (progress != null) progress.update(copied, expected);
                     if (expected >= 0 && copied > expected) throw new IOException("The laptop sent more bytes than the file listing reported.");
                 }
                 output.getFD().sync();

@@ -515,6 +515,49 @@
     if (hasToken) return path + sep + 'token=' + encodeURIComponent(TOKEN);
     return path + sep + 'code=' + encodeURIComponent(code);
   }
+  // Download buttons ask the phone for Content-Disposition: attachment, so Edge
+  // saves the file into its Downloads list instead of opening it in a tab.
+  function downloadEndpoint(path) {
+    return endpoint(path + (path.includes('?') ? '&' : '?') + 'download=1');
+  }
+  function startDownload(url, name) {
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = name || '';
+    link.rel = 'noopener';
+    document.body.appendChild(link); link.click(); link.remove();
+  }
+  // Same rules as ChatActions.java: video gets Play, Play in VLC and Download,
+  // music gets Play and Download, anything else gets Open and Download.
+  const VIDEO_EXT = ['mp4','m4v','mov','3gp','3g2','mkv','webm','avi','wmv','flv','ts','mts','m2ts'];
+  const AUDIO_EXT = ['mp3','m4a','aac','ogg','opus','wav','flac','amr','wma'];
+  function chatKindOf(mime, name) {
+    const type = String(mime || '').toLowerCase();
+    if (type.startsWith('video/')) return 'video';
+    if (type.startsWith('audio/')) return 'audio';
+    if (type.startsWith('image/')) return 'file';
+    const text = String(name || '');
+    const ext = text.includes('.') ? text.split('.').pop().toLowerCase() : '';
+    if (VIDEO_EXT.includes(ext)) return 'video';
+    if (AUDIO_EXT.includes(ext)) return 'audio';
+    return 'file';
+  }
+  function chatActionsFor(mime, name) {
+    const kind = chatKindOf(mime, name);
+    if (kind === 'video') return ['play', 'vlc', 'download'];
+    if (kind === 'audio') return ['play', 'download'];
+    return ['open', 'download'];
+  }
+  // VLC on Windows opens .m3u playlists; the playlist points at the phone's stream.
+  function playInVlc(path, name) {
+    const streamUrl = new URL(endpoint(path), location.href).href;
+    const playlist = '#EXTM3U\r\n#EXTINF:-1,' + String(name || 'PocketBridge video').replace(/[\r\n]/g, ' ') + '\r\n' + streamUrl + '\r\n';
+    const blob = new Blob([playlist], {type:'audio/x-mpegurl'});
+    const url = URL.createObjectURL(blob);
+    const base = String(name || 'video').replace(/\.[^.]+$/, '').replace(/[\\/:*?"<>|]/g, '_') || 'video';
+    startDownload(url, base + '.m3u');
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
   const formatSize = (bytes) => {
     if (!bytes) return '0 B';
     const units = ['B','KB','MB','GB'];
@@ -684,7 +727,7 @@
           '<div class="name" title="' + safe(file.name) + '">' + safe(file.name) + '</div>' +
           '<div class="submeta">' + formatSize(file.size) + ' · ' + labelForKind(file.kind) + '</div>' +
           '<div class="actions">' + previewBtn +
-            '<a class="btn btn-outline" href="' + safe(endpoint(file.url)) + '" download="' + safe(file.name) + '">Download</a>' +
+            '<a class="btn btn-outline" href="' + safe(downloadEndpoint(file.url)) + '" download="' + safe(file.name) + '">Download</a>' +
           '</div>' +
         '</div></article>';
     }).join('');
@@ -790,12 +833,7 @@
   document.getElementById('selZip').addEventListener('click', () => {
     if (!selected.size) return;
     const ids = Array.from(selected).slice(0, MAX_ZIP);
-    const link = document.createElement('a');
-    link.href = endpoint('/api/zip?ids=' + encodeURIComponent(ids.join(',')));
-    link.download = 'PocketBridge-files.zip';
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+    startDownload(endpoint('/api/zip?ids=' + encodeURIComponent(ids.join(','))), 'PocketBridge-files.zip');
   });
 
   search.addEventListener('input', () => {
@@ -924,7 +962,7 @@
     document.getElementById('prevItem').style.display = many ? 'inline-flex' : 'none';
     document.getElementById('nextItem').style.display = many ? 'inline-flex' : 'none';
     const original = document.getElementById('origLink');
-    original.href = url;
+    original.href = downloadEndpoint(file.url);
     original.setAttribute('download', file.name);
 
     if (file.kind === 'video') {
@@ -1746,7 +1784,7 @@
       if (!response.ok) throw new Error('Could not load received files');
       const data = await response.json();
       document.getElementById('inboxCount').textContent = (data.files || []).length + ' items';
-      grid.innerHTML = data.files.length ? data.files.map(item => '<article class="card"><div class="meta"><div class="name" title="' + safe(item.name) + '">' + safe(item.name) + '</div><div class="submeta">' + formatSize(item.size) + '</div><a class="btn btn-soft" href="' + endpoint('/api/inbox/' + encodeURIComponent(item.id)) + '" download="' + safe(item.name) + '">Download</a></div></article>').join('') : '<div class="empty"><strong>Inbox is empty</strong>Choose a file above to send it here.</div>';
+      grid.innerHTML = data.files.length ? data.files.map(item => '<article class="card"><div class="meta"><div class="name" title="' + safe(item.name) + '">' + safe(item.name) + '</div><div class="submeta">' + formatSize(item.size) + '</div><a class="btn btn-soft" href="' + safe(downloadEndpoint('/api/inbox/' + encodeURIComponent(item.id))) + '" download="' + safe(item.name) + '">Download</a></div></article>').join('') : '<div class="empty"><strong>Inbox is empty</strong>Choose a file above to send it here.</div>';
     } catch (_) { grid.innerHTML = '<div class="empty">Could not load received files.</div>'; }
   }
   document.getElementById('refreshInbox').addEventListener('click', loadInbox);
@@ -1807,23 +1845,35 @@
           const meta = document.createElement('div'); meta.className = 'chat-file-meta'; meta.textContent = kind + ' · ' + formatSize(Number(attachment.size) || 0);
           details.append(name, meta);
           const actions = document.createElement('div'); actions.className = 'chat-file-actions';
-          const mediaKind = mime.startsWith('image/') ? 'image' : mime.startsWith('video/') ? 'video' : mime.startsWith('audio/') ? 'audio' : '';
-          if (mediaKind) {
-            const play = document.createElement('button'); play.type = 'button'; play.className = 'btn btn-soft';
-            play.textContent = mediaKind === 'image' ? 'View' : 'Play';
-            play.addEventListener('click', () => {
-              viewList = [{id:attachment.id, name:filename, size:Number(attachment.size)||0, mime, kind:mediaKind,
-                url:'/api/inbox/' + encodeURIComponent(attachment.id), allowCompatibility:false}];
-              viewIndex = 0; modal.classList.add('open'); showCurrent();
-            });
-            actions.appendChild(play);
+          const inboxPath = '/api/inbox/' + encodeURIComponent(attachment.id);
+          const mediaKind = mime.startsWith('image/') ? 'image' : chatKindOf(mime, filename);
+          const openInViewer = () => {
+            viewList = [{id:attachment.id, name:filename, size:Number(attachment.size)||0, mime, kind:mediaKind,
+              url:inboxPath, allowCompatibility:false}];
+            viewIndex = 0; modal.classList.add('open'); showCurrent();
+          };
+          for (const action of chatActionsFor(mime, filename)) {
+            const button = document.createElement(action === 'download' ? 'a' : 'button');
+            button.className = 'btn btn-soft';
+            button.dataset.chatAction = action;
+            if (action === 'download') {
+              // A real link with the download attribute: Edge lists it in Downloads.
+              button.href = downloadEndpoint(inboxPath);
+              button.download = filename;
+              button.textContent = 'Download';
+            } else {
+              button.type = 'button';
+              button.textContent = action === 'play' ? 'Play' : action === 'vlc' ? 'Play in VLC' : 'Open';
+              if (action === 'vlc') button.title = 'Saves a small .m3u playlist; open it to stream in VLC';
+              button.addEventListener('click', () => {
+                if (action === 'play') openInViewer();
+                else if (action === 'vlc') playInVlc(inboxPath, filename);
+                else if (mediaKind === 'image') openInViewer();
+                else window.open(endpoint(inboxPath), '_blank', 'noopener');
+              });
+            }
+            actions.appendChild(button);
           }
-          const download = document.createElement('button');
-          download.type = 'button';
-          download.className = 'btn btn-soft';
-          download.textContent = 'Download';
-          download.addEventListener('click', () => downloadChatAttachment(attachment));
-          actions.appendChild(download);
           file.append(icon, details, actions);
           row.appendChild(file);
         }
@@ -1833,12 +1883,6 @@
       if (chatVisible) target.scrollTop = wasNearBottom ? target.scrollHeight : previousTop;
       else chatNeedsBottomScroll = true;
     } catch (_) { }
-  }
-  function downloadChatAttachment(attachment) {
-    const link = document.createElement('a');
-    link.href = endpoint('/api/inbox/' + encodeURIComponent(attachment.id));
-    link.download = attachment.name || 'shared-file';
-    document.body.appendChild(link); link.click(); link.remove();
   }
   document.getElementById('sendMessage').addEventListener('click', async () => {
     const input = document.getElementById('chatInput');

@@ -154,8 +154,33 @@ public final class MainActivity extends Activity {
             hotspotButton.setEnabled(!active);
             stopButton.setEnabled(active);
             copyButton.setEnabled(sharing);
+            updateBandHint(active && ShareSessionService.MODE_HOTSPOT.equals(mode));
         }
     };
+
+    private LinearLayout bandHintBox;
+    private TextView bandHintText;
+
+    /** Shows the 5 GHz hint in Connect while sharing over the phone hotspot. */
+    private void updateBandHint(boolean hotspotMode) {
+        if (bandHintBox == null) return;
+        int band = HotspotBand.localHotspotBand;
+        if (hotspotMode && band == HotspotBand.UNKNOWN) band = HotspotBand.detectTethered(this);
+        HotspotBand.Hint hint = HotspotBand.hint(band, hotspotMode, HotspotBand.supports5Ghz(this));
+        View card = (View) bandHintBox.getParent();
+        if (card != null) card.setVisibility(hint == HotspotBand.Hint.NONE ? View.GONE : View.VISIBLE);
+        bandHintText.setText(HotspotBand.message(hint));
+    }
+
+    private void openHotspotSettings() {
+        for (Intent intent : HotspotBand.settingsIntents()) {
+            try {
+                startActivity(intent);
+                return;
+            } catch (Exception unavailable) { /* try the next settings screen */ }
+        }
+        Toast.makeText(this, "Open Settings, then Hotspot, and set the band to 5 GHz.", Toast.LENGTH_LONG).show();
+    }
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -340,6 +365,25 @@ public final class MainActivity extends Activity {
         networkText.setTextSize(15);
         networkText.setLineSpacing(dp(5), 1f);
         addCard(content, "ON THE LAPTOP, JOIN", networkText);
+
+        // 5 GHz hint: apps cannot choose the hotspot band, so point the user to it.
+        bandHintBox = new LinearLayout(this);
+        bandHintBox.setOrientation(LinearLayout.VERTICAL);
+        bandHintText = new TextView(this);
+        bandHintText.setTextColor(COLOR_INK);
+        bandHintText.setTextSize(13);
+        bandHintText.setLineSpacing(dp(3), 1f);
+        bandHintBox.addView(bandHintText);
+        Button bandSettings = button("Open hotspot settings", COLOR_SOFT);
+        bandSettings.setTextColor(COLOR_INK);
+        bandSettings.setTextSize(13);
+        bandSettings.setMinHeight(dp(44));
+        bandSettings.setOnClickListener(v -> openHotspotSettings());
+        LinearLayout.LayoutParams bandButtonLp = matchWrap();
+        bandButtonLp.topMargin = dp(8);
+        bandHintBox.addView(bandSettings, bandButtonLp);
+        addCard(content, "HOTSPOT SPEED", bandHintBox);
+        updateBandHint(false);
 
         linkText = new TextView(this);
         linkText.setText("The link appears here when sharing starts.");
@@ -1455,10 +1499,10 @@ public final class MainActivity extends Activity {
             boolean ready = currentHelper != null || (relative.startsWith("/api/edge-media/") && MediaHttpServer.activeEdgeFiles != null);
             boolean downloading = laptopDownloadsInProgress.contains(url);
             boolean downloaded = laptopDownloadsComplete.contains(url);
-            download.setText(local ? "Save a copy" : downloading ? "Downloading…" : downloaded ? "Saved in chat" : "Download to phone");
+            download.setText(local ? "Save to Downloads" : downloading ? "Downloading…" : downloaded ? "Saved to Downloads" : "Download to phone");
             download.setEnabled(local || (ready && !downloading));
             download.setOnClickListener(view -> {
-                if (local) { requestSaveChatAttachment(item); return; }
+                if (local) { saveChatAttachmentToDownloads(item); return; }
                 if (ready && laptopDownloadsInProgress.add(url)) {
                     notifyDataSetChanged();
                     downloadLaptopFile(url, name, item.optLong("size", -1));
@@ -1492,23 +1536,39 @@ public final class MainActivity extends Activity {
     private void downloadLaptopFile(String url, String name, long listedSize) {
         background.execute(() -> {
             java.io.File received = null;
+            DownloadPublisher.Notifier notifier = new DownloadPublisher.Notifier(this, LaptopFileTransfer.safeName(name));
+            notifier.stage("Downloading");
             try {
                 received = LaptopFileTransfer.download(this, url,
-                        new java.io.File(getFilesDir(), "received"), name, listedSize);
+                        new java.io.File(getFilesDir(), "received"), name, listedSize, notifier);
                 long bytes = received.length();
                 ChatStore.appendFile(this, LaptopFileTransfer.safeName(name), received.getName(), bytes, "laptop");
+                // The chat keeps its own copy for the laptop page; the user's copy goes to
+                // system Downloads so it shows in Files and the Downloads list.
+                String mime = MediaTypeClassifier.mimeType(name, null);
+                String savedWhere;
+                try {
+                    android.net.Uri saved = DownloadPublisher.publish(this, received, name, mime, notifier.stage("Saving"));
+                    notifier.done(saved, mime);
+                    savedWhere = "Saved to Downloads and added to Share chat.";
+                } catch (Exception notPublished) {
+                    notifier.failed(valueOr(notPublished.getMessage(), "Could not add it to Downloads."));
+                    savedWhere = "Saved in Share chat, but not in Downloads: " + valueOr(notPublished.getMessage(), "storage error");
+                }
+                final String result = savedWhere;
                 laptopDownloadsInProgress.remove(url);
                 laptopDownloadsComplete.add(url);
                 runOnUiThread(() -> {
                     if (laptopFileAdapter != null) laptopFileAdapter.notifyDataSetChanged();
                     if (edgeAdapter != null) edgeAdapter.notifyDataSetChanged();
-                    Toast.makeText(this, "Saved on this phone and added to Share chat.", Toast.LENGTH_LONG).show();
+                    Toast.makeText(this, result, Toast.LENGTH_LONG).show();
                     showTab(3);
                 });
             } catch (Exception error) {
                 if (received != null) { /*noinspection ResultOfMethodCallIgnored*/ received.delete(); }
                 laptopDownloadsInProgress.remove(url);
                 String message = error.getMessage() == null ? "Could not download this laptop file." : error.getMessage();
+                notifier.failed(message);
                 runOnUiThread(() -> {
                     if (laptopFileAdapter != null) laptopFileAdapter.notifyDataSetChanged();
                     if (edgeAdapter != null) edgeAdapter.notifyDataSetChanged();
@@ -1791,25 +1851,30 @@ public final class MainActivity extends Activity {
                 LinearLayout.LayoutParams fileNameLp = matchWrap();
                 fileNameLp.topMargin = dp(3);
                 fileCard.addView(fileName, fileNameLp);
-                TextView action = new TextView(this);
-                action.setText(mime.startsWith("video/") ? "Tap to choose a player  ›" : "Tap to open  ›");
-                action.setTextSize(12);
-                action.setTextColor(COLOR_MUTED);
-                LinearLayout.LayoutParams actionLp = matchWrap();
-                actionLp.topMargin = dp(3);
-                fileCard.addView(action, actionLp);
-                Button saveFile = button("Download to phone", COLOR_SOFT);
-                saveFile.setTextColor(COLOR_INK);
-                saveFile.setTextSize(12);
-                saveFile.setMinHeight(dp(40));
-                LinearLayout.LayoutParams saveLp = matchWrap();
-                saveLp.topMargin = dp(5);
-                fileCard.addView(saveFile, saveLp);
-                saveFile.setOnClickListener(v -> requestSaveChatAttachment(attachment));
+                // Buttons by type (see ChatActions): video Play / Play in VLC / Download,
+                // music Play / Download, anything else Open / Download.
+                LinearLayout actionRow = new LinearLayout(this);
+                actionRow.setOrientation(LinearLayout.HORIZONTAL);
+                List<ChatActions.Action> actions = ChatActions.forFile(mime, name);
+                for (int a = 0; a < actions.size(); a++) {
+                    ChatActions.Action chatAction = actions.get(a);
+                    Button actionButton = button(ChatActions.label(chatAction),
+                            chatAction == ChatActions.Action.DOWNLOAD ? COLOR_GREEN : COLOR_SOFT);
+                    if (chatAction != ChatActions.Action.DOWNLOAD) actionButton.setTextColor(COLOR_INK);
+                    actionButton.setTextSize(12);
+                    actionButton.setMinHeight(dp(40));
+                    actionButton.setPadding(dp(4), 0, dp(4), 0);
+                    actionButton.setOnClickListener(v -> runChatAction(chatAction, attachment));
+                    LinearLayout.LayoutParams actionLp = new LinearLayout.LayoutParams(0, -2, 1f);
+                    if (a > 0) actionLp.leftMargin = dp(6);
+                    actionRow.addView(actionButton, actionLp);
+                }
+                LinearLayout.LayoutParams actionRowLp = matchWrap();
+                actionRowLp.topMargin = dp(6);
+                fileCard.addView(actionRow, actionRowLp);
                 LinearLayout.LayoutParams fileLp = matchWrap();
                 fileLp.topMargin = dp(7);
                 row.addView(fileCard, fileLp);
-                fileCard.setOnClickListener(v -> openChatAttachment(attachment));
             }
             row.setPadding(dp(12), dp(10), dp(12), dp(10));
             android.graphics.drawable.GradientDrawable bubble = new android.graphics.drawable.GradientDrawable();
@@ -1837,11 +1902,87 @@ public final class MainActivity extends Activity {
             if (newLaptopFileNames.size() > 4) names.append("\n… and ").append(newLaptopFileNames.size() - 4).append(" more");
             new android.app.AlertDialog.Builder(this)
                     .setTitle(newLaptopFileNames.size() == 1 ? "File received in chat" : newLaptopFileNames.size() + " files received in chat")
-                    .setMessage("From the laptop:\n" + names + "\n\nChoose a file in the chat to open it, or tap Download to phone to save a copy.")
+                    .setMessage("From the laptop:\n" + names + "\n\nUse the buttons on a file in the chat to play or open it, or tap Download to save it in Downloads.")
                     .setNegativeButton("Later", null)
                     .setPositiveButton("View chat", null)
                     .show();
         }
+    }
+
+    private void runChatAction(ChatActions.Action action, JSONObject attachment) {
+        String id = attachment.optString("id", "");
+        if (!EdgeInbox.validId(id)) {
+            Toast.makeText(this, "This chat file has an invalid local name.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        String name = attachment.optString("name", EdgeInbox.name(id));
+        String mime = ChatActions.playerMime(attachment.optString("mime", ""), name);
+        android.net.Uri uri = receivedUri(id);
+        switch (action) {
+            case PLAY:
+                openVideoWithChoice(uri, mime, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                break;
+            case PLAY_IN_VLC:
+                playInVlc(uri, mime);
+                break;
+            case DOWNLOAD:
+                saveChatAttachmentToDownloads(attachment);
+                break;
+            default:
+                openChatAttachment(attachment);
+        }
+    }
+
+    private android.net.Uri receivedUri(String id) {
+        return new android.net.Uri.Builder().scheme("content")
+                .authority(getPackageName() + ".received").appendPath(id).build();
+    }
+
+    /** Sends the stream to VLC; without VLC installed, Android's chooser offers any player. */
+    private void playInVlc(android.net.Uri stream, String mime) {
+        Intent vlc = new Intent(Intent.ACTION_VIEW).setDataAndType(stream, mime)
+                .setPackage(ChatActions.VLC_PACKAGE)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try {
+            startActivity(vlc);
+        } catch (android.content.ActivityNotFoundException noVlc) {
+            Toast.makeText(this, "VLC is not installed. Choose another player.", Toast.LENGTH_SHORT).show();
+            openVideoWithChoice(stream, mime, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        }
+    }
+
+    /** Copies a chat file into system Downloads with a progress notification. */
+    private void saveChatAttachmentToDownloads(JSONObject attachment) {
+        String id = attachment.optString("id", "");
+        java.io.File inbox = new java.io.File(getFilesDir(), "received");
+        java.io.File source = new java.io.File(inbox, id);
+        String name = attachment.optString("name", EdgeInbox.name(id));
+        String mime = MediaTypeClassifier.mimeType(name, attachment.optString("mime", ""));
+        try {
+            if (!EdgeInbox.validId(id) || !source.getCanonicalFile().getParentFile().equals(inbox.getCanonicalFile()) || !source.isFile()) {
+                throw new java.io.IOException("The received file is no longer available.");
+            }
+        } catch (Exception error) {
+            Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show();
+            return;
+        }
+        Toast.makeText(this, "Saving " + name + " to Downloads…", Toast.LENGTH_SHORT).show();
+        background.execute(() -> {
+            DownloadPublisher.Notifier notifier = new DownloadPublisher.Notifier(this, LaptopFileTransfer.safeName(name));
+            try {
+                android.net.Uri saved = DownloadPublisher.publish(this, source, name, mime, notifier.stage("Saving"));
+                notifier.done(saved, mime);
+                runOnUiThread(() -> Toast.makeText(this, "Saved " + name + " to Downloads", Toast.LENGTH_LONG).show());
+            } catch (Exception error) {
+                String message = valueOr(error.getMessage(), "Could not save to Downloads.");
+                notifier.failed(message);
+                // Last resort: let the user pick a folder themselves.
+                runOnUiThread(() -> {
+                    Toast.makeText(this, message + " Choose where to save it instead.", Toast.LENGTH_LONG).show();
+                    requestSaveChatAttachment(attachment);
+                });
+            }
+        });
     }
 
     private void requestSaveChatAttachment(JSONObject attachment) {

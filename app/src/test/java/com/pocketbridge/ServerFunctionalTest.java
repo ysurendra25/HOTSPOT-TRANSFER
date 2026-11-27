@@ -160,6 +160,81 @@ public class ServerFunctionalTest {
         assertEquals("bytes", range.body);
     }
 
+    /** Registers a one-file document provider and returns the library item for it. */
+    private org.json.JSONObject pickDocument(String authority, String name, byte[] bytes) throws Exception {
+        File document = new File(context.getCacheDir(), authority + ".bin");
+        java.nio.file.Files.write(document.toPath(), bytes);
+        android.net.Uri uri = android.net.Uri.parse("content://" + authority + "/document/1");
+        android.content.ContentProvider provider = new android.content.ContentProvider() {
+            @Override public boolean onCreate() { return true; }
+            @Override public String getType(android.net.Uri target) { return "application/octet-stream"; }
+            @Override public android.database.Cursor query(android.net.Uri target, String[] columns,
+                    String where, String[] args, String order) {
+                android.database.MatrixCursor rows = new android.database.MatrixCursor(columns);
+                rows.addRow(new Object[]{name, document.length()});
+                return rows;
+            }
+            @Override public android.os.ParcelFileDescriptor openFile(android.net.Uri target, String mode)
+                    throws java.io.FileNotFoundException {
+                return android.os.ParcelFileDescriptor.open(document, android.os.ParcelFileDescriptor.MODE_READ_ONLY);
+            }
+            @Override public android.net.Uri insert(android.net.Uri target, android.content.ContentValues values) { throw new UnsupportedOperationException(); }
+            @Override public int update(android.net.Uri target, android.content.ContentValues v, String w, String[] a) { throw new UnsupportedOperationException(); }
+            @Override public int delete(android.net.Uri target, String w, String[] a) { throw new UnsupportedOperationException(); }
+        };
+        android.content.pm.ProviderInfo info = new android.content.pm.ProviderInfo();
+        info.authority = authority;
+        provider.attachInfo(context, info);
+        org.robolectric.shadows.ShadowContentResolver.registerProviderInternal(authority, provider);
+        MediaHttpServer.activeLibrary().addDocument(uri);
+        Response found = send("GET", withCode("/api/files?kind=all&q=" + java.net.URLEncoder.encode(name.substring(0, 4), "UTF-8")), null, null);
+        assertEquals(200, found.status);
+        org.json.JSONArray files = new org.json.JSONObject(found.body).getJSONArray("files");
+        for (int i = 0; i < files.length(); i++) if (name.equals(files.getJSONObject(i).getString("name"))) return files.getJSONObject(i);
+        throw new AssertionError("picked document not listed: " + found.body);
+    }
+
+    @Test public void downloadQueryMakesMediaAnAttachmentWithAUtf8Name() throws Exception {
+        org.json.JSONObject item = pickDocument("pocketbridge-dl", "Résumé clip.mp4", "0123456789".getBytes(StandardCharsets.UTF_8));
+        HttpURLConnection play = (HttpURLConnection) new URL(BASE + withCode(item.getString("url"))).openConnection();
+        try {
+            assertEquals(200, play.getResponseCode());
+            assertTrue(play.getHeaderField("Content-Disposition").startsWith("inline; "));
+        } finally { play.disconnect(); }
+        HttpURLConnection save = (HttpURLConnection) new URL(BASE + withCode(item.getString("url") + "?download=1")).openConnection();
+        try {
+            assertEquals(200, save.getResponseCode());
+            assertEquals("attachment; filename=\"R_sum_ clip.mp4\"; filename*=UTF-8''R%C3%A9sum%C3%A9%20clip.mp4",
+                    save.getHeaderField("Content-Disposition"));
+            assertEquals(10, save.getContentLengthLong());
+            assertEquals("bytes", save.getHeaderField("Accept-Ranges"));
+            assertNotNull("resumable downloads need a validator", save.getHeaderField("ETag"));
+        } finally { save.disconnect(); }
+        Response resumed = send("GET", withCode(item.getString("url") + "?download=1"), null, "bytes=4-");
+        assertEquals(206, resumed.status);
+        assertEquals("456789", resumed.body);
+    }
+
+    @Test public void zipOfKnownSizesSendsContentLengthAndOpens() throws Exception {
+        org.json.JSONObject first = pickDocument("pocketbridge-zip1", "Zipone.txt", "first file".getBytes(StandardCharsets.UTF_8));
+        org.json.JSONObject second = pickDocument("pocketbridge-zip2", "Ziptwo.txt", "second".getBytes(StandardCharsets.UTF_8));
+        String ids = java.net.URLEncoder.encode(first.getString("id") + "," + second.getString("id"), "UTF-8");
+        HttpURLConnection zip = (HttpURLConnection) new URL(BASE + withCode("/api/zip?ids=" + ids)).openConnection();
+        byte[] body;
+        try {
+            assertEquals(200, zip.getResponseCode());
+            assertTrue(zip.getHeaderField("Content-Disposition").startsWith("attachment; filename=\"PocketBridge-files.zip\""));
+            try (InputStream in = zip.getInputStream()) { body = in.readAllBytes(); }
+            assertEquals(body.length, zip.getContentLengthLong());
+        } finally { zip.disconnect(); }
+        File out = new File(context.getCacheDir(), "downloaded.zip");
+        java.nio.file.Files.write(out.toPath(), body);
+        try (java.util.zip.ZipFile archive = new java.util.zip.ZipFile(out)) {
+            assertEquals("first file", new String(archive.getInputStream(archive.getEntry("Zipone.txt")).readAllBytes(), StandardCharsets.UTF_8));
+            assertEquals("second", new String(archive.getInputStream(archive.getEntry("Ziptwo.txt")).readAllBytes(), StandardCharsets.UTF_8));
+        }
+    }
+
     @Test public void edgeFolderListsWithoutCopyingAndStreamsTheRequestedMovieBytes() throws Exception {
         String owner = "a".repeat(32), id = "b".repeat(32), second = "c".repeat(32);
         long size = 30L * 1024 * 1024 * 1024;
@@ -469,6 +544,11 @@ public class ServerFunctionalTest {
         assertTrue("a received file is served with its real type so it can open in place",
                 typed.getContentType().startsWith("text/plain"));
         typed.disconnect();
+        HttpURLConnection saved = (HttpURLConnection) new URL(BASE + withCode("/api/inbox/" + id + "?download=1")).openConnection();
+        assertEquals(200, saved.getResponseCode());
+        assertEquals("attachment; filename=\"note.txt\"; filename*=UTF-8''note.txt", saved.getHeaderField("Content-Disposition"));
+        assertEquals(content.length(), saved.getContentLengthLong());
+        saved.disconnect();
     }
 
     @Test public void aReceivedFileCanBeSeekedWithRanges() throws Exception {

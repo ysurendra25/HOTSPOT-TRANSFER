@@ -175,6 +175,7 @@ public final class ShareSessionService extends Service {
                 @Override public void onStarted(WifiManager.LocalOnlyHotspotReservation value) {
                     if (generation != sessionGeneration) { value.close(); return; }
                     reservation = value;
+                    HotspotBand.localHotspotBand = HotspotBand.UNKNOWN;
                     starting = false;
                     String ssid = null;
                     String password = null;
@@ -183,12 +184,15 @@ public final class ShareSessionService extends Service {
                         if (config != null) {
                             ssid = config.getSsid();
                             password = config.getPassphrase();
+                            HotspotBand.localHotspotBand = HotspotBand.fromSoftApConfiguration(config);
                         }
                     } else {
                         android.net.wifi.WifiConfiguration config = value.getWifiConfiguration();
                         if (config != null) {
                             ssid = config.SSID;
                             password = config.preSharedKey;
+                            try { HotspotBand.localHotspotBand = HotspotBand.fromLegacyApBand(config.getClass().getField("apBand").getInt(config)); }
+                            catch (Throwable hidden) { HotspotBand.localHotspotBand = HotspotBand.UNKNOWN; }
                         }
                     }
                     currentSsid = ssid == null || ssid.isEmpty() ? "See Android Hotspot settings" : ssid;
@@ -251,6 +255,7 @@ public final class ShareSessionService extends Service {
     }
 
     private void useExistingHotspot(String reason) {
+        if (reservation == null) HotspotBand.localHotspotBand = HotspotBand.UNKNOWN;
         resolveAndPublish(MODE_HOTSPOT, "See your phone’s Hotspot settings", "Use the hotspot password from Settings",
                 reason + " Join the phone’s hotspot from the laptop. If it is off, turn it on in Android Settings.");
     }
@@ -544,6 +549,7 @@ public final class ShareSessionService extends Service {
             try { reservation.close(); } catch (Exception ignored) { }
             reservation = null;
         }
+        HotspotBand.localHotspotBand = HotspotBand.UNKNOWN;
         usingFallback = false;
         currentSsid = null;
         currentPassword = null;

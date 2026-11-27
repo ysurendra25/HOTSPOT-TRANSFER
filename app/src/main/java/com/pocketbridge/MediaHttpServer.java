@@ -22,7 +22,6 @@ import java.nio.channels.FileChannel;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -508,7 +507,8 @@ final class MediaHttpServer {
                 String receivedName = EdgeInbox.name(id);
                 // The real type lets the phone and the laptop open a received photo,
                 // video or PDF directly instead of only offering a download.
-                streamFile(socket, output, method, headers, received, MediaTypeClassifier.mimeType(receivedName, null), receivedName);
+                streamFile(socket, output, method, headers, received, MediaTypeClassifier.mimeType(receivedName, null), receivedName,
+                        DownloadHeaders.wantsDownload(target.getQueryParameter("download")));
                 return;
             }
 
@@ -523,7 +523,7 @@ final class MediaHttpServer {
                     VideoCompatibility.Job job = videoCompatibility.prepare(item);
                     String range = headers.get("range");
                     if (job.done || (range != null && !range.equals("bytes=0-"))) {
-                        streamFile(socket, output, method, headers, job.awaitComplete(), "video/mp4", item.name + ".browser.mp4");
+                        streamFile(socket, output, method, headers, job.awaitComplete(), "video/mp4", item.name + ".browser.mp4", false);
                     } else if (method.equals("HEAD")) {
                         writeHead(output, 200, "video/mp4", -1, null, null);
                     } else {
@@ -595,7 +595,7 @@ final class MediaHttpServer {
                 String key = Uri.decode(path.substring("/api/media/".length()));
                 MediaRepository.Item item = media.find(key);
                 if (item == null) { respond(output, 404, "text/plain", "Media not found or permission is missing", null); return; }
-                streamMedia(socket, output, method, headers, item);
+                streamMedia(socket, output, method, headers, item, DownloadHeaders.wantsDownload(target.getQueryParameter("download")));
                 return;
             }
             // The Windows helper's outbound long-poll (see LaptopRelay): it picks up
@@ -1057,19 +1057,30 @@ final class MediaHttpServer {
         } catch (IOException ended) { /* A phone seek, stopped transfer or closed Edge tab ends this response. */ }
     }
 
-    private void streamMedia(Socket socket, OutputStream output, String method, Map<String, String> headers, MediaRepository.Item item) throws Exception {
+    private void streamMedia(Socket socket, OutputStream output, String method, Map<String, String> headers,
+                             MediaRepository.Item item, boolean download) throws Exception {
+        String disposition = DownloadHeaders.headerLine(item.name, download);
         long total = Math.max(0, item.size);
         if (total == 0) {
-            // A provider can expose a readable file but omit its size. Do not
-            // send Content-Length: 0, which makes video playback fail instantly.
-            String safeName = item.name.replace("\"", "_").replace("\r", "_").replace("\n", "_");
-            writeHead(output, 200, item.mime, -1,
-                    "Content-Disposition: inline; filename=\"" + safeName + "\"\r\n", null);
-            output.flush();
-            if (!method.equals("HEAD")) copyMediaRange(socket, output, item, 0, Long.MAX_VALUE);
-            return;
+            // A provider can expose a readable file but omit its size. Ask the file
+            // itself; a real size gets the normal ranged response below.
+            long known = statSize(item);
+            if (known > 0) total = known;
+            else {
+                // Unknown size: no Content-Length. Sending Content-Length: 0 for a file
+                // that has bytes makes video playback fail instantly. A file that is
+                // really empty does get Content-Length: 0.
+                writeHead(output, 200, item.mime, known == 0 ? 0 : -1,
+                        "Cache-Control: private, max-age=300\r\n" + disposition, null);
+                output.flush();
+                if (!method.equals("HEAD") && known != 0) copyMediaRange(socket, output, item, 0, Long.MAX_VALUE);
+                return;
+            }
         }
-        ByteRange range = ByteRange.parse(headers.get("range"), total);
+        String etag = DownloadHeaders.etag(item.key, total, item.modified);
+        // A stale If-Range (the file changed since the first part) gets the whole file.
+        ByteRange range = ByteRange.parse(DownloadHeaders.ifRangeMatches(headers.get("if-range"), etag)
+                ? headers.get("range") : null, total);
         if (range.unsatisfiable) {
             writeHead(output, 416, "text/plain", 0, "Content-Range: bytes */" + total + "\r\n", null);
             return;
@@ -1077,10 +1088,8 @@ final class MediaHttpServer {
         long start = range.start;
         long end = range.end;
         boolean partial = range.partial;
-        long length = total == 0 ? 0 : end - start + 1;
-        String safeName = item.name.replace("\"", "_").replace("\r", "_").replace("\n", "_");
-        String encodedName = URLEncoder.encode(item.name, "UTF-8").replace("+", "%20");
-        String extra = "Accept-Ranges: bytes\r\nCache-Control: private, max-age=300\r\nContent-Disposition: inline; filename=\"" + safeName + "\"; filename*=UTF-8''" + encodedName + "\r\n";
+        long length = end - start + 1;
+        String extra = "Accept-Ranges: bytes\r\nCache-Control: private, max-age=300\r\nETag: " + etag + "\r\n" + disposition;
         if (partial) extra += "Content-Range: bytes " + start + "-" + end + "/" + total + "\r\n";
         writeHead(output, partial ? 206 : 200, item.mime, length, extra, null);
         output.flush();
@@ -1088,17 +1097,28 @@ final class MediaHttpServer {
         copyMediaRange(socket, output, item, start, length);
     }
 
+    /** The file's real size from its descriptor: -1 when Android cannot tell, 0 when empty. */
+    private long statSize(MediaRepository.Item item) {
+        try (ParcelFileDescriptor descriptor = context.getContentResolver().openFileDescriptor(item.uri, "r")) {
+            return descriptor == null ? -1 : descriptor.getStatSize();
+        } catch (Exception unavailable) {
+            return -1;
+        }
+    }
+
     private void streamFile(Socket socket, OutputStream output, String method, Map<String, String> headers, File file,
-                            String mime, String downloadName) throws Exception {
+                            String mime, String downloadName, boolean download) throws Exception {
         long total = file.length();
-        ByteRange range = ByteRange.parse(headers.get("range"), total);
+        String etag = DownloadHeaders.etag(file.getName(), total, file.lastModified());
+        ByteRange range = ByteRange.parse(DownloadHeaders.ifRangeMatches(headers.get("if-range"), etag)
+                ? headers.get("range") : null, total);
         if (range.unsatisfiable) {
             writeHead(output, 416, "text/plain", 0, "Content-Range: bytes */" + total + "\r\n", null);
             return;
         }
         long length = total == 0 ? 0 : range.end - range.start + 1;
-        String safeName = downloadName.replace("\"", "_").replace("\r", "_").replace("\n", "_");
-        String extra = "Accept-Ranges: bytes\r\nCache-Control: private, max-age=3600\r\nContent-Disposition: inline; filename=\"" + safeName + "\"\r\n";
+        String extra = "Accept-Ranges: bytes\r\nCache-Control: private, max-age=3600\r\nETag: " + etag + "\r\n"
+                + DownloadHeaders.headerLine(downloadName, download);
         if (range.partial) extra += "Content-Range: bytes " + range.start + "-" + range.end + "/" + total + "\r\n";
         writeHead(output, range.partial ? 206 : 200, mime, length, extra, null);
         output.flush();
@@ -1193,16 +1213,42 @@ final class MediaHttpServer {
             respond(output, 404, "application/json; charset=utf-8", "{\"error\":\"None of the selected files are available.\"}", null);
             return;
         }
-        // The size is not known up front, so the body runs until the connection closes.
-        writeHead(output, 200, "application/zip", -1,
-                "Content-Disposition: attachment; filename=\"PocketBridge-files.zip\"\r\n", null);
+        // With every size known (and no ZIP64 needed) the archive is written with
+        // stored entries, so its exact length goes out as Content-Length and the
+        // browser shows real progress. Otherwise the body runs until the connection closes.
+        Set<String> used = new HashSet<>();
+        List<String> names = new ArrayList<>();
+        List<Long> sizes = new ArrayList<>();
+        boolean sized = true;
+        for (MediaRepository.Item item : items) {
+            names.add(uniqueEntryName(item.name, used));
+            long size = statSize(item);
+            if (size <= 0) sized = false;
+            sizes.add(size);
+        }
+        long planned = sized ? StoredZip.plannedLength(names, sizes) : -1;
+        String disposition = DownloadHeaders.headerLine("PocketBridge-files.zip", true);
+        if (planned > 0) {
+            writeHead(output, 200, "application/zip", planned, disposition, null);
+            output.flush();
+            StoredZip.Writer zip = new StoredZip.Writer(output, System.currentTimeMillis());
+            for (int i = 0; i < items.size(); i++) {
+                long size = sizes.get(i);
+                OutputStream entry = zip.begin(names.get(i), size);
+                // One byte more than declared, so a file that grew is caught too.
+                copyMediaRange(null, entry, items.get(i), 0, size + 1);
+                zip.end();
+            }
+            zip.finish();
+            return;
+        }
+        writeHead(output, 200, "application/zip", -1, disposition, null);
         output.flush();
         ZipOutputStream zip = new ZipOutputStream(output);
         zip.setLevel(Deflater.NO_COMPRESSION);
-        Set<String> used = new HashSet<>();
-        for (MediaRepository.Item item : items) {
-            zip.putNextEntry(new ZipEntry(uniqueEntryName(item.name, used)));
-            copyMediaRange(null, zip, item, 0, Long.MAX_VALUE);
+        for (int i = 0; i < items.size(); i++) {
+            zip.putNextEntry(new ZipEntry(names.get(i)));
+            copyMediaRange(null, zip, items.get(i), 0, Long.MAX_VALUE);
             zip.closeEntry();
         }
         zip.finish();
