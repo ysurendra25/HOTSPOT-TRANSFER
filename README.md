@@ -6,6 +6,30 @@ For laptop files and power controls, copy the **LAN** link for the laptop's Wi-F
 
 See the illustrated [quick-start guide](docs/QUICK_START_GUIDE.md) for connecting, browsing, and screen sharing.
 
+## Version 0.7.0.1 (phase 1 of the 0.7 upgrade — not yet verified on devices)
+
+Version code 46, so it installs over 0.7.0.0 (code 45) and 0.6.0.12 (code 36).
+
+### Screen sharing latency and quality
+- **Phone → laptop.** The phone now encodes with a hardware H.264 encoder when WebRTC has one (then hardware VP8, then software VP8 at 1280 px). Since 0.6.0.x the phone captured at native resolution and took the browser's first codec (VP8), which most phones encode in software, so frames queued for seconds and froze on keyframes. The capture keeps the native size when the encoder accepts it and otherwise scales, keeping the aspect ratio, to the largest size it accepts. Before, a 1080×2400 portrait frame could be handed to an encoder limited to 1920×1088, which corrupted or half-showed the picture. The source is limited to 30 fps without cropping. The JPEG fallback is latest-frame-only and scaled on the GPU to 1920 px, at up to 20 fps, so it no longer competes with the encoder. Edge shows live codec, size, fps and buffer delay under the viewer.
+- **Laptop → phone.** The helper's JPEG stream defaults went back to a hotspot-safe profile: quality 75, at most 1920 px wide, 30 fps. The old 95 / native / 30 profile is migrated automatically. The stream socket's send buffer is capped at 256 KB, and frames are skipped when the link is slower than the frame rate, so the phone always gets the newest frame. H.264 via FFmpeg uses no B-frames and a 2 s GOP, with one fragment per frame. The phone's MediaSource player catches up instead of drifting up to 1.5 s behind. Edge's presenter sends H.264 first with a 12 Mbps ceiling and balanced degradation, and the phone viewer sets a zero jitter-buffer target.
+
+### Laptop power buttons on the phone
+Lock, wake, wake & show sign-in, sleep, **restart** (new) and shut down. The phone uses the pasted helper link when it can reach the laptop. Otherwise it uses the helper's own outbound connection to the phone, which needs no Windows Firewall rule. That connection opens automatically when the laptop pairs through the capture workspace, or by **Pair phone** in the helper's settings sheet. For sleep, restart and shut down, the phone checks back and shows the error Windows reported, if any.
+
+### Airplane mode
+- **Phone** (Connect tab on the phone and in Edge, and the helper's settings sheet): *refresh mobile data* switches the phone's airplane mode on and off, then brings the hotspot back. The laptop keeps rejoining the hotspot (`netsh wlan connect`) and the Edge page keeps retrying until the phone answers again.
+  - Android does not let normal apps switch airplane mode or start the hotspot. PocketBridge uses the best route available:
+    1. **One-time adb grant** (optional). From a computer with USB debugging on, run:
+       ```
+       adb shell pm grant com.pocketbridge android.permission.WRITE_SECURE_SETTINGS
+       ```
+       PocketBridge then writes the airplane setting and checks that the mobile radio really followed. Some Android versions ignore the setting unless the system sends its broadcast. In that case PocketBridge puts the setting back and moves to the next route.
+    2. **Accessibility** (optional): enable *PocketBridge airplane reset* in Settings → Accessibility. It opens Quick Settings and taps the Airplane mode and Hotspot tiles. This works when those tiles are on the first Quick Settings page.
+    3. **Guided** (always available): a high-priority notification opens full-screen steps: airplane ON, airplane OFF, hotspot ON. Each step advances by itself.
+  - A Quick Settings tile, *Refresh mobile data*, starts the same reset.
+- **Laptop** (helper settings sheet, on the laptop only): *Laptop airplane ON/OFF* turns every laptop radio off or on through the Windows.Devices.Radios API, using Windows PowerShell. Windows does not expose the Settings "Airplane mode" switch itself to apps. Switching the laptop's radios is refused from the phone, because it would cut the phone's own connection.
+
 ## Version 0.6.0.9
 
 - The Edge video player opens in Fill screen. Playback controls disappear after three seconds and return when you move the pointer. Select Original to see the complete frame, or choose a cinema, IMAX, portrait or zoom setting.

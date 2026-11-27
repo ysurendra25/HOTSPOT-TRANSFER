@@ -34,5 +34,6 @@ public final class AirplaneTileService extends TileService {
     }
 
     @SuppressWarnings("deprecation")
+    @android.annotation.SuppressLint("StartActivityAndCollapseDeprecated")
     private void startActivityAndCollapseCompat(Intent open) { startActivityAndCollapse(open); }
 }

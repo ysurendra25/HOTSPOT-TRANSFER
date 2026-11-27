@@ -21,7 +21,7 @@ function harness(status) {
       requests.push(path);
       return {ok:true, json:async () => status()};
     },
-    setTimeout: callback => {timer = callback;}, clearTimeout:()=>{}, endpoint:path=>path,
+    setTimeout: callback => {timer = callback;}, clearTimeout:()=>{}, setInterval:()=>0, clearInterval:()=>{}, endpoint:path=>path,
   });
   vm.runInContext('let screenWanted = false, screenFrameTimer = 0;\n' + viewerCode, context);
   const calls = [];
