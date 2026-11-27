@@ -38,12 +38,23 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 /**
- * User-started, direct WebRTC camera session. The local foreground service
- * keeps Android's camera indicator visible while the camera is in use. No
- * STUN/TURN servers are configured: the call is intended for the local link.
+ * Direct WebRTC camera call over the local link. The foreground service starts
+ * when this phone's user consents (asks for a call, or accepts one) from the
+ * app, so Android allows the camera later even if the app goes to the
+ * background. The camera itself opens only once BOTH sides have accepted:
+ * {@link CameraCall} on this phone's server (mode "host": a laptop or phone
+ * calls in and this phone answers the offer) or {@link PeerCameraLink} for a
+ * call to another phone's server (mode "peer": this phone sends the offer).
+ * Either side stopping ends the service. No STUN/TURN servers are configured;
+ * only UDP host candidates are used.
  */
 public final class CameraSessionService extends Service {
-    private static final String ACTION_STOP = "com.pocketbridge.action.STOP_CAMERA";
+    static final String ACTION_STOP = "com.pocketbridge.action.STOP_CAMERA";
+    static final String ACTION_SWITCH = "com.pocketbridge.action.SWITCH_CAMERA";
+    static final String EXTRA_MODE = "mode";
+    static final String MODE_HOST = "host";
+    static final String MODE_PEER = "peer";
+    private static final int READY_WAIT_SECONDS = 15;
     private static final String CHANNEL_ID = "pocketbridge_camera";
     private static final int NOTIFICATION_ID = 1203;
     private static final int CAMERA_WIDTH = 1280;
@@ -79,6 +90,15 @@ public final class CameraSessionService extends Service {
     private volatile String pendingAnswer;
     private volatile CountDownLatch answerLatch;
     private volatile boolean iceComplete;
+    private volatile String mode = MODE_HOST;
+    private volatile String callId = "";
+    private volatile boolean offerSent;
+    private volatile boolean frontCamera = true;
+    private volatile boolean live;
+    private ScreenEncoderPlan encoderPlan;
+    private final CountDownLatch ready = new CountDownLatch(1);
+    private final CameraCall.Listener callListener = call -> mainHandler.post(this::evaluate);
+    private final PeerCameraLink.Listener peerListener = link -> mainHandler.post(this::evaluate);
     private SurfaceViewRenderer localRenderer;
     private SurfaceViewRenderer remoteRenderer;
     private boolean localRendererReady;
@@ -89,6 +109,31 @@ public final class CameraSessionService extends Service {
     public static boolean isRunning() {
         CameraSessionService service = instance;
         return service != null && service.initialized && service.localTrack != null;
+    }
+
+    /** The service exists: consent was given on this phone and the call has not ended. */
+    static boolean isActive() { return instance != null; }
+
+    /** Video flows over an ICE-connected link. */
+    static boolean isLive() {
+        CameraSessionService service = instance;
+        return service != null && service.live;
+    }
+
+    static String mode() {
+        CameraSessionService service = instance;
+        return service == null ? "" : service.mode;
+    }
+
+    static boolean isFrontCamera() {
+        CameraSessionService service = instance;
+        return service == null || service.frontCamera;
+    }
+
+    /** Front ↔ back. Safe to call from any thread; ignored before the camera opens. */
+    static void switchCamera() {
+        CameraSessionService service = instance;
+        if (service != null) service.worker.execute(service::switchCameraNow);
     }
 
     public static boolean isStarting() {
@@ -116,13 +161,35 @@ public final class CameraSessionService extends Service {
         if (service != null) service.mainHandler.post(() -> service.detachRenderersOnMain(local, remote));
     }
 
-    /** Called by the authenticated phone server after the person has started camera sharing. */
-    static String answerOffer(String sdp) {
+    /**
+     * Called by the authenticated phone server for an accepted call. The phone's
+     * camera may still be opening (it opens only after both sides accept), so this
+     * waits for it instead of refusing the offer: refusing was the old
+     * signaling-order failure when the laptop was faster than the phone.
+     */
+    static String answerOffer(String id, String sdp) {
+        if (sdp == null || sdp.isEmpty()) return null;
+        long deadline = android.os.SystemClock.elapsedRealtime() + READY_WAIT_SECONDS * 1000L;
         CameraSessionService service = instance;
-        if (service == null || !service.initialized || sdp == null || sdp.isEmpty()) {
-            lastStatus = service == null ? "Start the phone camera session first." : service.status;
-            return null;
+        while (true) {
+            if (service != null && service.initialized) break;
+            if (service != null && (service.failed || service.stopping)) { lastStatus = service.status; return null; }
+            if (!CameraCall.INSTANCE.mediaAllowed(id)) { lastStatus = "The camera call ended before the phone camera opened."; return null; }
+            long left = deadline - android.os.SystemClock.elapsedRealtime();
+            if (left <= 0) {
+                lastStatus = service == null
+                        ? "Accept the call in PocketBridge on the phone and allow its camera."
+                        : "The phone camera did not open in time. Close other camera apps and try again.";
+                return null;
+            }
+            try {
+                if (service != null) service.ready.await(Math.min(left, 250), TimeUnit.MILLISECONDS);
+                else Thread.sleep(Math.min(left, 250));
+            } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); return null; }
+            service = instance;
         }
+        if (!MODE_HOST.equals(service.mode)) { lastStatus = "This phone's camera is busy in a call with another phone."; return null; }
+        service.callId = id;
         return service.acceptOffer(sdp);
     }
 
@@ -154,23 +221,178 @@ public final class CameraSessionService extends Service {
                 stopSelf();
                 return START_NOT_STICKY;
             }
-            if (initialized || initializing) return START_NOT_STICKY;
+            if (intent != null && ACTION_SWITCH.equals(intent.getAction())) {
+                worker.execute(this::switchCameraNow);
+                return START_NOT_STICKY;
+            }
             if (checkSelfPermission(android.Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
                 failed = true;
-                status = lastStatus = "Allow camera access in PocketBridge, then start the session again.";
+                status = lastStatus = "Allow camera access in PocketBridge, then start the call again.";
                 stopSelf();
                 return START_NOT_STICKY;
             }
+            if (intent != null && intent.getStringExtra(EXTRA_MODE) != null && !initialized && !initializing) {
+                mode = MODE_PEER.equals(intent.getStringExtra(EXTRA_MODE)) ? MODE_PEER : MODE_HOST;
+            }
             failed = false;
-            status = lastStatus = "Starting the phone camera…";
-            initializing = true;
-            worker.execute(this::initializeCamera);
+            CameraCall.INSTANCE.addListener(callListener);
+            PeerCameraLink.INSTANCE.addListener(peerListener);
+            evaluate();
         } catch (Exception error) {
             failed = true;
             status = lastStatus = "Could not start the camera: " + safeMessage(error);
             stopSelf();
         }
         return START_NOT_STICKY;
+    }
+
+    /** Follows the call state: open the camera once both sides accepted, stop when the call ends. */
+    private void evaluate() {
+        if (stopping) return;
+        boolean allowed;
+        boolean pending;
+        if (MODE_PEER.equals(mode)) {
+            PeerCameraLink link = PeerCameraLink.INSTANCE;
+            allowed = link.connected() && link.mediaAllowed();
+            pending = link.connected() && "requested".equals(link.state());
+            if (allowed) callId = link.callId();
+        } else {
+            CameraCall call = CameraCall.INSTANCE;
+            allowed = call.mediaAllowed(call.id());
+            pending = call.state() == CameraCall.State.REQUESTED;
+            if (allowed) callId = call.id();
+        }
+        if (allowed) {
+            if (!initialized && !initializing) {
+                status = lastStatus = "Both sides accepted. Opening the phone camera…";
+                initializing = true;
+                worker.execute(this::initializeCamera);
+            } else if (initialized && MODE_PEER.equals(mode) && !offerSent) {
+                offerSent = true;
+                worker.execute(this::callPeer);
+            }
+        } else if (pending) {
+            status = lastStatus = "Waiting for the other side to accept. The camera stays off until both accept.";
+        } else {
+            String reason = MODE_PEER.equals(mode) ? PeerCameraLink.INSTANCE.status().optString("reason", "")
+                    : CameraCall.INSTANCE.reason();
+            if (!reason.isEmpty()) status = lastStatus = reason;
+            stopSelf();
+        }
+    }
+
+    private void switchCameraNow() {
+        CameraVideoCapturer active = capturer;
+        if (active == null || !initialized) return;
+        active.switchCamera(new CameraVideoCapturer.CameraSwitchHandler() {
+            @Override public void onCameraSwitchDone(boolean isFront) {
+                frontCamera = isFront;
+                mainHandler.post(() -> { if (localRenderer != null) localRenderer.setMirror(isFront); });
+            }
+            @Override public void onCameraSwitchError(String error) {
+                android.util.Log.w("PocketBridge", "Camera switch failed: " + error);
+            }
+        });
+    }
+
+    private PeerConnection.RTCConfiguration hotspotConfiguration() {
+        PeerConnection.RTCConfiguration config = new PeerConnection.RTCConfiguration(Collections.emptyList());
+        config.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN;
+        // Hotspot only: no STUN/TURN, UDP host candidates, gather once.
+        config.iceTransportsType = PeerConnection.IceTransportsType.ALL;
+        config.tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.DISABLED;
+        config.continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_ONCE;
+        config.candidateNetworkPolicy = PeerConnection.CandidateNetworkPolicy.ALL;
+        config.bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE;
+        config.rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE;
+        return config;
+    }
+
+    private void onIceState(PeerConnection.IceConnectionState state) {
+        if (state == PeerConnection.IceConnectionState.CONNECTED || state == PeerConnection.IceConnectionState.COMPLETED) {
+            live = true;
+            status = lastStatus = "Live: both cameras are connected directly over the hotspot.";
+            if (MODE_HOST.equals(mode)) CameraCall.INSTANCE.markLive(callId);
+        } else if (state == PeerConnection.IceConnectionState.FAILED) {
+            live = false;
+            String reason = "Camera connection failed. Keep both devices on this hotspot and call again.";
+            status = lastStatus = reason;
+            if (MODE_HOST.equals(mode)) CameraCall.INSTANCE.stop(CameraCall.PHONE, reason);
+            else new Thread(PeerCameraLink.INSTANCE::stopCall).start();
+            mainHandler.post(this::stopSelf);
+        } else if (state == PeerConnection.IceConnectionState.DISCONNECTED) {
+            live = false;
+            status = lastStatus = "Camera link interrupted. Waiting for the hotspot connection…";
+        }
+    }
+
+    /** Phone↔phone: this phone offers, the other phone's server answers. */
+    private void callPeer() {
+        try {
+            String id = callId;
+            CountDownLatch gathered = new CountDownLatch(1);
+            PeerConnection active = factory.createPeerConnection(hotspotConfiguration(), new PeerConnectionObserver() {
+                @Override public void onIceConnectionChange(PeerConnection.IceConnectionState state) { onIceState(state); }
+                @Override public void onIceGatheringChange(PeerConnection.IceGatheringState state) {
+                    if (state == PeerConnection.IceGatheringState.COMPLETE) gathered.countDown();
+                }
+                @Override public void onAddTrack(org.webrtc.RtpReceiver receiver, org.webrtc.MediaStream[] streams) { showRemote(receiver); }
+            });
+            if (active == null) throw new IllegalStateException("The phone could not create a WebRTC camera connection.");
+            synchronized (this) { closePeer(); peer = active; }
+            tuneCameraSender(active.addTrack(localTrack, Collections.singletonList("pocketbridge-camera")));
+            status = lastStatus = "Calling the other phone's camera…";
+            CountDownLatch localSet = new CountDownLatch(1);
+            String[] failure = {null};
+            active.createOffer(new SdpObserverAdapter() {
+                @Override public void onCreateSuccess(SessionDescription offer) {
+                    String munged = CameraSdp.prepareLocalOffer(offer.description, codecOrder());
+                    active.setLocalDescription(new SdpObserverAdapter() {
+                        @Override public void onSetSuccess() { localSet.countDown(); }
+                        @Override public void onSetFailure(String error) { failure[0] = error; localSet.countDown(); }
+                    }, new SessionDescription(SessionDescription.Type.OFFER, munged));
+                }
+                @Override public void onCreateFailure(String error) { failure[0] = error; localSet.countDown(); }
+            }, new MediaConstraints());
+            if (!localSet.await(10, TimeUnit.SECONDS) || failure[0] != null) {
+                throw new IllegalStateException("Could not prepare the camera offer: " + (failure[0] == null ? "timed out" : failure[0]));
+            }
+            // Non-trickle signaling: wait for host candidates (fast without STUN), then send once.
+            gathered.await(6, TimeUnit.SECONDS);
+            SessionDescription local = active.getLocalDescription();
+            if (local == null || stopping) return;
+            String answer = PeerCameraLink.INSTANCE.offer(id, CameraSdp.hostCandidatesOnly(local.description));
+            if (answer.isEmpty()) throw new IllegalStateException("The other phone did not answer the camera call.");
+            CountDownLatch remoteSet = new CountDownLatch(1);
+            active.setRemoteDescription(new SdpObserverAdapter() {
+                @Override public void onSetSuccess() { remoteSet.countDown(); }
+                @Override public void onSetFailure(String error) { failure[0] = error; remoteSet.countDown(); }
+            }, new SessionDescription(SessionDescription.Type.ANSWER, CameraSdp.hostCandidatesOnly(answer)));
+            if (!remoteSet.await(10, TimeUnit.SECONDS) || failure[0] != null) {
+                throw new IllegalStateException("Could not read the other phone's answer: " + (failure[0] == null ? "timed out" : failure[0]));
+            }
+            status = lastStatus = "Connecting both cameras over the local hotspot…";
+        } catch (Exception error) {
+            if (stopping) return;
+            failed = true;
+            status = lastStatus = safeMessage(error);
+            new Thread(PeerCameraLink.INSTANCE::stopCall).start();
+            mainHandler.post(this::stopSelf);
+        }
+    }
+
+    private void showRemote(org.webrtc.RtpReceiver receiver) {
+        if (receiver.track() instanceof VideoTrack) {
+            VideoTrack incoming = (VideoTrack) receiver.track();
+            incoming.setEnabled(true);
+            remoteTrack = incoming;
+            mainHandler.post(() -> attachRenderersOnMain(requestedLocalRenderer, requestedRemoteRenderer));
+        }
+    }
+
+    private java.util.List<String> codecOrder() {
+        ScreenEncoderPlan plan = encoderPlan;
+        return plan == null ? java.util.Arrays.asList("h264", "vp8", "vp9") : plan.codecOrder;
     }
 
     private void initializeCamera() {
@@ -182,6 +404,7 @@ public final class CameraSessionService extends Service {
                     .setVideoEncoderFactory(new DefaultVideoEncoderFactory(eglBase.getEglBaseContext(), true, true))
                     .setVideoDecoderFactory(new DefaultVideoDecoderFactory(eglBase.getEglBaseContext()))
                     .createPeerConnectionFactory();
+            encoderPlan = ScreenCaptureService.planEncoder(eglBase);
 
             Camera2Enumerator cameras = new Camera2Enumerator(getApplicationContext());
             String chosen = null;
@@ -189,6 +412,7 @@ public final class CameraSessionService extends Service {
                 if (cameras.isFrontFacing(name)) { chosen = name; break; }
                 if (chosen == null) chosen = name;
             }
+            frontCamera = chosen != null && cameras.isFrontFacing(chosen);
             if (chosen == null) throw new IllegalStateException("This phone does not report a usable camera.");
             VideoCapturer newCapturer = cameras.createCapturer(chosen, new CameraVideoCapturer.CameraEventsHandler() {
                 @Override public void onCameraError(String message) { captureFailed(message); }
@@ -212,8 +436,13 @@ public final class CameraSessionService extends Service {
             if (stopping || failed) return;
             initialized = true;
             initializing = false;
-            status = lastStatus = "Phone camera ready. Connect from the Edge Camera page and approve the laptop camera there too.";
-            mainHandler.post(() -> attachRenderersOnMain(requestedLocalRenderer, requestedRemoteRenderer));
+            ready.countDown();
+            status = lastStatus = MODE_PEER.equals(mode) ? "Phone camera open. Calling the other phone…"
+                    : "Phone camera open. Connecting to the other device…";
+            mainHandler.post(() -> {
+                attachRenderersOnMain(requestedLocalRenderer, requestedRemoteRenderer);
+                evaluate();
+            });
         } catch (Exception error) {
             initializing = false;
             if (!stopping && !failed) {
@@ -246,6 +475,7 @@ public final class CameraSessionService extends Service {
                 localRenderer.init(eglBase.getEglBaseContext(), null);
                 localRenderer.setEnableHardwareScaler(true);
                 localRenderer.setScalingType(org.webrtc.RendererCommon.ScalingType.SCALE_ASPECT_FIT);
+                localRenderer.setMirror(frontCamera);
                 localRendererReady = true;
             }
             if (localTrack != null && !localSinkAttached) {
@@ -296,37 +526,12 @@ public final class CameraSessionService extends Service {
             iceComplete = false;
             CountDownLatch latch = new CountDownLatch(1);
             answerLatch = latch;
-            PeerConnection.RTCConfiguration config = new PeerConnection.RTCConfiguration(Collections.emptyList());
-            config.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN;
-            PeerConnection active = factory.createPeerConnection(config, new PeerConnection.Observer() {
-                @Override public void onSignalingChange(PeerConnection.SignalingState state) { }
-                @Override public void onIceConnectionChange(PeerConnection.IceConnectionState state) {
-                    if (state == PeerConnection.IceConnectionState.CONNECTED || state == PeerConnection.IceConnectionState.COMPLETED) {
-                        status = lastStatus = "Both cameras are connected directly over the hotspot.";
-                    } else if (state == PeerConnection.IceConnectionState.FAILED) {
-                        status = lastStatus = "Camera connection failed. Keep both devices on this hotspot and reconnect.";
-                    } else if (state == PeerConnection.IceConnectionState.DISCONNECTED) {
-                        status = lastStatus = "Camera link interrupted. Waiting for the hotspot connection…";
-                    }
-                }
-                @Override public void onIceConnectionReceivingChange(boolean receiving) { }
+            PeerConnection active = factory.createPeerConnection(hotspotConfiguration(), new PeerConnectionObserver() {
+                @Override public void onIceConnectionChange(PeerConnection.IceConnectionState state) { onIceState(state); }
                 @Override public void onIceGatheringChange(PeerConnection.IceGatheringState state) {
                     if (state == PeerConnection.IceGatheringState.COMPLETE) { iceComplete = true; finishAnswer(); }
                 }
-                @Override public void onIceCandidate(IceCandidate candidate) { }
-                @Override public void onIceCandidatesRemoved(IceCandidate[] candidates) { }
-                @Override public void onAddStream(org.webrtc.MediaStream stream) { }
-                @Override public void onRemoveStream(org.webrtc.MediaStream stream) { }
-                @Override public void onDataChannel(org.webrtc.DataChannel channel) { }
-                @Override public void onRenegotiationNeeded() { }
-                @Override public void onAddTrack(org.webrtc.RtpReceiver receiver, org.webrtc.MediaStream[] streams) {
-                    if (receiver.track() instanceof VideoTrack) {
-                        VideoTrack incoming = (VideoTrack) receiver.track();
-                        incoming.setEnabled(true);
-                        remoteTrack = incoming;
-                        mainHandler.post(() -> attachRenderersOnMain(requestedLocalRenderer, requestedRemoteRenderer));
-                    }
-                }
+                @Override public void onAddTrack(org.webrtc.RtpReceiver receiver, org.webrtc.MediaStream[] streams) { showRemote(receiver); }
             });
             peer = active;
             if (active == null) {
@@ -336,7 +541,10 @@ public final class CameraSessionService extends Service {
             }
             RtpSender sender = active.addTrack(localTrack, Collections.singletonList("pocketbridge-camera"));
             tuneCameraSender(sender);
-            SessionDescription offer = new SessionDescription(SessionDescription.Type.OFFER, offerSdp);
+            // Hardware H.264 first (libwebrtc answers in the offer's order), camera
+            // bitrates, and UDP host candidates only.
+            SessionDescription offer = new SessionDescription(SessionDescription.Type.OFFER,
+                    CameraSdp.prepareRemoteOffer(offerSdp, codecOrder()));
             active.setRemoteDescription(new SdpObserverAdapter() {
                 @Override public void onSetSuccess() {
                     active.createAnswer(new SdpObserverAdapter() {
@@ -353,11 +561,12 @@ public final class CameraSessionService extends Service {
             }, offer);
             try {
                 if (!latch.await(OFFER_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                    failAnswer("Camera setup timed out. Keep the Edge Camera page open and try again.");
+                    failAnswer("Camera setup timed out. Keep the camera window open and try again.");
                     closePeer();
                     return null;
                 }
-                return pendingAnswer;
+                String answer = pendingAnswer;
+                return answer == null || answer.isEmpty() ? answer : CameraSdp.hostCandidatesOnly(answer);
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
                 failAnswer("Camera setup was interrupted. Start the session again.");
@@ -414,6 +623,15 @@ public final class CameraSessionService extends Service {
 
     @Override public void onDestroy() {
         stopping = true;
+        live = false;
+        CameraCall.INSTANCE.removeListener(callListener);
+        PeerCameraLink.INSTANCE.removeListener(peerListener);
+        // Either side stopping ends the call for both.
+        if (MODE_PEER.equals(mode)) {
+            if (PeerCameraLink.INSTANCE.isActive()) new Thread(PeerCameraLink.INSTANCE::stopCall).start();
+        } else {
+            CameraCall.INSTANCE.stop(CameraCall.PHONE, failed ? status : null);
+        }
         firstCameraFrame.countDown();
         CountDownLatch pending = answerLatch;
         if (pending != null) pending.countDown();
@@ -472,10 +690,10 @@ public final class CameraSessionService extends Service {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         Notification.Builder builder = new Notification.Builder(this, CHANNEL_ID);
         return builder.setSmallIcon(android.R.drawable.ic_menu_camera)
-                .setContentTitle("PocketBridge camera is active")
-                .setContentText("Your camera is available to the approved local camera session.")
+                .setContentTitle("PocketBridge camera call")
+                .setContentText("The camera opens only after both sides accept. Tap Stop to end the call for both.")
                 .setContentIntent(open)
-                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop camera", stop)
+                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop call", stop)
                 .setOngoing(true).build();
     }
 
@@ -485,6 +703,20 @@ public final class CameraSessionService extends Service {
     }
 
     @Override public IBinder onBind(Intent intent) { return null; }
+
+    private static class PeerConnectionObserver implements PeerConnection.Observer {
+        @Override public void onSignalingChange(PeerConnection.SignalingState state) { }
+        @Override public void onIceConnectionChange(PeerConnection.IceConnectionState state) { }
+        @Override public void onIceConnectionReceivingChange(boolean receiving) { }
+        @Override public void onIceGatheringChange(PeerConnection.IceGatheringState state) { }
+        @Override public void onIceCandidate(IceCandidate candidate) { }
+        @Override public void onIceCandidatesRemoved(IceCandidate[] candidates) { }
+        @Override public void onAddStream(org.webrtc.MediaStream stream) { }
+        @Override public void onRemoveStream(org.webrtc.MediaStream stream) { }
+        @Override public void onDataChannel(org.webrtc.DataChannel channel) { }
+        @Override public void onRenegotiationNeeded() { }
+        @Override public void onAddTrack(org.webrtc.RtpReceiver receiver, org.webrtc.MediaStream[] streams) { }
+    }
 
     private static class SdpObserverAdapter implements SdpObserver {
         @Override public void onCreateSuccess(SessionDescription description) { }

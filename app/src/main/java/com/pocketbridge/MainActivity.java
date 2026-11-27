@@ -185,6 +185,7 @@ public final class MainActivity extends Activity {
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         buildScreen();
+        handleCameraIntent(getIntent());
     }
 
     @android.annotation.SuppressLint("UnspecifiedRegisterReceiverFlag")
@@ -199,6 +200,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        CameraCallNotifier.appVisible = true;
         chatHandler.removeCallbacks(edgePoll);
         edgePoll.run();
         if (tabViews != null && tabViews[3].getVisibility() == View.VISIBLE) {
@@ -239,6 +241,8 @@ public final class MainActivity extends Activity {
         if (laptopScreenDialog != null) laptopScreenDialog.dismiss();
         if (cameraFullscreenDialog != null) cameraFullscreenDialog.dismiss();
         CameraSessionService.detachRenderers(phoneCameraPreview, laptopCameraPreview);
+        CameraCall.INSTANCE.removeListener(cameraCallListener);
+        PeerCameraLink.INSTANCE.removeListener(peerLinkListener);
         if (laptopView != null) {
             laptopView.stopLoading();
             laptopView.destroy();
@@ -248,6 +252,13 @@ public final class MainActivity extends Activity {
         chatWorker.shutdownNow();
         phoneUploadQueue.shutdown();
         super.onDestroy();
+    }
+
+    @Override protected void onPause() {
+        CameraCallNotifier.appVisible = false;
+        // A request that arrived while the app was open now needs its notification.
+        CameraCallNotifier.refresh(this);
+        super.onPause();
     }
 
     @Override protected void onStop() {
@@ -911,28 +922,106 @@ public final class MainActivity extends Activity {
         if (index == 4) refreshCameraStatus();
     }
 
+    // ---- Camera call: two-sided approval (CameraCall on this phone, PeerCameraLink to another phone) ----
+    private boolean cameraPeerMode;
+    private Button cameraHostModeButton, cameraPeerModeButton, cameraAccept, cameraDecline, cameraSwitch, cameraCopy, cameraPeerConnect;
+    private LinearLayout cameraPromptBox, cameraPeerBox;
+    private TextView cameraPromptText, cameraLiveBadge;
+    private EditText cameraPeerLink;
+    private String pendingCameraAction = "";
+    private final CameraCall.Listener cameraCallListener = call -> runOnUiThread(this::refreshCameraStatus);
+    private final PeerCameraLink.Listener peerLinkListener = link -> runOnUiThread(this::refreshCameraStatus);
+
     private void buildCameraTab(LinearLayout parent) {
         TextView intro = new TextView(this);
-        intro.setText("Start a private, two-way camera call over your hotspot. The laptop and phone each have to start the call and approve their camera permission. Video stays on the local network.");
+        intro.setText("A private, two-way camera call over your hotspot, with a laptop (Edge) or another phone. One side asks, the other accepts. No camera turns on until both sides have accepted and allowed camera access, and either side can end it for both.");
         intro.setTextColor(COLOR_MUTED);
         intro.setTextSize(14);
         intro.setLineSpacing(dp(3), 1f);
-        addCard(parent, "CAMERA SHARE · BOTH SIDES APPROVE", intro);
+        addCard(parent, "CAMERA CALL · BOTH SIDES APPROVE", intro);
 
+        LinearLayout modes = new LinearLayout(this);
+        modes.setOrientation(LinearLayout.HORIZONTAL);
+        cameraHostModeButton = button("Laptop or phone joins me", COLOR_GREEN);
+        cameraPeerModeButton = button("Call another phone", COLOR_SOFT);
+        cameraHostModeButton.setTextSize(12);
+        cameraPeerModeButton.setTextSize(12);
+        cameraHostModeButton.setOnClickListener(v -> setCameraPeerMode(false));
+        cameraPeerModeButton.setOnClickListener(v -> setCameraPeerMode(true));
+        LinearLayout.LayoutParams half = new LinearLayout.LayoutParams(0, -2, 1f);
+        LinearLayout.LayoutParams half2 = new LinearLayout.LayoutParams(0, -2, 1f);
+        half2.leftMargin = dp(4);
+        modes.addView(cameraHostModeButton, half);
+        modes.addView(cameraPeerModeButton, half2);
+        addCard(parent, "CALL WITH", modes);
+
+        cameraPeerBox = new LinearLayout(this);
+        cameraPeerBox.setOrientation(LinearLayout.VERTICAL);
+        cameraPeerLink = new EditText(this);
+        cameraPeerLink.setSingleLine(false);
+        cameraPeerLink.setTextSize(14);
+        cameraPeerLink.setHint("Other phone's link and code · http://192.168.43.1:43117 Code: 123456");
+        cameraPeerLink.setText(getPreferences(MODE_PRIVATE).getString("peer_camera_link", ""));
+        cameraPeerBox.addView(cameraPeerLink, matchWrap());
+        cameraPeerConnect = button("Connect to that phone", COLOR_SOFT);
+        cameraPeerConnect.setTextColor(COLOR_INK);
+        cameraPeerConnect.setOnClickListener(v -> togglePeerLink());
+        cameraPeerBox.addView(cameraPeerConnect, matchWrap());
+        addCard(parent, "OTHER PHONE (ITS COPY LINK AND CODE)", cameraPeerBox);
+
+        LinearLayout statusBox = new LinearLayout(this);
+        statusBox.setOrientation(LinearLayout.VERTICAL);
+        cameraLiveBadge = new TextView(this);
+        cameraLiveBadge.setText("●  LIVE · camera on");
+        cameraLiveBadge.setTextColor(Color.WHITE);
+        cameraLiveBadge.setBackgroundColor(Color.rgb(0xd3, 0x2f, 0x2f));
+        cameraLiveBadge.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        cameraLiveBadge.setPadding(dp(10), dp(4), dp(10), dp(4));
+        cameraLiveBadge.setVisibility(View.GONE);
+        statusBox.addView(cameraLiveBadge, new LinearLayout.LayoutParams(-2, -2));
         cameraStatus = new TextView(this);
-        cameraStatus.setText("Camera is off. Start here, then open the Windows helper's Camera page on the laptop.");
+        cameraStatus.setText("Camera is off.");
         cameraStatus.setTextColor(COLOR_INK);
         cameraStatus.setTextSize(14);
         cameraStatus.setLineSpacing(dp(3), 1f);
-        addCard(parent, "SESSION STATUS", cameraStatus);
+        statusBox.addView(cameraStatus, matchWrap());
+        addCard(parent, "CALL STATUS", statusBox);
+
+        cameraPromptBox = new LinearLayout(this);
+        cameraPromptBox.setOrientation(LinearLayout.VERTICAL);
+        cameraPromptText = new TextView(this);
+        cameraPromptText.setTextColor(COLOR_INK);
+        cameraPromptText.setTextSize(15);
+        cameraPromptBox.addView(cameraPromptText, matchWrap());
+        LinearLayout answers = new LinearLayout(this);
+        answers.setOrientation(LinearLayout.HORIZONTAL);
+        cameraAccept = button("Accept", COLOR_GREEN);
+        cameraDecline = button("Decline", COLOR_SOFT);
+        cameraDecline.setTextColor(COLOR_INK);
+        cameraAccept.setOnClickListener(v -> runCameraAction("accept"));
+        cameraDecline.setOnClickListener(v -> declineCameraCall());
+        LinearLayout.LayoutParams a = new LinearLayout.LayoutParams(0, -2, 1f);
+        LinearLayout.LayoutParams d = new LinearLayout.LayoutParams(0, -2, 1f);
+        d.leftMargin = dp(4);
+        answers.addView(cameraAccept, a);
+        answers.addView(cameraDecline, d);
+        cameraPromptBox.addView(answers, matchWrap());
+        addCard(parent, "INCOMING CAMERA CALL", cameraPromptBox);
+        ((View) cameraPromptBox.getParent()).setVisibility(View.GONE);
 
         cameraToggle = button("Start camera session", COLOR_GREEN);
         cameraToggle.setOnClickListener(v -> toggleCameraSession());
         parent.addView(cameraToggle, matchWrap());
 
-        Button copyCameraDetails = button("Copy phone link and access code", COLOR_SOFT);
-        copyCameraDetails.setTextColor(COLOR_INK);
-        copyCameraDetails.setOnClickListener(v -> {
+        cameraSwitch = button("Switch front / back camera", COLOR_SOFT);
+        cameraSwitch.setTextColor(COLOR_INK);
+        cameraSwitch.setOnClickListener(v -> CameraSessionService.switchCamera());
+        cameraSwitch.setVisibility(View.GONE);
+        parent.addView(cameraSwitch, matchWrap());
+
+        cameraCopy = button("Copy phone link and access code", COLOR_SOFT);
+        cameraCopy.setTextColor(COLOR_INK);
+        cameraCopy.setOnClickListener(v -> {
             String link = linkText == null ? "" : linkText.getText().toString().trim();
             String accessCode = codeText == null ? "" : codeText.getText().toString().replaceAll("\\s", "");
             if (!link.startsWith("http://") || accessCode.length() != 6) {
@@ -942,10 +1031,10 @@ public final class MainActivity extends Activity {
             ClipboardManager clipboard = getSystemService(ClipboardManager.class);
             if (clipboard != null) {
                 clipboard.setPrimaryClip(ClipData.newPlainText("PocketBridge camera", link + "\nCode: " + accessCode));
-                Toast.makeText(this, "Phone link and code copied. Enter them on the laptop Camera page.", Toast.LENGTH_LONG).show();
+                Toast.makeText(this, "Copied. Paste it in the other phone's Camera tab, or open the link in Edge.", Toast.LENGTH_LONG).show();
             }
         });
-        parent.addView(copyCameraDetails, matchWrap());
+        parent.addView(cameraCopy, matchWrap());
 
         phoneCameraPreview = new org.webrtc.SurfaceViewRenderer(this);
         // SurfaceView draws camera pixels on a separate surface behind the view.
@@ -954,14 +1043,14 @@ public final class MainActivity extends Activity {
         phoneCameraPreview.setEnableHardwareScaler(true);
         phoneCameraPreview.setScalingType(org.webrtc.RendererCommon.ScalingType.SCALE_ASPECT_FIT);
         phoneCameraPreview.setVisibility(View.GONE);
-        addCard(parent, "PHONE CAMERA · SENT TO LAPTOP", phoneCameraPreview);
+        addCard(parent, "THIS PHONE'S CAMERA · SENT", phoneCameraPreview);
 
         laptopCameraPreview = new org.webrtc.SurfaceViewRenderer(this);
         laptopCameraPreview.setLayoutParams(new LinearLayout.LayoutParams(-1, dp(240)));
         laptopCameraPreview.setEnableHardwareScaler(true);
         laptopCameraPreview.setScalingType(org.webrtc.RendererCommon.ScalingType.SCALE_ASPECT_FIT);
         laptopCameraPreview.setVisibility(View.GONE);
-        addCard(parent, "LAPTOP CAMERA · RECEIVED HERE", laptopCameraPreview);
+        addCard(parent, "OTHER CAMERA · RECEIVED HERE", laptopCameraPreview);
         CameraSessionService.attachRenderers(phoneCameraPreview, laptopCameraPreview);
 
         Button fullscreen = button("Full screen laptop camera", COLOR_SOFT);
@@ -970,47 +1059,181 @@ public final class MainActivity extends Activity {
         parent.addView(fullscreen, matchWrap());
 
         TextView help = new TextView(this);
-        help.setText("Run the Windows helper from this APK on the laptop. In Edge open Camera, then Open offline camera workspace. Enter the phone code and choose the laptop webcam or a screen. Your phone shows the selected source here.");
+        help.setText("Laptop: run the Windows helper from this APK, open this phone's link in Edge, choose Camera and either Request a call or Accept the phone's request. Another phone: on that phone tap Copy phone link and access code, then here choose Call another phone, paste it and Connect.");
         help.setTextColor(COLOR_MUTED);
         help.setTextSize(12);
         help.setLineSpacing(dp(3), 1f);
         help.setPadding(dp(4), dp(12), dp(4), 0);
         parent.addView(help, matchWrap());
+        CameraCall.INSTANCE.addListener(cameraCallListener);
+        PeerCameraLink.INSTANCE.addListener(peerLinkListener);
+        CameraCallNotifier.install(this);
+        setCameraPeerMode(PeerCameraLink.INSTANCE.connected() || CameraSessionService.MODE_PEER.equals(CameraSessionService.mode()));
+    }
+
+    private void setCameraPeerMode(boolean peer) {
+        if (CameraSessionService.isActive() && peer != CameraSessionService.MODE_PEER.equals(CameraSessionService.mode())) {
+            Toast.makeText(this, "End the current camera call first.", Toast.LENGTH_SHORT).show();
+            peer = cameraPeerMode;
+        }
+        cameraPeerMode = peer;
+        if (cameraHostModeButton != null) {
+            cameraHostModeButton.setBackgroundColor(peer ? COLOR_SOFT : COLOR_GREEN);
+            cameraHostModeButton.setTextColor(peer ? COLOR_INK : Color.WHITE);
+            cameraPeerModeButton.setBackgroundColor(peer ? COLOR_GREEN : COLOR_SOFT);
+            cameraPeerModeButton.setTextColor(peer ? Color.WHITE : COLOR_INK);
+            ((View) cameraPeerBox.getParent()).setVisibility(peer ? View.VISIBLE : View.GONE);
+            cameraCopy.setVisibility(peer ? View.GONE : View.VISIBLE);
+        }
         refreshCameraStatus();
     }
 
-    private void toggleCameraSession() {
-        if (CameraSessionService.isRunning()) {
-            stopService(new Intent(this, CameraSessionService.class));
+    private void togglePeerLink() {
+        PeerCameraLink link = PeerCameraLink.INSTANCE;
+        if (link.connected()) {
+            if (CameraSessionService.isActive()) stopService(new Intent(this, CameraSessionService.class));
+            link.disconnect();
             refreshCameraStatus();
             return;
         }
-        if (CameraSessionService.isStarting()) {
-            stopService(new Intent(this, CameraSessionService.class));
-            cameraStatus.setText("Camera startup cancelled.");
+        String text = cameraPeerLink.getText().toString();
+        PeerCameraLink.Target target = PeerCameraLink.parse(text);
+        if (target == null) {
+            cameraStatus.setText("Paste the other phone's link and six-digit code (its Camera tab → Copy phone link and access code).");
             return;
         }
-        if (!sharing) {
-            cameraStatus.setText("Start a Wi-Fi or hotspot share first so the laptop can reach the phone.");
+        getPreferences(MODE_PRIVATE).edit().putString("peer_camera_link", text).apply();
+        link.connect(target);
+        cameraStatus.setText("Connecting to " + target.origin + "…");
+    }
+
+    /** What the Camera tab shows: the call on this phone (host) or on the other phone (peer). */
+    private static final class CameraView {
+        String state = "idle";
+        boolean weAsked;
+        boolean awaitingUs;
+        long expiresInMs;
+        String reason = "";
+        String who = "";
+    }
+
+    private CameraView cameraView() {
+        CameraView view = new CameraView();
+        if (cameraPeerMode) {
+            PeerCameraLink link = PeerCameraLink.INSTANCE;
+            JSONObject status = link.status();
+            view.state = status.optString("state", "idle");
+            view.weAsked = CameraCall.REMOTE.equals(status.optString("requester"));
+            view.awaitingUs = link.awaitingUs();
+            view.expiresInMs = status.optLong("expiresInMs", 0);
+            view.reason = link.error().isEmpty() ? status.optString("reason", "") : link.error();
+            view.who = "The other phone";
+        } else {
+            CameraCall call = CameraCall.INSTANCE;
+            call.tick();
+            view.state = call.state().name().toLowerCase(java.util.Locale.ROOT);
+            view.weAsked = CameraCall.PHONE.equals(call.requester());
+            view.awaitingUs = call.awaiting(CameraCall.PHONE);
+            view.expiresInMs = call.expiresInMs();
+            view.reason = call.reason();
+            view.who = call.remoteName().isEmpty() ? "A laptop or phone on your hotspot" : call.remoteName();
+        }
+        return view;
+    }
+
+    private void toggleCameraSession() {
+        CameraView view = cameraView();
+        boolean ongoing = "requested".equals(view.state) || "accepted".equals(view.state) || "live".equals(view.state);
+        if (ongoing && !view.awaitingUs) { endCameraCall(); return; }
+        if (CameraSessionService.isActive()) { endCameraCall(); return; }
+        runCameraAction("request");
+    }
+
+    /** Request or accept: both need Android's camera permission first. */
+    private void runCameraAction(String action) {
+        if (cameraPeerMode && !PeerCameraLink.INSTANCE.connected()) {
+            cameraStatus.setText("Paste the other phone's link and code, then tap Connect to that phone.");
+            return;
+        }
+        if (!cameraPeerMode && !sharing && "request".equals(action)) {
+            cameraStatus.setText("Start a Wi-Fi or hotspot share first so the laptop or other phone can reach this phone.");
+            return;
+        }
+        if (CameraSessionService.isActive() && cameraPeerMode != CameraSessionService.MODE_PEER.equals(CameraSessionService.mode())) {
+            cameraStatus.setText("This phone's camera is in another call. End it first.");
             return;
         }
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            pendingCameraAction = action;
             requestPermissions(new String[]{Manifest.permission.CAMERA}, REQUEST_CAMERA_PERMISSION);
             return;
         }
-        startCameraSession();
-    }
-
-    private void startCameraSession() {
-        if (CameraSessionService.isRunning() || CameraSessionService.isStarting()) {
+        boolean peer = cameraPeerMode;
+        if (!peer) {
+            try {
+                if ("accept".equals(action)) CameraCall.INSTANCE.respond(CameraCall.PHONE, CameraCall.INSTANCE.id(), true);
+                else CameraCall.INSTANCE.request(CameraCall.PHONE, "");
+                startCameraSession(CameraSessionService.MODE_HOST);
+            } catch (CameraCall.Refused refused) {
+                cameraStatus.setText(refused.getMessage());
+            }
             refreshCameraStatus();
             return;
         }
-        Intent service = new Intent(this, CameraSessionService.class);
+        cameraStatus.setText("accept".equals(action) ? "Accepting…" : "Asking the other phone…");
+        background.execute(() -> {
+            try {
+                if ("accept".equals(action)) PeerCameraLink.INSTANCE.respond(true);
+                else PeerCameraLink.INSTANCE.request();
+                runOnUiThread(() -> { startCameraSession(CameraSessionService.MODE_PEER); refreshCameraStatus(); });
+            } catch (Exception error) {
+                runOnUiThread(() -> cameraStatus.setText(valueOr(error.getMessage(), "The other phone did not answer.")));
+            }
+        });
+    }
+
+    private void declineCameraCall() {
+        if (cameraPeerMode) {
+            background.execute(() -> {
+                try { PeerCameraLink.INSTANCE.respond(false); } catch (Exception ignored) { }
+                runOnUiThread(this::refreshCameraStatus);
+            });
+        } else {
+            try { CameraCall.INSTANCE.respond(CameraCall.PHONE, CameraCall.INSTANCE.id(), false); }
+            catch (CameraCall.Refused ignored) { }
+            refreshCameraStatus();
+        }
+    }
+
+    /** Ends the call for both sides. */
+    private void endCameraCall() {
+        if (cameraPeerMode) background.execute(PeerCameraLink.INSTANCE::stopCall);
+        else CameraCall.INSTANCE.stop(CameraCall.PHONE, null);
+        stopService(new Intent(this, CameraSessionService.class));
+        refreshCameraStatus();
+    }
+
+    /** From the incoming-call notification's Accept. */
+    private void handleCameraIntent(Intent intent) {
+        if (intent == null || !CameraCallNotifier.ACTION_ACCEPT.equals(intent.getAction())) return;
+        intent.setAction(null);
+        if (tabViews != null) showTab(4);
+        setCameraPeerMode("peer".equals(intent.getStringExtra(CameraCallNotifier.EXTRA_CHANNEL)));
+        String id = intent.getStringExtra(CameraCallNotifier.EXTRA_ID);
+        String current = cameraPeerMode ? PeerCameraLink.INSTANCE.callId() : CameraCall.INSTANCE.id();
+        if (id != null && id.equals(current) && cameraView().awaitingUs) runCameraAction("accept");
+        else refreshCameraStatus();
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleCameraIntent(intent);
+    }
+
+    private void startCameraSession(String mode) {
+        Intent service = new Intent(this, CameraSessionService.class).putExtra(CameraSessionService.EXTRA_MODE, mode);
         if (Build.VERSION.SDK_INT >= 26) startForegroundService(service); else startService(service);
-        cameraStatus.setText("Starting the camera. Your laptop must also start and approve its camera.");
-        if (phoneCameraPreview != null) phoneCameraPreview.setVisibility(View.GONE);
-        if (laptopCameraPreview != null) laptopCameraPreview.setVisibility(View.GONE);
         cameraHandler.removeCallbacks(cameraStatusPoll);
         cameraHandler.postDelayed(cameraStatusPoll, 500);
         CameraSessionService.attachRenderers(phoneCameraPreview, laptopCameraPreview);
@@ -1018,23 +1241,45 @@ public final class MainActivity extends Activity {
 
     private void refreshCameraStatus() {
         if (cameraStatus == null) return;
-        if (CameraSessionService.isRunning() || CameraSessionService.isStarting()) {
-            boolean starting = CameraSessionService.isStarting();
-            cameraToggle.setText(starting ? "Cancel camera startup" : "Stop camera session");
-            cameraStatus.setText(CameraSessionService.statusText());
-            if (phoneCameraPreview != null) phoneCameraPreview.setVisibility(starting ? View.GONE : View.VISIBLE);
-            if (laptopCameraPreview != null) laptopCameraPreview.setVisibility(starting ? View.GONE : View.VISIBLE);
-            cameraHandler.removeCallbacks(cameraStatusPoll);
-            cameraHandler.postDelayed(cameraStatusPoll, starting ? 500 : 1000);
+        CameraView view = cameraView();
+        boolean requested = "requested".equals(view.state);
+        boolean ongoing = requested || "accepted".equals(view.state) || "live".equals(view.state);
+        boolean cameraOpen = CameraSessionService.isRunning();
+        boolean live = CameraSessionService.isLive();
+        View promptCard = (View) cameraPromptBox.getParent();
+        promptCard.setVisibility(view.awaitingUs ? View.VISIBLE : View.GONE);
+        if (view.awaitingUs) {
+            cameraPromptText.setText(view.who + " wants a two-way camera call. Nothing is shared until you accept. "
+                    + Math.max(0, (view.expiresInMs + 999) / 1000) + " s left.");
+        }
+        cameraLiveBadge.setVisibility(live ? View.VISIBLE : View.GONE);
+        cameraSwitch.setVisibility(cameraOpen ? View.VISIBLE : View.GONE);
+        cameraToggle.setVisibility(view.awaitingUs ? View.GONE : View.VISIBLE);
+        cameraToggle.setText(ongoing || CameraSessionService.isActive()
+                ? (requested ? "Cancel camera request" : "End camera call for both")
+                : "Start camera session");
+        if (cameraPeerConnect != null) cameraPeerConnect.setText(PeerCameraLink.INSTANCE.connected() ? "Disconnect from that phone" : "Connect to that phone");
+        String text;
+        if (CameraSessionService.isActive() && (cameraOpen || CameraSessionService.isStarting() || requested || ongoing)) {
+            text = CameraSessionService.statusText();
+        } else if (requested && view.weAsked) {
+            text = "Waiting for the other side to accept (" + Math.max(0, (view.expiresInMs + 999) / 1000) + " s). The camera stays off until both accept.";
+        } else if (requested) {
+            text = view.who + " is asking for a camera call.";
+        } else if (cameraPeerMode && !PeerCameraLink.INSTANCE.connected()) {
+            text = "Paste the other phone's link and code, then Connect. Either phone can then start the call.";
+        } else if (!view.reason.isEmpty()) {
+            text = view.reason;
         } else {
-            cameraToggle.setText("Start camera session");
-            String lastStatus = CameraSessionService.statusText();
-            cameraStatus.setText(lastStatus == null || lastStatus.equals("Camera is off.")
-                    ? "Camera is off. Start here, then open the Windows helper's Camera page on the laptop."
-                    : lastStatus);
-            if (phoneCameraPreview != null) phoneCameraPreview.setVisibility(View.GONE);
-            if (laptopCameraPreview != null) laptopCameraPreview.setVisibility(View.GONE);
-            cameraHandler.removeCallbacks(cameraStatusPoll);
+            text = cameraPeerMode ? "Connected. Tap Start camera session to ask the other phone, or wait for its request."
+                    : "Camera is off. Tap Start camera session to ask, or accept a request from Edge or another phone.";
+        }
+        cameraStatus.setText(text);
+        if (phoneCameraPreview != null) phoneCameraPreview.setVisibility(cameraOpen ? View.VISIBLE : View.GONE);
+        if (laptopCameraPreview != null) laptopCameraPreview.setVisibility(cameraOpen ? View.VISIBLE : View.GONE);
+        cameraHandler.removeCallbacks(cameraStatusPoll);
+        if (ongoing || CameraSessionService.isActive() || (tabViews != null && tabViews[4].getVisibility() == View.VISIBLE)) {
+            cameraHandler.postDelayed(cameraStatusPoll, 500);
         }
     }
 
@@ -1133,8 +1378,8 @@ public final class MainActivity extends Activity {
 
         LinearLayout laptopKinds = new LinearLayout(this);
         laptopKinds.setOrientation(LinearLayout.HORIZONTAL);
-        String[] remoteKinds = {"all", "image", "video", "audio", "other"};
-        String[] remoteLabels = {"All", "Photos", "Videos", "Audio", "Other"};
+        String[] remoteKinds = LAPTOP_KINDS;
+        String[] remoteLabels = {"All", "Videos", "Music", "Photos", "Docs", "Apps", "Other"};
         laptopKindButtons = new Button[remoteKinds.length];
         for (int i = 0; i < remoteKinds.length; i++) {
             final String kind = remoteKinds[i];
@@ -1143,11 +1388,23 @@ public final class MainActivity extends Activity {
             chip.setTextSize(11);
             laptopKindButtons[i] = chip;
             chip.setOnClickListener(v -> setLaptopFilterKind(kind));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -2, 1f);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
             if (i > 0) lp.leftMargin = dp(3);
+            chip.setMinWidth(dp(64));
             laptopKinds.addView(chip, lp);
         }
-        addCard(laptopLibrarySection, "FILE TYPE", laptopKinds);
+        android.widget.HorizontalScrollView kindScroll = new android.widget.HorizontalScrollView(this);
+        kindScroll.setHorizontalScrollBarEnabled(false);
+        kindScroll.addView(laptopKinds);
+        addCard(laptopLibrarySection, "FILE TYPE", kindScroll);
+
+        laptopSortButton = button("Sort: Newest first ▾", COLOR_SOFT);
+        laptopSortButton.setTextColor(COLOR_INK);
+        laptopSortButton.setTextSize(12);
+        laptopSortButton.setOnClickListener(v -> chooseLaptopSort());
+        addCard(laptopLibrarySection, "SORT", laptopSortButton);
+        laptopSort = savedLibrarySort(laptopFilterKind);
+        showLaptopSort();
 
         TextView laptopStatusView = new TextView(this);
         laptopStatusView.setText("The helper shares Downloads by default. Enter a Windows folder or exact file path to switch locations.");
@@ -1267,10 +1524,81 @@ public final class MainActivity extends Activity {
         syncHelperLinkFields();
     }
 
+    static final String[] LAPTOP_KINDS = {"all", "videos", "audio", "images", "documents", "apps", "other"};
+    static final String[] SORT_LABELS = {"Name A–Z", "Name Z–A", "Newest first", "Oldest first", "Largest first", "Smallest first"};
+    private Button laptopSortButton;
+    private LibrarySort laptopSort = LibrarySort.DEFAULT;
+
+    /** Sort choice per Library category, kept across app restarts. */
+    private LibrarySort savedLibrarySort(String kind) {
+        return LibrarySort.parse(getSharedPreferences("library", MODE_PRIVATE).getString("sort_" + kind, LibrarySort.DEFAULT.id));
+    }
+
+    private void saveLibrarySort(String kind, LibrarySort sort) {
+        getSharedPreferences("library", MODE_PRIVATE).edit().putString("sort_" + kind, sort.id).apply();
+    }
+
+    private void showLaptopSort() {
+        if (laptopSortButton != null) laptopSortButton.setText("Sort: " + SORT_LABELS[laptopSort.ordinal()] + " ▾");
+    }
+
+    private void chooseLaptopSort() {
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("Sort " + laptopKindLabel(laptopFilterKind))
+                .setSingleChoiceItems(SORT_LABELS, laptopSort.ordinal(), (dialog, which) -> {
+                    laptopSort = LibrarySort.values()[which];
+                    saveLibrarySort(laptopFilterKind, laptopSort);
+                    showLaptopSort();
+                    filterLaptopRows();
+                    dialog.dismiss();
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private static String laptopKindLabel(String kind) {
+        switch (kind) {
+            case "videos": return "videos";
+            case "audio": return "music";
+            case "images": return "photos";
+            case "documents": return "documents";
+            case "apps": return "apps";
+            case "other": return "other files";
+            default: return "all files";
+        }
+    }
+
+    /** Laptop and Edge rows are JSON objects; these fields feed LibrarySort. */
+    static final LibrarySort.Fields<JSONObject> JSON_FIELDS = new LibrarySort.Fields<JSONObject>() {
+        @Override public String name(JSONObject row) { return row.optString("name", ""); }
+        @Override public long modified(JSONObject row) { return row.optLong("modified", 0L); }
+        @Override public long size(JSONObject row) { return row.optLong("size", 0L); }
+        @Override public String key(JSONObject row) { return row.optString("path", row.optString("url", "")); }
+    };
+
+    /** Filters JSON file rows by Library category and search text, then sorts them. */
+    static List<JSONObject> filterAndSortRows(List<JSONObject> rows, String queryText, String kind, LibrarySort sort) {
+        String query = queryText == null ? "" : queryText.trim().toLowerCase(java.util.Locale.ROOT);
+        String filter = MediaRepository.normalizeKind(kind);
+        List<JSONObject> out = new ArrayList<>();
+        for (JSONObject item : rows) {
+            String name = item.optString("name", "File");
+            String mime = item.optString("mime", "");
+            if (mime.isEmpty()) mime = MediaTypeClassifier.mimeType(name, null);
+            String path = item.optString("path", name);
+            boolean typeMatches = MediaRepository.matches(filter, "file", mime, name);
+            if (typeMatches && (query.isEmpty() || (name + " " + path + " " + mime).toLowerCase(java.util.Locale.ROOT).contains(query))) out.add(item);
+        }
+        out.sort((sort == null ? LibrarySort.DEFAULT : sort).comparator(JSON_FIELDS));
+        return out;
+    }
+
     private void setLaptopFilterKind(String kind) {
         laptopFilterKind = kind;
+        laptopSort = savedLibrarySort(kind);
+        showLaptopSort();
         if (laptopKindButtons != null) {
-            String[] values = {"all", "image", "video", "audio", "other"};
+            String[] values = LAPTOP_KINDS;
             for (int i = 0; i < laptopKindButtons.length; i++) {
                 boolean selected = values[i].equals(kind);
                 laptopKindButtons[i].setBackgroundColor(selected ? COLOR_GREEN : COLOR_SOFT);
@@ -1357,7 +1685,7 @@ public final class MainActivity extends Activity {
                 while (shown < LAPTOP_MAX_ROWS) {
                     HelperClient.Response response = HelperClient.request("GET",
                             helper.url("/files", "offset", String.valueOf(offset), "limit", String.valueOf(LAPTOP_PAGE_SIZE),
-                                    "refresh", offset == 0 ? "1" : "0", "q", effectiveQuery),
+                                    "refresh", offset == 0 ? "1" : "0", "q", effectiveQuery, "sort", laptopSort.id),
                             null, HelperClient.CONNECT_TIMEOUT_MS, 30000, 3);
                     if (!response.ok()) throw new HelperClient.HelperException(HelperClient.errorMessage(response.status, response.body), response.status);
                     HelperClient.FilesPage page = HelperClient.parseFilesPage(response.body, offset);
@@ -1383,7 +1711,7 @@ public final class MainActivity extends Activity {
                         status.setText("No files found in the helper's shared folder. Enter another laptop folder path above.");
                     } else {
                         filterLaptopRows();
-                        String more = finalTotal > finalShown ? " Showing the newest " + finalShown + " of " + finalTotal + "." : "";
+                        String more = finalTotal > finalShown ? " Showing the first " + finalShown + " of " + finalTotal + "." : "";
                         String partial = finalTruncated ? " The folder is very large, so only part of it was read; enter a smaller folder path to see the rest." : "";
                         if (!more.isEmpty() || !partial.isEmpty()) status.setText(status.getText() + more + partial);
                     }
@@ -1425,19 +1753,8 @@ public final class MainActivity extends Activity {
         }
 
         int filter(String queryText, String kind) {
-            String query = queryText == null ? "" : queryText.trim().toLowerCase(java.util.Locale.ROOT);
             visible.clear();
-            for (JSONObject item : all) {
-                String name = item.optString("name", "File");
-                String mime = item.optString("mime", "");
-                if (mime.isEmpty()) mime = MediaTypeClassifier.mimeType(name, null);
-                String path = item.optString("path", name);
-                boolean typeMatches = "all".equals(kind)
-                        || ("other".equals(kind)
-                            ? !(mime.startsWith("image/") || mime.startsWith("video/") || mime.startsWith("audio/"))
-                            : mime.startsWith(kind + "/"));
-                if (typeMatches && (query.isEmpty() || (name + " " + path + " " + mime).toLowerCase(java.util.Locale.ROOT).contains(query))) visible.add(item);
-            }
+            visible.addAll(filterAndSortRows(all, queryText, kind, laptopSort));
             notifyDataSetChanged();
             return visible.size();
         }
@@ -2357,8 +2674,15 @@ public final class MainActivity extends Activity {
             return;
         }
         if (requestCode == REQUEST_CAMERA_PERMISSION) {
-            if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCameraSession();
-            else if (cameraStatus != null) cameraStatus.setText("Camera permission was not granted. You can enable it in Android Settings when you want to share.");
+            String action = pendingCameraAction;
+            pendingCameraAction = "";
+            if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                if (!action.isEmpty()) runCameraAction(action);
+            } else {
+                // Without this phone's camera permission the call cannot be accepted.
+                if ("accept".equals(action)) declineCameraCall();
+                if (cameraStatus != null) cameraStatus.setText("Camera permission was not granted, so the call was not started. You can enable it in Android Settings.");
+            }
             return;
         }
         if (requestCode == REQUEST_PERMISSIONS) {

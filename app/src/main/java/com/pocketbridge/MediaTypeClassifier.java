@@ -70,6 +70,38 @@ final class MediaTypeClassifier {
         }
     }
 
+    /**
+     * The Library category a file belongs to: images, videos, audio, documents,
+     * apps or other. "files" (the old non-media tab) is documents + apps + other.
+     */
+    static String category(String mime, String name, String fallbackKind) {
+        String realMime = mimeType(name, mime);
+        String kind = kind(realMime, name, fallbackKind);
+        if ("image".equals(kind)) return "images";
+        if ("video".equals(kind)) return "videos";
+        if ("audio".equals(kind)) return "audio";
+        String ext = extension(name);
+        switch (ext) {
+            case "apk": case "apks": case "xapk": case "apkm": case "aab":
+            case "exe": case "msi": case "msix": case "appx": case "appxbundle":
+                return "apps";
+            case "pdf": case "doc": case "docx": case "odt": case "rtf": case "txt": case "md":
+            case "xls": case "xlsx": case "ods": case "csv": case "tsv":
+            case "ppt": case "pptx": case "odp": case "key": case "pages": case "numbers":
+            case "epub": case "mobi": case "azw3": case "djvu": case "log": case "json": case "xml":
+            case "htm": case "html":
+                return "documents";
+            default: break;
+        }
+        String m = realMime == null ? "" : realMime.toLowerCase(Locale.ROOT);
+        if (m.equals("application/vnd.android.package-archive")) return "apps";
+        if (m.startsWith("text/") || m.equals("application/pdf") || m.equals("application/msword")
+                || m.startsWith("application/vnd.openxmlformats-officedocument") || m.startsWith("application/vnd.ms-")
+                || m.startsWith("application/vnd.oasis.opendocument") || m.equals("application/epub+zip")
+                || m.equals("application/rtf")) return "documents";
+        return "other";
+    }
+
     private static String extension(String name) {
         if (name == null) return "";
         int dot = name.lastIndexOf('.');

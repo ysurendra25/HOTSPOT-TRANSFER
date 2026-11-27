@@ -91,12 +91,74 @@ final class MediaRepository {
     }
 
     Page listPage(String kind, int offset, int requestedLimit) {
-        return listPage(kind, offset, requestedLimit, "");
+        return listPage(kind, offset, requestedLimit, "", LibrarySort.DEFAULT);
     }
 
     Page listPage(String kind, int offset, int requestedLimit, String query) {
+        return listPage(kind, offset, requestedLimit, query, LibrarySort.DEFAULT);
+    }
+
+    /** Fields of a library item for {@link LibrarySort}. */
+    static final LibrarySort.Fields<Item> ITEM_FIELDS = new LibrarySort.Fields<Item>() {
+        @Override public String name(Item row) { return row.name; }
+        @Override public long modified(Item row) { return row.modified; }
+        @Override public long size(Item row) { return row.size; }
+        @Override public String key(Item row) { return row.key; }
+    };
+
+    /** A sorted listing kept while the browser pages through it. */
+    private static final class Snapshot {
+        final List<Item> items;
+        final long builtAt;
+        Snapshot(List<Item> items, long builtAt) { this.items = items; this.builtAt = builtAt; }
+    }
+
+    static final long SNAPSHOT_LIFE_MS = 120_000L;
+    private static final int MAX_SNAPSHOTS = 6;
+    private final java.util.LinkedHashMap<String, Snapshot> snapshots = new java.util.LinkedHashMap<String, Snapshot>(8, 0.75f, true) {
+        @Override protected boolean removeEldestEntry(java.util.Map.Entry<String, Snapshot> eldest) { return size() > MAX_SNAPSHOTS; }
+    };
+
+    /**
+     * One page of the library in the requested order. Natural name order cannot be
+     * expressed in SQL, so the matching rows (metadata only) are read once, sorted
+     * in memory and kept as a snapshot: the first page (offset 0) takes a fresh
+     * snapshot and later pages read the same one, so paging stays stable even while
+     * new photos arrive.
+     */
+    Page listPage(String kind, int offset, int requestedLimit, String query, LibrarySort sort) {
         String filter = normalizeKind(kind);
         String term = query == null ? "" : query.trim();
+        LibrarySort order = sort == null ? LibrarySort.DEFAULT : sort;
+        String cacheKey = filter + "|" + term.toLowerCase(Locale.ROOT) + "|" + order.id;
+        long now = android.os.SystemClock.elapsedRealtime();
+        int start = Math.max(0, offset);
+        int limit = Math.max(1, Math.min(5000, requestedLimit));
+        Snapshot snapshot;
+        synchronized (snapshots) {
+            snapshot = snapshots.get(cacheKey);
+            if (start == 0 || snapshot == null || now - snapshot.builtAt > SNAPSHOT_LIFE_MS) snapshot = null;
+        }
+        if (snapshot == null) {
+            snapshot = new Snapshot(collect(filter, term, order), now);
+            synchronized (snapshots) { snapshots.put(cacheKey, snapshot); }
+        }
+        return slice(snapshot.items, start, limit);
+    }
+
+    static Page slice(List<Item> sorted, int offset, int limit) {
+        int first = Math.min(Math.max(0, offset), sorted.size());
+        int last = Math.min(sorted.size(), first + Math.max(1, limit));
+        return new Page(new ArrayList<>(sorted.subList(first, last)), last, last < sorted.size());
+    }
+
+    static List<Item> sorted(List<Item> items, LibrarySort sort) {
+        List<Item> copy = new ArrayList<>(items);
+        copy.sort((sort == null ? LibrarySort.DEFAULT : sort).comparator(ITEM_FIELDS));
+        return copy;
+    }
+
+    private List<Item> collect(String filter, String term, LibrarySort order) {
         String[] projection = {MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME,
                 MediaStore.MediaColumns.MIME_TYPE, MediaStore.MediaColumns.SIZE, MediaStore.MediaColumns.DATE_MODIFIED,
                 MediaStore.Files.FileColumns.MEDIA_TYPE};
@@ -104,39 +166,44 @@ final class MediaRepository {
         String type = MediaStore.Files.FileColumns.MEDIA_TYPE;
         // Unclassified files can still be movies or music. Classify those by MIME and extension.
         String types = "images".equals(filter) ? "0,6,1" : "videos".equals(filter) ? "0,6,3"
-                : "audio".equals(filter) ? "0,6,2" : "files".equals(filter) ? "0,6" : "0,1,2,3,6";
+                : "audio".equals(filter) ? "0,6,2" : isFileCategory(filter) ? "0,6" : "0,1,2,3,6";
         String selection = "(" + type + " IS NULL OR " + type + " IN (" + types + "))";
         String[] args = null;
         if (!term.isEmpty()) {
             selection += " AND " + MediaStore.MediaColumns.DISPLAY_NAME + " LIKE ?";
-            // LIKE is a prefilter. The literal comparison below also handles filenames containing % or _.
+            // LIKE is a prefilter. The literal comparison in readPage also handles filenames containing % or _.
             args = new String[]{"%" + term + "%"};
         }
-        String order = MediaStore.MediaColumns.DATE_MODIFIED + " DESC, " + MediaStore.MediaColumns._ID + " DESC";
-        List<Item> selected = new ArrayList<>();
         String needle = term.toLowerCase(Locale.ROOT);
+        List<Item> all = new ArrayList<>();
         synchronized (picked) {
             for (Item item : picked.values()) {
-                if (("all".equals(filter) || normalizeKind(item.kind).equals(filter))
-                        && item.name.toLowerCase(Locale.ROOT).contains(needle)) selected.add(item);
+                if (matches(filter, item) && item.name.toLowerCase(Locale.ROOT).contains(needle)) all.add(item);
             }
         }
-        int start = Math.max(0, offset);
-        int limit = Math.max(1, Math.min(5000, requestedLimit));
-        int first = Math.min(start, selected.size());
-        int count = Math.min(limit, selected.size() - first);
-        List<Item> result = new ArrayList<>(selected.subList(first, first + count));
-        boolean more = selected.size() > first + count;
-        if (!more) {
-            try (Cursor cursor = context.getContentResolver().query(collection, projection, selection, args, order)) {
-                Page mediaPage = readPage(cursor, filter, Math.max(0, start - selected.size()), limit - count, term);
-                result.addAll(mediaPage.items);
-                more = mediaPage.hasMore;
-            } catch (SecurityException denied) {
-                // System-picker grants remain readable when the user denies broad media access.
-            }
+        String sqlOrder = MediaStore.MediaColumns.DATE_MODIFIED + " DESC, " + MediaStore.MediaColumns._ID + " DESC";
+        try (Cursor cursor = context.getContentResolver().query(collection, projection, selection, args, sqlOrder)) {
+            all.addAll(readPage(cursor, filter, 0, Integer.MAX_VALUE, term).items);
+        } catch (SecurityException denied) {
+            // System-picker grants remain readable when the user denies broad media access.
         }
-        return new Page(result, start + result.size(), more);
+        return sorted(all, order);
+    }
+
+    static boolean isFileCategory(String filter) {
+        return "files".equals(filter) || "documents".equals(filter) || "apps".equals(filter) || "other".equals(filter);
+    }
+
+    /** True when an item belongs to the (normalized) Library filter. */
+    static boolean matches(String filter, Item item) {
+        return matches(filter, item.kind, item.mime, item.name);
+    }
+
+    static boolean matches(String filter, String kind, String mime, String name) {
+        if ("all".equals(filter)) return true;
+        String category = MediaTypeClassifier.category(mime, name, kind);
+        if ("files".equals(filter)) return !"images".equals(category) && !"videos".equals(category) && !"audio".equals(category);
+        return category.equals(filter);
     }
 
     static Page readPage(Cursor cursor, String filter, int offset, int limit, String term) {
@@ -161,7 +228,7 @@ final class MediaRepository {
             }
             String mime = value(cursor, 2, "");
             String classified = MediaTypeClassifier.kind(MediaTypeClassifier.mimeType(name, mime), name, prefix);
-            if (!"all".equals(filter) && !normalizeKind(classified).equals(filter)) continue;
+            if (!matches(filter, classified, mime, name)) continue;
             if (matched++ < offset) continue;
             if (items.size() == limit) return new Page(items, matched - 1, true);
             long id = number(cursor, 0);
@@ -179,7 +246,10 @@ final class MediaRepository {
         if ("image".equals(value) || "images".equals(value) || "photo".equals(value) || "photos".equals(value)) return "images";
         if ("video".equals(value) || "videos".equals(value)) return "videos";
         if ("audio".equals(value) || "audios".equals(value) || "music".equals(value)) return "audio";
-        if ("file".equals(value) || "files".equals(value) || "document".equals(value) || "documents".equals(value)) return "files";
+        if ("file".equals(value) || "files".equals(value)) return "files";
+        if ("document".equals(value) || "documents".equals(value) || "docs".equals(value)) return "documents";
+        if ("app".equals(value) || "apps".equals(value) || "apk".equals(value)) return "apps";
+        if ("other".equals(value) || "others".equals(value)) return "other";
         return "all";
     }
 
@@ -188,7 +258,7 @@ final class MediaRepository {
         if ("images".equals(kind)) return grantedImageOrVideo(Manifest.permission.READ_MEDIA_IMAGES);
         if ("videos".equals(kind)) return grantedImageOrVideo(Manifest.permission.READ_MEDIA_VIDEO);
         if ("audio".equals(kind)) return grantedSimple(Manifest.permission.READ_MEDIA_AUDIO);
-        if ("files".equals(kind)) return grantedDocuments();
+        if (isFileCategory(kind)) return grantedDocuments();
         return granted("images") || granted("videos") || granted("audio") || granted("files");
     }
 

@@ -294,6 +294,89 @@ public class ServerFunctionalTest {
         try (InputStream bytes = context.getContentResolver().openInputStream(uri)) { assertEquals("pdf-bytes", readAll(bytes)); }
     }
 
+    @Test public void libraryEchoesTheSortItApplied() throws Exception {
+        org.json.JSONObject page = new org.json.JSONObject(send("GET", withCode("/api/files?kind=videos&sort=name_asc"), null, null).body);
+        assertEquals("name_asc", page.getString("sort"));
+        page = new org.json.JSONObject(send("GET", withCode("/api/files?kind=documents&sort=size_desc&offset=0&limit=10"), null, null).body);
+        assertEquals("size_desc", page.getString("sort"));
+        assertFalse(page.getBoolean("hasMore"));
+        page = new org.json.JSONObject(send("GET", withCode("/api/files?sort=nonsense"), null, null).body);
+        assertEquals("date_desc", page.getString("sort"));
+    }
+
+    @Test public void cameraCallNeedsBothSidesBeforeAnyOffer() throws Exception {
+        CameraCall.INSTANCE.reset();
+        try {
+            assertEquals(403, send("GET", "/api/camera/status", null, null).status);
+            org.json.JSONObject status = new org.json.JSONObject(send("GET", withCode("/api/camera/status"), null, null).body);
+            assertEquals("idle", status.getString("state"));
+            assertFalse(status.getBoolean("ready"));
+
+            // The laptop asks: it is the requester, the phone has to answer.
+            Response asked = send("POST", withCode("/api/camera/request"), "{\"name\":\"Laptop (Edge)\"}", null);
+            assertEquals(200, asked.status);
+            org.json.JSONObject request = new org.json.JSONObject(asked.body);
+            String id = request.getString("id");
+            assertEquals("requested", request.getString("state"));
+            assertEquals("remote", request.getString("requester"));
+            assertTrue(CameraCall.INSTANCE.awaiting(CameraCall.PHONE));
+            assertEquals(409, send("POST", withCode("/api/camera/request"), "{}", null).status);
+
+            // No offer is answered before the phone accepts, and stale ids are refused.
+            Response early = send("POST", withCode("/api/camera/offer"), "{\"id\":\"" + id + "\",\"sdp\":\"v=0\"}", null);
+            assertEquals(409, early.status);
+            assertEquals("requested", new org.json.JSONObject(early.body).getString("state"));
+            assertEquals(410, send("POST", withCode("/api/camera/offer"), "{\"id\":\"old\",\"sdp\":\"v=0\"}", null).status);
+            assertEquals(400, send("POST", withCode("/api/camera/offer"), "{\"id\":\"" + id + "\"}", null).status);
+            // The requester cannot answer its own request over HTTP.
+            assertEquals(409, send("POST", withCode("/api/camera/respond"), "{\"id\":\"" + id + "\",\"accept\":true}", null).status);
+
+            // Either side stops: the call ends for both and offers stay refused.
+            assertEquals(200, send("POST", withCode("/api/camera/stop"), "{\"id\":\"" + id + "\"}", null).status);
+            assertEquals("stopped", CameraCall.INSTANCE.state().name().toLowerCase(java.util.Locale.ROOT));
+            assertEquals(409, send("POST", withCode("/api/camera/offer"), "{\"id\":\"" + id + "\",\"sdp\":\"v=0\"}", null).status);
+
+            // The phone asks; the laptop declines from Edge.
+            String phoneCall = CameraCall.INSTANCE.request(CameraCall.PHONE, "");
+            org.json.JSONObject incoming = new org.json.JSONObject(send("GET", withCode("/api/camera/status"), null, null).body);
+            assertEquals("phone", incoming.getString("requester"));
+            assertTrue(incoming.getLong("expiresInMs") > 0);
+            Response declined = send("POST", withCode("/api/camera/respond"), "{\"id\":\"" + phoneCall + "\",\"accept\":false}", null);
+            assertEquals(200, declined.status);
+            assertEquals("declined", new org.json.JSONObject(declined.body).getString("state"));
+
+            // The phone asks again; the laptop accepts: media is now allowed for that id only.
+            String second = CameraCall.INSTANCE.request(CameraCall.PHONE, "");
+            assertEquals(200, send("POST", withCode("/api/camera/respond"), "{\"id\":\"" + second + "\",\"accept\":true}", null).status);
+            assertTrue(CameraCall.INSTANCE.mediaAllowed(second));
+            assertFalse(CameraCall.INSTANCE.mediaAllowed(id));
+            assertEquals(405, send("GET", withCode("/api/camera/request"), null, null).status);
+            assertEquals(404, send("POST", withCode("/api/camera/hijack"), "{}", null).status);
+        } finally {
+            CameraCall.INSTANCE.reset();
+        }
+    }
+
+    @Test public void cameraSignalingAcceptsOnlyTheLocalHelperOrigin() throws Exception {
+        // HttpURLConnection drops Origin (a restricted header), so speak HTTP directly.
+        String preflight = raw("OPTIONS " + withCode("/api/camera/request") + " HTTP/1.1\r\nHost: 127.0.0.1:" + MediaHttpServer.PORT
+                + "\r\nOrigin: http://127.0.0.1:7070\r\nConnection: close\r\n\r\n");
+        assertTrue(preflight, preflight.startsWith("HTTP/1.1 204"));
+        assertTrue(preflight, preflight.contains("Access-Control-Allow-Origin: http://127.0.0.1:7070"));
+        String foreign = raw("GET " + withCode("/api/camera/status") + " HTTP/1.1\r\nHost: 127.0.0.1:" + MediaHttpServer.PORT
+                + "\r\nOrigin: http://evil.example\r\nConnection: close\r\n\r\n");
+        assertTrue(foreign, foreign.startsWith("HTTP/1.1 403"));
+    }
+
+    private static String raw(String request) throws Exception {
+        try (java.net.Socket socket = new java.net.Socket("127.0.0.1", MediaHttpServer.PORT)) {
+            socket.setSoTimeout(8000);
+            socket.getOutputStream().write(request.getBytes(StandardCharsets.UTF_8));
+            socket.getOutputStream().flush();
+            return readAll(socket.getInputStream());
+        }
+    }
+
     private MediaHttpServer server;
     private Context context;
 

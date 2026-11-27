@@ -73,7 +73,8 @@ final class EdgeFiles {
                     || name.indexOf('/') >= 0 || name.indexOf((char)92) >= 0 || name.chars().anyMatch(c -> c < 32 || c == 127))
                 throw new Failure(400, "Invalid file description.");
             // Derive MIME locally; a peer cannot supply response headers.
-            next.put(id, new JSONObject().put("path", path).put("name", name).put("size", size)
+            long modified = Math.max(0L, input.optLong("modified", 0L));
+            next.put(id, new JSONObject().put("path", path).put("name", name).put("size", size).put("modified", modified)
                     .put("mime", MediaTypeClassifier.mimeType(name, null)).put("url", "/api/edge-media/" + id));
         }
         if (!append) clear();

@@ -44,12 +44,23 @@ func phoneSignal(w http.ResponseWriter, r *http.Request) {
 	var body []byte
 	switch in.Feature {
 	case "camera":
+		// The approval flow: request → respond (accept/decline) → offer, stop any time.
 		switch in.Action {
 		case "status":
 			method = "GET"
-		case "offer":
-			body, _ = json.Marshal(map[string]string{"sdp": in.SDP})
-		case "stop":
+		case "request", "respond", "offer", "stop":
+			if len(in.Data) > 0 && string(in.Data) != "null" {
+				var object map[string]any
+				if json.Unmarshal(in.Data, &object) != nil {
+					http.Error(w, "Invalid camera request.", 400)
+					return
+				}
+				body = in.Data
+			} else if in.Action == "offer" {
+				body, _ = json.Marshal(map[string]string{"sdp": in.SDP})
+			} else {
+				body = []byte("{}")
+			}
 		default:
 			http.Error(w, "Unknown camera action.", 400)
 			return

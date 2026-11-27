@@ -186,7 +186,8 @@ func filesHandler(w http.ResponseWriter, r *http.Request) {
 	config := liveCfg()
 	listing := currentListing(root, r.URL.Query().Get("refresh") == "1")
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
-	files := filterSharedFiles(listing.files, query)
+	sortMode := parseLibrarySort(r.URL.Query().Get("sort"))
+	files := sortSharedFiles(filterSharedFiles(listing.files, query), sortMode)
 	if config.ShareFile != "" {
 		exact := make([]sharedFile, 0, 1)
 		for _, item := range files {
@@ -216,6 +217,7 @@ func filesHandler(w http.ResponseWriter, r *http.Request) {
 		"truncatedBy": listing.reason,
 		"root":        root,
 		"query":       strings.ToLower(query),
+		"sort":        sortMode,
 	})
 }
 

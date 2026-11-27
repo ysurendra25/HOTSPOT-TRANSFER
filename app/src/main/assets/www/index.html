@@ -120,6 +120,15 @@
   .grid.list-view .card{display:grid;grid-template-columns:72px 1fr;align-items:center}
   .grid.list-view .thumb{width:72px;aspect-ratio:1}
   .toolbar-select{border:1px solid var(--line);border-radius:10px;background:var(--input);padding:9px 10px;color:var(--ink)}
+  .camera-live{display:inline-block;background:#d32f2f;color:#fff;font-size:12px;font-weight:800;border-radius:999px;padding:2px 10px;margin-left:8px;vertical-align:middle}
+  .camera-live[hidden],.camera-prompt[hidden]{display:none}
+  .camera-prompt{margin-top:10px;padding:12px;border:1px solid var(--teal);border-radius:12px}
+  .camera-prompt-actions{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+  .sort-label{color:var(--muted);font-size:13px;font-weight:700}
+  .sort-bar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:4px 0 12px}
+  .sort-bar-title{color:var(--muted);font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;margin-right:4px}
+  .sort-chip{border:1px solid var(--line);border-radius:999px;background:transparent;color:var(--ink);padding:6px 12px;font:inherit;font-size:13px;cursor:pointer}
+  .sort-chip.active{background:var(--teal);border-color:var(--teal);color:#fff;font-weight:700}
   .load-more{display:flex;justify-content:center;padding:20px 0 4px}
   .load-more[hidden]{display:none}
   .card{border:1px solid var(--line);background:var(--surface);border-radius:15px;overflow:hidden;
@@ -306,9 +315,12 @@
     </section>
 
     <section class="screen-card" id="cameraSection" hidden>
-      <div><div class="screen-title">Two-way camera</div>
-        <div class="screen-desc" id="laptopCameraStatus" role="status">On the phone, tap Camera → Start camera session. Then open the laptop camera here.</div></div>
-      <button id="launchCamera" class="btn btn-white" type="button">Open laptop camera</button>
+      <div><div class="screen-title">Two-way camera <span id="cameraLive" class="camera-live" hidden>● LIVE</span></div>
+        <div class="screen-desc" id="laptopCameraStatus" role="status">Request a call here, or accept one the phone sends. No camera turns on until both sides accept.</div>
+        <div id="cameraPrompt" class="camera-prompt" role="alertdialog" aria-live="assertive" hidden><strong id="cameraPromptText">The phone wants a two-way camera call.</strong>
+          <div class="camera-prompt-actions"><button id="cameraAccept" class="btn btn-white" type="button">Accept</button><button id="cameraDecline" class="btn btn-outline" type="button">Decline</button></div></div></div>
+      <button id="launchCamera" class="btn btn-white" type="button">Request camera call</button>
+      <button id="cameraStop" class="btn btn-outline" type="button" hidden>End call for both</button>
     </section>
     <details class="note" id="helperSetup" hidden>
       <summary>Set up the Windows helper for screen and camera sharing</summary>
@@ -368,17 +380,22 @@
       <div><span class="section-title">Your library</span><span class="count" id="count">Loading…</span></div>
       <input class="search" id="search" placeholder="Search files" autocomplete="off">
       <select id="sizeFilter" class="toolbar-select" aria-label="File size"><option value="all">Any size</option><option value="small">Small · under 10 MB</option><option value="medium">Medium · 10–100 MB</option><option value="large">Large · over 100 MB</option></select>
+      <label class="sort-label" for="sortSelect">Sort</label>
+      <select id="sortSelect" class="toolbar-select sort-select" aria-label="Sort this category"><option value="name_asc">Name A–Z</option><option value="name_desc">Name Z–A</option><option value="date_desc" selected>Newest first</option><option value="date_asc">Oldest first</option><option value="size_desc">Largest first</option><option value="size_asc">Smallest first</option></select>
       <button class="btn btn-outline" id="layoutToggle" type="button">List view</button>
     </section>
 
     <nav class="tabs" id="kindTabs" aria-label="Media type">
       <button class="tab active" data-kind="all">All</button>
-      <button class="tab" data-kind="images">Photos</button>
       <button class="tab" data-kind="videos">Videos</button>
-      <button class="tab" data-kind="audio">Audio</button>
-      <button class="tab" data-kind="files">Files</button>
+      <button class="tab" data-kind="audio">Music</button>
+      <button class="tab" data-kind="images">Photos</button>
+      <button class="tab" data-kind="documents">Documents</button>
+      <button class="tab" data-kind="apps">Apps</button>
+      <button class="tab" data-kind="other">Other</button>
       <button class="tab" data-kind="recent">Recent</button>
     </nav>
+    <div class="sort-bar" id="sortBar" role="group" aria-label="Sort order"><span class="sort-bar-title" id="sortBarTitle">Sort</span><button type="button" class="sort-chip" data-sort="name_asc">Name A–Z</button><button type="button" class="sort-chip" data-sort="name_desc">Name Z–A</button><button type="button" class="sort-chip" data-sort="date_desc">Newest</button><button type="button" class="sort-chip" data-sort="date_asc">Oldest</button><button type="button" class="sort-chip" data-sort="size_desc">Largest</button><button type="button" class="sort-chip" data-sort="size_asc">Smallest</button></div>
 
     <section class="grid" id="grid"><div class="loading">Finding media on your phone…</div></section>
     <div id="filesPaging" hidden><div class="load-more" id="loadMoreWrap" hidden><button class="btn btn-soft" id="loadMore" type="button">Load more</button></div></div>
@@ -558,6 +575,39 @@
     startDownload(url, base + '.m3u');
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   }
+  /* Library sort: one choice per category, kept in this browser. */
+  const SORTS = ['name_asc', 'name_desc', 'date_desc', 'date_asc', 'size_desc', 'size_asc'];
+  const DEFAULT_SORT = 'date_desc';
+  function sortKey(kind) { return 'pb_sort_' + (kind || 'all'); }
+  function sortFor(kind) {
+    try {
+      const saved = localStorage.getItem(sortKey(kind));
+      if (SORTS.includes(saved)) return saved;
+    } catch (_) { }
+    return DEFAULT_SORT;
+  }
+  function rememberSort(kind, value) {
+    if (!SORTS.includes(value)) return;
+    try { localStorage.setItem(sortKey(kind), value); } catch (_) { }
+  }
+  const naturalCollator = (typeof Intl !== 'undefined') ? new Intl.Collator(undefined, {numeric: true, sensitivity: 'base'}) : null;
+  /** Same orders as the phone's LibrarySort, for lists the page sorts itself. */
+  function sortRows(rows, value) {
+    const byName = (a, b) => naturalCollator ? naturalCollator.compare(a.name || '', b.name || '')
+      : String(a.name || '').localeCompare(String(b.name || ''), undefined, {numeric: true, sensitivity: 'base'});
+    const byKey = (a, b) => String(a.id || a.path || '').localeCompare(String(b.id || b.path || ''));
+    const num = (v) => Number(v) || 0;
+    const order = {
+      name_asc: (a, b) => byName(a, b) || byKey(a, b),
+      name_desc: (a, b) => byName(b, a) || byKey(a, b),
+      date_desc: (a, b) => num(b.modified) - num(a.modified) || byKey(b, a),
+      date_asc: (a, b) => num(a.modified) - num(b.modified) || byName(a, b) || byKey(a, b),
+      size_desc: (a, b) => num(b.size) - num(a.size) || byName(a, b) || byKey(a, b),
+      size_asc: (a, b) => num(a.size) - num(b.size) || byName(a, b) || byKey(a, b),
+    }[SORTS.includes(value) ? value : DEFAULT_SORT];
+    return rows.slice().sort(order);
+  }
+
   const formatSize = (bytes) => {
     if (!bytes) return '0 B';
     const units = ['B','KB','MB','GB'];
@@ -630,7 +680,8 @@
     const limit = currentKind === 'recent' ? MAX_PAGE_SIZE : PAGE_SIZE;
     try {
       const query = '/api/files?kind=' + encodeURIComponent(currentKind === 'recent' ? 'all' : currentKind) +
-        '&offset=' + nextOffset + '&limit=' + limit + '&q=' + encodeURIComponent(search.value.trim());
+        '&offset=' + nextOffset + '&limit=' + limit + '&q=' + encodeURIComponent(search.value.trim()) +
+        '&sort=' + encodeURIComponent(sortFor(currentKind));
       const response = await fetch(endpoint(query), {cache:'no-store'});
       if (sequence !== loadSequence) return;
       if (response.status === 403) {
@@ -862,9 +913,31 @@
       document.querySelector('#kindTabs .tab.active')?.classList.remove('active');
       tab.classList.add('active');
       currentKind = tab.getAttribute('data-kind');
+      showSort();
       loadFiles(true);
     });
   });
+  function showSort() {
+    const value = sortFor(currentKind);
+    const select = document.getElementById('sortSelect');
+    if (select) select.value = value;
+    document.querySelectorAll('#sortBar .sort-chip').forEach(chip => {
+      const on = chip.dataset.sort === value;
+      chip.classList.toggle('active', on);
+      chip.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+    const title = document.getElementById('sortBarTitle');
+    const tab = document.querySelector('#kindTabs .tab.active');
+    if (title) title.textContent = 'Sort ' + (tab ? tab.textContent.trim() : 'All');
+  }
+  function chooseSort(value) {
+    rememberSort(currentKind, value);
+    showSort();
+    loadFiles(true);
+  }
+  document.getElementById('sortSelect').addEventListener('change', event => chooseSort(event.target.value));
+  document.querySelectorAll('#sortBar .sort-chip').forEach(chip => chip.addEventListener('click', () => chooseSort(chip.dataset.sort)));
+  showSort();
 
   /* ---------- player ---------- */
   let media = null;
@@ -1735,7 +1808,7 @@
     }
     edgePicker.disabled = edgeFolder.disabled = true;
     const owner = edgeId(), share = {owner, files};
-    const entries = Array.from(files, ([id, f]) => ({id, name:f.name, path:f.webkitRelativePath || f.name, size:f.size}));
+    const entries = Array.from(files, ([id, f]) => ({id, name:f.name, path:f.webkitRelativePath || f.name, size:f.size, modified:Number(f.lastModified) || 0}));
     try {
       for (let i = 0; i < entries.length; i += 100) {
         const batch = entries.slice(i, i + 100);
@@ -2032,7 +2105,7 @@
     connect: ['heroSection', 'airplaneSection', 'transferSection', 'edgeFilesSection'],
     screen: ['screenSection', 'laptopScreenSection', 'screenView', 'helperSetup'],
     camera: ['cameraSection', 'helperSetup'],
-    files: ['inboxSection', 'inboxGrid', 'librarySection', 'kindTabs', 'grid', 'filesPaging', 'transferSection', 'edgeFilesSection'],
+    files: ['inboxSection', 'inboxGrid', 'librarySection', 'kindTabs', 'sortBar', 'grid', 'filesPaging', 'transferSection', 'edgeFilesSection'],
     chat: ['chatSection', 'chatCard'],
     music: ['musicSection']
   };

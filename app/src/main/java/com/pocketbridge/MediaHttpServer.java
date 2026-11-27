@@ -198,6 +198,7 @@ final class MediaHttpServer {
     int openConnectionCount() { return openSockets.size(); }
 
     void stop() {
+        CameraCall.INSTANCE.stop(CameraCall.PHONE, "Sharing stopped on the phone.");
         edgeFiles.clear();
         if (activeEdgeFiles == edgeFiles) activeEdgeFiles = null;
         if (activeLibrary == media) activeLibrary = null;
@@ -554,8 +555,10 @@ final class MediaHttpServer {
                 if (kind == null) kind = "all";
                 int offset = queryInt(target, "offset", 0, 0, Integer.MAX_VALUE);
                 int limit = queryInt(target, "limit", 120, 1, 5_000);
-                MediaRepository.Page page = media.listPage(kind, offset, limit, target.getQueryParameter("q"));
+                LibrarySort sort = LibrarySort.parse(target.getQueryParameter("sort"));
+                MediaRepository.Page page = media.listPage(kind, offset, limit, target.getQueryParameter("q"), sort);
                 JSONObject response = new JSONObject()
+                        .put("sort", sort.id)
                         .put("files", media.listJson(page))
                         .put("nextOffset", page.nextOffset)
                         .put("hasMore", page.hasMore)
@@ -635,61 +638,8 @@ final class MediaHttpServer {
                 respond(output, 200, "application/json; charset=utf-8", state.toString(), null);
                 return;
             }
-            if ((path.equals("/api/camera/status") || path.equals("/api/camera/offer") || path.equals("/api/camera/stop")) && method.equals("OPTIONS")) {
-                String cors = cameraCorsHeaders(headers);
-                if (cors == null) {
-                    respond(output, 403, "text/plain; charset=utf-8", "Camera calls are accepted only from the laptop's local helper page.", null);
-                } else {
-                    respond(output, 204, "text/plain; charset=utf-8", "", cors);
-                }
-                return;
-            }
-            if (path.equals("/api/camera/status") && method.equals("GET")) {
-                String cors = cameraCorsHeaders(headers);
-                if (headers.containsKey("origin") && cors == null) {
-                    respond(output, 403, "application/json; charset=utf-8", "{\"error\":\"Open the camera page from the Windows helper on this laptop.\"}", null);
-                    return;
-                }
-                JSONObject state = new JSONObject().put("ready", CameraSessionService.isRunning())
-                        .put("status", CameraSessionService.statusText());
-                respond(output, 200, "application/json; charset=utf-8", state.toString(), cors);
-                return;
-            }
-            if (path.equals("/api/camera/offer") && method.equals("POST")) {
-                String cors = cameraCorsHeaders(headers);
-                if (headers.containsKey("origin") && cors == null) {
-                    respond(output, 403, "application/json; charset=utf-8", "{\"error\":\"Open the camera page from the Windows helper on this laptop.\"}", null);
-                    return;
-                }
-                JSONObject request = new JSONObject(new String(body, StandardCharsets.UTF_8));
-                String sdp = request.optString("sdp", "");
-                if (sdp.isEmpty() || sdp.length() > 200_000) {
-                    respond(output, 400, "application/json; charset=utf-8", "{\"error\":\"The laptop camera offer is empty or too large.\"}", cors);
-                    return;
-                }
-                if (!CameraSessionService.isRunning()) {
-                    respond(output, 409, "application/json; charset=utf-8", "{\"error\":\"Start the phone camera session and approve Android camera access first.\"}", cors);
-                    return;
-                }
-                String answer = CameraSessionService.answerOffer(sdp);
-                if (answer == null || answer.isEmpty()) {
-                    String error = CameraSessionService.lastOfferError();
-                    JSONObject failure = new JSONObject().put("error", error == null ? "The phone could not answer the camera call." : error);
-                    respond(output, 409, "application/json; charset=utf-8", failure.toString(), cors);
-                    return;
-                }
-                respond(output, 200, "application/json; charset=utf-8",
-                        new JSONObject().put("type", "answer").put("sdp", answer).toString(), cors);
-                return;
-            }
-            if (path.equals("/api/camera/stop") && method.equals("POST")) {
-                String cors = cameraCorsHeaders(headers);
-                if (headers.containsKey("origin") && cors == null) {
-                    respond(output, 403, "application/json; charset=utf-8", "{\"error\":\"Open the camera page from the Windows helper on this laptop.\"}", null);
-                    return;
-                }
-                CameraSessionService.stopPeer();
-                respond(output, 200, "application/json; charset=utf-8", "{\"ok\":true}", cors);
+            if (path.startsWith("/api/camera/")) {
+                handleCamera(output, method, path, headers, body);
                 return;
             }
             if (path.equals("/api/screen/mjpeg") && method.equals("GET")) {
@@ -1477,6 +1427,88 @@ final class MediaHttpServer {
     private static boolean constantTimeEquals(String expected, String actual) {
         if (expected == null || actual == null) return false;
         return java.security.MessageDigest.isEqual(expected.getBytes(StandardCharsets.UTF_8), actual.getBytes(StandardCharsets.UTF_8));
+    }
+
+    static final java.util.Set<String> CAMERA_ROUTES = new java.util.HashSet<>(java.util.Arrays.asList(
+            "/api/camera/status", "/api/camera/request", "/api/camera/respond", "/api/camera/offer", "/api/camera/stop"));
+
+    /**
+     * Camera call signaling for the remote side (the laptop's Edge camera window
+     * or another phone). The phone's own answers come from the app, never over HTTP.
+     * Every route reports the call state, so a refusal tells the caller where it stands.
+     */
+    private void handleCamera(BufferedOutputStream output, String method, String path, Map<String, String> headers, byte[] body) throws Exception {
+        String cors = cameraCorsHeaders(headers);
+        if (!CAMERA_ROUTES.contains(path)) { respond(output, 404, "application/json; charset=utf-8", "{\"error\":\"Unknown camera route.\"}", cors); return; }
+        if (method.equals("OPTIONS")) {
+            if (cors == null) respond(output, 403, "text/plain; charset=utf-8", "Camera calls are accepted only from the laptop's local helper page.", null);
+            else respond(output, 204, "text/plain; charset=utf-8", "", cors);
+            return;
+        }
+        if (headers.containsKey("origin") && cors == null) {
+            respond(output, 403, "application/json; charset=utf-8", "{\"error\":\"Open the camera page from the Windows helper on this laptop.\"}", null);
+            return;
+        }
+        CameraCall call = CameraCall.INSTANCE;
+        boolean status = path.equals("/api/camera/status");
+        if (status ? !method.equals("GET") : !method.equals("POST")) {
+            respond(output, 405, "application/json; charset=utf-8", "{\"error\":\"Wrong method for this camera route.\"}", cors);
+            return;
+        }
+        JSONObject request;
+        try { request = body.length == 0 ? new JSONObject() : new JSONObject(new String(body, StandardCharsets.UTF_8)); }
+        catch (org.json.JSONException invalid) { respond(output, 400, "application/json; charset=utf-8", "{\"error\":\"Invalid camera request.\"}", cors); return; }
+        try {
+            switch (path) {
+                case "/api/camera/status":
+                    call.tick();
+                    break;
+                case "/api/camera/request":
+                    if (CameraSessionService.MODE_PEER.equals(CameraSessionService.mode())) {
+                        throw new CameraCall.Refused(409, "This phone's camera is already in a call with another phone.");
+                    }
+                    call.request(CameraCall.REMOTE, request.optString("name", ""));
+                    break;
+                case "/api/camera/respond":
+                    call.respond(CameraCall.REMOTE, request.optString("id", ""), request.optBoolean("accept", false));
+                    break;
+                case "/api/camera/stop":
+                    String stopId = request.optString("id", "");
+                    if (stopId.isEmpty() || stopId.equals(call.id())) {
+                        call.stop(CameraCall.REMOTE, null);
+                        CameraSessionService.stopPeer();
+                    }
+                    break;
+                case "/api/camera/offer": {
+                    String sdp = request.optString("sdp", "");
+                    if (sdp.isEmpty() || sdp.length() > 200_000) throw new CameraCall.Refused(400, "The camera offer is empty or too large.");
+                    String id = request.optString("id", "");
+                    // No media before both sides accept: the offer is refused, not queued.
+                    call.requireMediaAllowed(id);
+                    String answer = CameraSessionService.answerOffer(id, sdp);
+                    if (answer == null || answer.isEmpty()) {
+                        String error = CameraSessionService.lastOfferError();
+                        throw new CameraCall.Refused(409, error == null || error.isEmpty() ? "The phone could not answer the camera call." : error);
+                    }
+                    respond(output, 200, "application/json; charset=utf-8",
+                            cameraState().put("type", "answer").put("sdp", answer).toString(), cors);
+                    return;
+                }
+                default: break;
+            }
+            respond(output, 200, "application/json; charset=utf-8", cameraState().toString(), "Cache-Control: no-store\r\n" + (cors == null ? "" : cors));
+        } catch (CameraCall.Refused refused) {
+            respond(output, refused.status, "application/json; charset=utf-8",
+                    cameraState().put("error", refused.getMessage()).toString(), cors);
+        }
+    }
+
+    /** The call state plus whether this phone's camera is open (ready) and live. */
+    static JSONObject cameraState() throws org.json.JSONException {
+        return CameraCall.INSTANCE.toJson()
+                .put("ready", CameraSessionService.isRunning())
+                .put("live", CameraSessionService.isLive())
+                .put("status", CameraSessionService.statusText());
     }
 
     /** Allow browser camera signaling only from the helper's secure localhost origin. */

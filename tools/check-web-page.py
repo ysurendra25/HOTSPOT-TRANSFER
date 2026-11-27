@@ -87,6 +87,14 @@ def main():
         "chat file picker": 'id="chatFile"',
         "music play control": 'id="musicPlayPause"',
         "music queue repeat control": 'id="musicRepeat"',
+        "library sort select in the toolbar": 'id="sortSelect"',
+        "visible library sort buttons": 'id="sortBar"',
+        "library asks the phone for the chosen sort": "'&sort=' + encodeURIComponent(sortFor(currentKind))",
+        "sort choice is kept per category": "'pb_sort_' + (kind || 'all')",
+        "every library category tab": 'data-kind="documents"',
+        "camera call prompt with accept and decline": 'id="cameraAccept"',
+        "camera call live indicator": 'id="cameraLive"',
+        "either side can end the camera call": 'id="cameraStop"',
     }
     for feature, marker in required_page_features.items():
         if marker not in html:
@@ -98,8 +106,8 @@ def main():
     if "if (!confirm('Download " in html:
         problems += fail("recipient file download still requires a second confirmation instead of one deliberate click")
     groups = re.search(r"const TAB_GROUPS = \{(.*?)\n  \};", html, re.S)
-    if not groups or "files: ['inboxSection', 'inboxGrid', 'librarySection', 'kindTabs', 'grid', 'filesPaging', 'transferSection', 'edgeFilesSection']" not in groups.group(1):
-        problems += fail("video and file type filters must stay inside the Files tab")
+    if not groups or "files: ['inboxSection', 'inboxGrid', 'librarySection', 'kindTabs', 'sortBar', 'grid', 'filesPaging', 'transferSection', 'edgeFilesSection']" not in groups.group(1):
+        problems += fail("video and file type filters and the sort buttons must stay inside the Files tab")
     if not groups or "music: ['musicSection']" not in groups.group(1):
         problems += fail("the Music tab must show only the music player and song list")
     if "2560px / 12 fps" in html or "up to 1280px" in html:
@@ -121,6 +129,18 @@ def main():
         except FileNotFoundError:
             print("note: node is not installed, skipping JavaScript syntax checks")
             break
+    camera_js = (ROOT / "app/src/main/assets/www/camera-launch.js").read_text(encoding="utf-8")
+    camera_html = (ROOT / "tools/win-control/upstream-v0.1.0/web-remote-desktop-0.1.0/web/camera.html").read_text(encoding="utf-8")
+    for marker in ("request: 'POST'", "respond: 'POST'", "endpoint('/api/camera/' + action)", "command: 'accept'"):
+        if marker not in camera_js:
+            problems += fail("camera launcher is missing " + marker)
+    for marker in ("signal('request'", "signal('respond'", "state.phoneAccepted && state.remoteAccepted", "setCodecPreferences",
+                   "iceServers:[]", 'id="live"', 'id="accept"', 'id="decline"'):
+        if marker not in camera_html:
+            problems += fail("laptop camera window is missing " + marker)
+    for route in ("/api/camera/status", "/api/camera/request", "/api/camera/respond", "/api/camera/offer", "/api/camera/stop"):
+        if '"' + route + '"' not in server:
+            problems += fail("the phone server does not route " + route)
     for marker in ("PBQ1|F|", "PBQ1|T|", "128 KiB", "BarcodeDetector", "/qr.png"):
         if marker not in qr_html:
             problems += fail("QR share page is missing " + marker)

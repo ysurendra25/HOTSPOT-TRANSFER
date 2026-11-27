@@ -86,6 +86,7 @@ public final class ShareSessionService extends Service {
     @Override public void onCreate() {
         super.onCreate();
         createNotificationChannel();
+        CameraCallNotifier.install(this);
     }
 
     private boolean sessionActive() {

@@ -355,7 +355,7 @@ public final class ScreenCaptureService extends Service {
     }
 
     /** Which codecs WebRTC runs in hardware on this phone, and what sizes they accept. */
-    private static ScreenEncoderPlan planEncoder(EglBase egl) {
+    static ScreenEncoderPlan planEncoder(EglBase egl) {
         java.util.Set<String> hardware = new java.util.HashSet<>();
         try {
             for (VideoCodecInfo codec : new HardwareVideoEncoderFactory(egl.getEglBaseContext(), true, true).getSupportedCodecs()) {

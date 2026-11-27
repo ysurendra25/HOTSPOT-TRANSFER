@@ -21,6 +21,10 @@
   button:disabled{opacity:.45;cursor:not-allowed}button.secondary{background:#1b333b;color:var(--ink)}
   #status{padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:#0b181c;color:var(--muted);overflow-wrap:anywhere}
   .consent{font-size:13px}a{color:#70e3c1}
+  .live{display:inline-block;background:#d32f2f;color:#fff;font-weight:800;border-radius:999px;padding:4px 12px;font-size:13px;letter-spacing:.05em}
+  .live[hidden],.prompt[hidden]{display:none}
+  .prompt{border:1px solid var(--green);border-radius:14px;padding:14px;margin:14px 0;background:#0d2a24}
+  .prompt strong{display:block;margin-bottom:8px}
   @media(max-width:700px){.grid{grid-template-columns:1fr}main{padding-top:16px}}
 </style>
 </head>
@@ -28,7 +32,8 @@
 <main>
   <div class="eyebrow">POCKETBRIDGE · LOCAL NETWORK</div>
   <h1>Two-way camera share</h1>
-  <p>Connect this laptop directly to the phone over Wi-Fi or its hotspot. Both people approve: start the camera on the phone, then press Connect here and allow Edge to use the laptop camera. Video is peer-to-peer on the local link; no cloud or relay server is used.</p>
+  <p>Connect this laptop directly to the phone over Wi-Fi or its hotspot. One side asks for the call and the other accepts; no camera turns on until both have accepted and allowed camera access. Video is peer-to-peer on the local link; no cloud or relay server is used.</p>
+  <p><span id="live" class="live" hidden>● LIVE</span></p>
   <section class="grid" aria-label="Camera previews">
     <div class="card"><h2>Laptop camera · shared after approval</h2><video id="local" autoplay muted playsinline></video></div>
     <div class="card"><h2>Phone camera · received here</h2><video id="remote" autoplay playsinline></video></div>
@@ -40,29 +45,29 @@
     <label for="code">Six-digit code shown in PocketBridge</label>
     <input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456">
     <label for="source">Send to phone</label><select id="source"><option value="camera">Laptop webcam</option><option value="screen">Edge tab, window or entire screen</option></select>
-    <div class="actions"><button id="connect">Connect and share</button><button id="stop" class="secondary" disabled>Stop sharing</button></div>
+    <div id="prompt" class="prompt" hidden role="alertdialog" aria-live="assertive"><strong id="promptText">The phone wants a two-way camera call.</strong>
+      <div class="actions"><button id="accept">Accept</button><button id="decline" class="secondary">Decline</button></div></div>
+    <div class="actions"><button id="connect">Request camera call</button><button id="stop" class="secondary" disabled>End call for both</button></div>
     <div id="status" role="status" aria-live="polite">Waiting. No camera is active yet.</div>
-    <p class="consent">The phone owner must first tap Start camera session and approve Android's camera prompt. The laptop owner approves separately in Edge. Either person can stop the camera at any time. This camera view does not control either device.</p>
+    <p class="consent">Requests expire after 30 seconds. The phone approves in PocketBridge (with a notification if the app is in the background) and grants Android's camera permission; this laptop approves here and in Edge's camera prompt. Either person can end the call for both at any time. This camera view does not control either device.</p>
   </section>
 </main>
 <script src="/capture-signal.js"></script>
 <script>
 (() => {
-  const phone = document.querySelector('#phone');
-  const code = document.querySelector('#code');
-  const localVideo = document.querySelector('#local');
-  const remoteVideo = document.querySelector('#remote');
-  const connect = document.querySelector('#connect');
-  const stopButton = document.querySelector('#stop');
-  const status = document.querySelector('#status');
+  const $ = id => document.getElementById(id);
+  const phone = $('phone'), code = $('code'), localVideo = $('local'), remoteVideo = $('remote');
+  const connect = $('connect'), stopButton = $('stop'), status = $('status'), live = $('live');
+  const prompt = $('prompt'), promptText = $('promptText'), acceptButton = $('accept'), declineButton = $('decline');
   const pairedPage = location.pathname === '/capture-camera';
-  let openerOrigin, bridge, active, nextId = 0;
+  const ENDED = ['idle', 'stopped', 'declined', 'expired'];
+  let openerOrigin, bridge, call = null, lastState = {}, pollTimer = 0, nextId = 0;
   const requests = new Map();
   const say = message => { status.textContent = message; };
 
   if (location.pathname === '/offline-camera') phone.value = new URLSearchParams(location.hash.slice(1)).get('phone') || '';
   if (pairedPage) {
-    phone.parentElement.querySelectorAll('label,input').forEach(el => el.hidden = true);
+    phone.parentElement.querySelectorAll('label[for=phone],label[for=code],#phone,#code').forEach(el => el.hidden = true);
     connect.disabled = true;
     try {
       const addr = new URL(decodeURIComponent(location.hash.slice(1)));
@@ -76,25 +81,30 @@
             event.data !== 'pb-camera-paired' || event.ports.length !== 1) return;
         bridge = event.ports[0];
         bridge.onmessage = ({data}) => {
+          if (!data) return;
           if (data.closed) {
             const old = bridge;
             bridge = null;
             old.close();
-            stopLocal();
+            teardown('The hotspot tab closed. Open Camera again from the phone link.');
             requests.forEach(request => request.reject(new Error('Hotspot tab closed.')));
             requests.clear();
             connect.disabled = true;
-            say('The hotspot tab closed. Open Camera again from the phone link.');
             return;
           }
+          // Commands from the hotspot page's own Request / Accept / End buttons.
+          if (data.command === 'request') { requestCall(); return; }
+          if (data.command === 'accept') { acceptCall(data.callId); return; }
+          if (data.command === 'stop') { endCall(); return; }
           const request = requests.get(data.id);
           if (!request) return;
           requests.delete(data.id);
           if (data.ok) request.resolve(data.body);
-          else request.reject(new Error(data.body.error || 'Phone rejected the camera request.'));
+          else request.reject(Object.assign(new Error((data.body && data.body.error) || 'Phone rejected the camera request.'), {state: data.body}));
         };
         connect.disabled = false;
-        say('Paired with ' + openerOrigin + '. Start Camera on the phone, then approve the webcam here.');
+        say('Paired with ' + openerOrigin + '. Request a call, or wait for the phone to ask.');
+        startPolling();
       });
       window.opener.postMessage('pb-camera-ready', openerOrigin);
     } catch {
@@ -102,7 +112,17 @@
     }
   }
 
-  async function signal(action, session, sdp) {
+  function target() {
+    const parts = phone.value.trim().split(/\s*code\s*[:=]?\s*/i);
+    let origin;
+    try { origin = new URL(parts[0]).origin; } catch { return null; }
+    const pin = code.value.trim() || parts[1] || '';
+    if (!origin.startsWith('http://') || !/^\d{6}$/.test(pin)) return null;
+    return {origin, code: pin};
+  }
+
+  /** One signaling call: status (GET) or request / respond / offer / stop (POST JSON). */
+  async function signal(action, data) {
     if (pairedPage) {
       if (!bridge) throw new Error('The hotspot tab is closed. Reopen Camera there.');
       const id = ++nextId;
@@ -112,43 +132,114 @@
           resolve: value => { clearTimeout(timer); resolve(value); },
           reject: error => { clearTimeout(timer); reject(error); }
         });
-        bridge.postMessage({id, action, sdp});
+        bridge.postMessage({id, action, data: data || {}});
       });
     }
-    if (location.pathname === '/offline-camera') return localSignal({phone:session.origin,code:session.code,feature:'camera',action,sdp});
+    const session = target();
+    if (!session) throw new Error('Enter the phone link and its six-digit code.');
+    if (location.pathname === '/offline-camera') return localSignal({phone:session.origin, code:session.code, feature:'camera', action, data: data || {}});
     const url = session.origin + '/api/camera/' + action + '?code=' + encodeURIComponent(session.code);
     const options = {method: action === 'status' ? 'GET' : 'POST', cache: 'no-store', signal: AbortSignal.timeout(30000)};
-    if (sdp) { options.headers = {'Content-Type':'application/json'}; options.body = JSON.stringify({sdp}); }
+    if (action !== 'status') { options.headers = {'Content-Type':'application/json'}; options.body = JSON.stringify(data || {}); }
     const res = await fetch(url, options);
     const result = await res.json();
-    if (!res.ok) throw new Error(result.error || 'Phone replied with HTTP ' + res.status);
+    if (!res.ok) throw Object.assign(new Error(result.error || 'Phone replied with HTTP ' + res.status), {state: result});
     return result;
   }
 
-  function stopLocal() {
-    const previous = active;
-    active = null;
-    if (previous) {
-      previous.abort.abort();
-      previous.stream?.getTracks().forEach(track => track.stop());
-      if (previous.pc) { previous.pc.ontrack = null; previous.pc.onconnectionstatechange = null; previous.pc.close(); }
-    }
-    localVideo.srcObject = remoteVideo.srcObject = null;
-    connect.disabled = pairedPage && !bridge;
-    stopButton.disabled = true;
-    return previous;
+  function startPolling() {
+    clearTimeout(pollTimer);
+    const tick = async () => {
+      try { render(await signal('status')); } catch (error) { if (!call) say(error.message); }
+      pollTimer = setTimeout(tick, call ? 700 : 1500);
+    };
+    tick();
   }
 
-  async function stop() {
-    const session = stopLocal();
-    if (!session) return;
-    if (session.offered) {
-      connect.disabled = true;
-      try { await signal('stop', session); } catch { /* The local feeds are already closed. */ }
-      if (active) return;
+  /** Follows the phone's call state: prompt, start media once both accepted, tear down when it ends. */
+  function render(state) {
+    if (!state || typeof state.state !== 'string') return;
+    lastState = state;
+    const incoming = state.state === 'requested' && state.requester === 'phone' && !call;
+    prompt.hidden = !incoming;
+    if (incoming) promptText.textContent = 'The phone wants a two-way camera call. Nothing is shared until you accept. ' +
+      Math.ceil((state.expiresInMs || 0) / 1000) + ' s left.';
+    if (!call) {
       connect.disabled = pairedPage && !bridge;
+      stopButton.disabled = !(state.state === 'requested' || state.state === 'accepted' || state.state === 'live');
+      if (incoming) say('The phone is asking for a camera call.');
+      else if (ENDED.includes(state.state) && state.reason) say(state.reason);
+      return;
     }
-    say('Camera share stopped.');
+    if (call.id && state.id !== call.id) { teardown('This camera call was replaced by a new one.'); return; }
+    if (ENDED.includes(state.state)) { teardown(state.reason || 'The camera call ended.'); return; }
+    if (state.state === 'requested') {
+      say('Waiting for the phone to accept (' + Math.ceil((state.expiresInMs || 0) / 1000) + ' s). Your camera stays off until it does.');
+    }
+    if ((state.state === 'accepted' || state.state === 'live') && state.phoneAccepted && state.remoteAccepted && !call.media) {
+      // Edge only opens the screen picker from a click, so a screen source waits for one.
+      if ($('source').value === 'screen' && !(navigator.userActivation && navigator.userActivation.isActive)) {
+        call.needsClick = true;
+        connect.disabled = false;
+        connect.textContent = 'Choose what to share';
+        say('Both sides accepted. Click Choose what to share to pick a screen or window.');
+      } else startMedia(call);
+    }
+  }
+
+  async function requestCall() {
+    if (call) return;
+    if (!pairedPage && !target()) { say('Enter the phone link and its six-digit code.'); return; }
+    call = {abort: new AbortController()};
+    connect.disabled = true;
+    stopButton.disabled = false;
+    prompt.hidden = true;
+    say('Asking the phone for a camera call…');
+    try {
+      const state = await signal('request', {name: 'Laptop (Edge)'});
+      call.id = state.id;
+      if (!pairedPage) startPolling();
+      render(state);
+    } catch (error) {
+      call = null;
+      connect.disabled = false;
+      stopButton.disabled = true;
+      say(error.message);
+    }
+  }
+
+  async function acceptCall(callId) {
+    const id = callId || lastState.id;
+    if (call || !id) return;
+    call = {id, abort: new AbortController()};
+    connect.disabled = true;
+    stopButton.disabled = false;
+    prompt.hidden = true;
+    say('Accepting…');
+    try { render(await signal('respond', {id, accept: true})); }
+    catch (error) { call = null; connect.disabled = false; say(error.message); }
+  }
+
+  async function declineCall() {
+    prompt.hidden = true;
+    try { render(await signal('respond', {id: lastState.id, accept: false})); } catch (error) { say(error.message); }
+  }
+
+  function preferHardwareH264(transceiver) {
+    // The phone answers in this order, so H.264 (hardware on phones and on Edge) is used both ways.
+    try {
+      if (!transceiver.setCodecPreferences || !RTCRtpReceiver.getCapabilities) return;
+      const caps = RTCRtpReceiver.getCapabilities('video');
+      if (!caps) return;
+      const rank = c => {
+        const fmtp = c.sdpFmtpLine || '';
+        if (/h264/i.test(c.mimeType)) return /packetization-mode=1/.test(fmtp) ? (/profile-level-id=42e0/i.test(fmtp) ? 0 : 1) : 2;
+        if (/vp8/i.test(c.mimeType)) return 3;
+        if (/rtx|red|ulpfec|flexfec/i.test(c.mimeType)) return 5;
+        return 4;
+      };
+      transceiver.setCodecPreferences(caps.codecs.slice().sort((a, b) => rank(a) - rank(b)));
+    } catch { /* Older Edge: keep its default order; the phone still reorders its answer. */ }
   }
 
   function gather(pc, abort) {
@@ -171,63 +262,84 @@
     });
   }
 
-  connect.addEventListener('click', async () => {
-    if (active) return;
-    const session = {abort:new AbortController(), offered:false};
-    if (!pairedPage) {
-      const parts = phone.value.trim().split(/\s*code\s*[:=]?\s*/i);
-      try { session.origin = new URL(parts[0]).origin; } catch { say('Enter the phone’s hotspot link.'); return; }
-      session.code = code.value.trim() || parts[1] || '';
-      if (!session.origin.startsWith('http://') || !/^\d{6}$/.test(session.code)) { say('Enter the phone link and its six-digit code.'); return; }
-    }
-    active = session;
-    connect.disabled = true;
-    stopButton.disabled = false;
-    say('Checking the phone camera…');
+  /** Runs only after both sides accepted: Edge's camera prompt, then one offer. */
+  async function startMedia(session) {
+    session.media = true;
     try {
-      const shareDisplay = document.querySelector('#source').value === 'screen';
-      if (shareDisplay) {
-        const display = await navigator.mediaDevices.getDisplayMedia({video:true, audio:false});
-        if (session !== active) {display.getTracks().forEach(t => t.stop());return;}
-        session.stream = display;
-        display.getVideoTracks()[0].onended = stop;
-      }
-      const state = await signal('status', session);
-      if (session !== active) return;
-      if (!state.ready) throw new Error(state.status || 'Choose Camera and start the camera session on the phone.');
-      say('Allow Edge to share this webcam with ' + (openerOrigin || session.origin) + '.');
-      const stream = session.stream || await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:24}}, audio:false});
-      if (session !== active) { stream.getTracks().forEach(t => t.stop()); return; }
+      const shareDisplay = $('source').value === 'screen';
+      say(shareDisplay ? 'Choose what to share with the phone.' : 'Allow Edge to use this laptop’s camera.');
+      const stream = shareDisplay
+        ? await navigator.mediaDevices.getDisplayMedia({video:true, audio:false})
+        : await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:24}}, audio:false});
+      if (session !== call) { stream.getTracks().forEach(t => t.stop()); return; }
       session.stream = stream;
+      stream.getVideoTracks()[0].onended = () => endCall();
       localVideo.srcObject = stream;
       const pc = new RTCPeerConnection({iceServers:[]});
       session.pc = pc;
       pc.ontrack = event => {
-        if (session !== active) return;
+        if (session !== call) return;
         remoteVideo.srcObject = event.streams[0] || new MediaStream([event.track]);
         remoteVideo.play().catch(() => {});
       };
       pc.onconnectionstatechange = () => {
-        if (session !== active) return;
-        if (pc.connectionState === 'connected') say('Connected. Both cameras use the hotspot.');
-        if (pc.connectionState === 'failed') { stopLocal(); say('Camera connection failed. Check the hotspot, then retry.'); }
+        if (session !== call) return;
+        if (pc.connectionState === 'connected') { live.hidden = false; say('Live. Both cameras use the hotspot directly.'); }
+        if (pc.connectionState === 'disconnected') { live.hidden = true; say('Camera link interrupted. Waiting for the hotspot…'); }
+        if (pc.connectionState === 'failed') endCall('Camera connection failed. Check the hotspot, then call again.');
       };
-      for (const track of stream.getVideoTracks()) pc.addTrack(track, stream);
+      for (const track of stream.getVideoTracks()) preferHardwareH264(pc.addTransceiver(track, {direction:'sendrecv', streams:[stream]}));
       say('Connecting both cameras…');
       await pc.setLocalDescription(await pc.createOffer());
       await gather(pc, session.abort.signal);
-      if (session !== active) return;
-      session.offered = true;
-      const answer = await signal('offer', session, pc.localDescription.sdp);
-      if (session === active) await pc.setRemoteDescription({type:'answer', sdp:answer.sdp});
+      if (session !== call) return;
+      const answer = await signal('offer', {id: session.id, sdp: pc.localDescription.sdp});
+      if (session === call) await pc.setRemoteDescription({type:'answer', sdp:answer.sdp});
     } catch (error) {
-      if (session !== active) return;
-      stopLocal();
-      say(error.name === 'NotAllowedError' ? 'Camera permission was declined. Choose Connect to try again.' : error.message);
+      if (session !== call) return;
+      endCall(error.name === 'NotAllowedError' ? 'Camera permission was declined in Edge, so the call ended.' : error.message);
     }
+  }
+
+  function teardown(message) {
+    const previous = call;
+    call = null;
+    if (previous) {
+      previous.abort.abort();
+      previous.stream?.getTracks().forEach(track => track.stop());
+      if (previous.pc) { previous.pc.ontrack = null; previous.pc.onconnectionstatechange = null; previous.pc.close(); }
+    }
+    localVideo.srcObject = remoteVideo.srcObject = null;
+    live.hidden = true;
+    connect.textContent = 'Request camera call';
+    connect.disabled = pairedPage && !bridge;
+    stopButton.disabled = true;
+    if (message) say(message);
+    return previous;
+  }
+
+  /** Either side may end the call; it ends for both. */
+  async function endCall(message) {
+    const id = (call && call.id) || lastState.id;
+    teardown(message || 'Camera call ended.');
+    if (id) { try { render(await signal('stop', {id})); } catch { /* Local feeds are already closed. */ } }
+  }
+
+  connect.addEventListener('click', () => {
+    if (call && call.needsClick && !call.media) {
+      call.needsClick = false;
+      connect.disabled = true;
+      connect.textContent = 'Request camera call';
+      startMedia(call);
+      return;
+    }
+    requestCall();
   });
-  stopButton.addEventListener('click', stop);
-  window.addEventListener('pagehide', stop);
+  acceptButton.addEventListener('click', () => acceptCall());
+  declineButton.addEventListener('click', declineCall);
+  stopButton.addEventListener('click', () => endCall());
+  window.addEventListener('pagehide', () => { if (call) endCall(); });
+  if (!pairedPage) phone.addEventListener('change', () => { if (target()) startPolling(); });
 })();
 </script>
 </body>

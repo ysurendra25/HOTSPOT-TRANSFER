@@ -41,7 +41,7 @@ final class EdgeInbox {
             if (!f.isFile()) continue;
             try {
                 rows.add(new JSONObject().put("id", id).put("attachmentId", id).put("name", name)
-                        .put("path", "Received on this phone").put("size", f.length())
+                        .put("path", "Received on this phone").put("size", f.length()).put("modified", f.lastModified())
                         .put("mime", MediaTypeClassifier.mimeType(name, null)).put("url", "/api/inbox/" + Uri.encode(id)));
             } catch (org.json.JSONException invalid) { throw new IllegalStateException(invalid); }
         }
