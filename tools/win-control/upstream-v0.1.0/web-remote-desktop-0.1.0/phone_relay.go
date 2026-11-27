@@ -111,6 +111,12 @@ func relayLoop(ctx context.Context, target relayTarget) {
 			log.Printf("[pc-remote] phone relay stopped: the phone rejected code (HTTP %d)", status)
 			return
 		}
+		if status == http.StatusTooManyRequests {
+			// The phone is locked out after wrong codes; never add to it.
+			setRelayState(target, "the phone is refusing codes for a minute")
+			sleepCtx(ctx, 60*time.Second)
+			continue
+		}
 		if err != nil {
 			failures++
 			if failures == 1 || failures%30 == 0 {
