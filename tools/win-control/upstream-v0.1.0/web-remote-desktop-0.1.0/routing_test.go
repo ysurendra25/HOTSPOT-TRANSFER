@@ -189,7 +189,7 @@ func TestPowerRefusesWithoutConfirmationOrWithBadInput(t *testing.T) {
 	}{
 		{"POST", `{"action":"sleep"}`, 400},
 		{"POST", `{"action":"shutdown"}`, 400},
-		{"POST", `{"action":"reboot","confirm":true}`, 400},
+		{"POST", `{"action":"format-disk","confirm":true}`, 400},
 		{"POST", `not json`, 400},
 		{"PUT", `{"action":"lock"}`, 405},
 	} {

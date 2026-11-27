@@ -35,7 +35,7 @@ func TestPowerHandlerRequiresExplicitConfirmation(t *testing.T) {
 }
 
 func TestPowerHandlerRejectsUnknownAction(t *testing.T) {
-	req := httptest.NewRequest("POST", "/power", strings.NewReader(`{"action":"reboot","confirm":true}`))
+	req := httptest.NewRequest("POST", "/power", strings.NewReader(`{"action":"format-disk","confirm":true}`))
 	res := httptest.NewRecorder()
 	powerHandler(res, req)
 	if res.Code != 400 {

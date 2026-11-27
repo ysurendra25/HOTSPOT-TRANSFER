@@ -456,19 +456,23 @@ public final class MainActivity extends Activity {
         LinearLayout powerControls = new LinearLayout(this);
         powerControls.setOrientation(LinearLayout.VERTICAL);
         String[][] powerActions = {{"Lock laptop", "lock"}, {"Wake display", "wake-display"},
-                {"Wake & show sign-in (PIN needed)", "unlock"}, {"Put laptop to sleep", "sleep"}, {"Shut down laptop", "shutdown"}};
+                {"Wake & show sign-in (PIN needed)", "unlock"}, {"Put laptop to sleep", "sleep"},
+                {"Restart laptop", "restart"}, {"Shut down laptop", "shutdown"}};
         for (String[] powerAction : powerActions) {
-            Button actionButton = button(powerAction[0], ("shutdown".equals(powerAction[1]) || "sleep".equals(powerAction[1])) ? COLOR_SOFT : COLOR_GREEN);
-            if ("shutdown".equals(powerAction[1]) || "sleep".equals(powerAction[1])) actionButton.setTextColor(COLOR_INK);
+            boolean disruptive = "shutdown".equals(powerAction[1]) || "sleep".equals(powerAction[1]) || "restart".equals(powerAction[1]);
+            Button actionButton = button(powerAction[0], disruptive ? COLOR_SOFT : COLOR_GREEN);
+            if (disruptive) actionButton.setTextColor(COLOR_INK);
             actionButton.setOnClickListener(v -> {
                 String action = powerAction[1];
-                if ("shutdown".equals(action) || "sleep".equals(action)) {
-                    boolean shutdown = "shutdown".equals(action);
-                    new android.app.AlertDialog.Builder(this).setTitle(shutdown ? "Shut down laptop" : "Put laptop to sleep")
-                            .setMessage(shutdown ? "Shut down Windows now? Unsaved work on the laptop may be lost and the connection will end."
-                                    : "Put Windows to sleep now? The laptop will disconnect until it wakes.")
+                if (disruptive) {
+                    String dialogTitle = "shutdown".equals(action) ? "Shut down laptop" : "restart".equals(action) ? "Restart laptop" : "Put laptop to sleep";
+                    String dialogMessage = "shutdown".equals(action) ? "Shut down Windows now? Unsaved work on the laptop may be lost and the connection will end."
+                            : "restart".equals(action) ? "Restart Windows now? Unsaved work on the laptop may be lost. The connection returns after Windows and the helper start again."
+                            : "Put Windows to sleep now? The laptop will disconnect until it wakes.";
+                    String positive = "shutdown".equals(action) ? "Shut down" : "restart".equals(action) ? "Restart" : "Sleep";
+                    new android.app.AlertDialog.Builder(this).setTitle(dialogTitle).setMessage(dialogMessage)
                             .setNegativeButton("Cancel", null)
-                            .setPositiveButton(shutdown ? "Shut down" : "Sleep", (dialog, which) -> postLaptopPowerAction(
+                            .setPositiveButton(positive, (dialog, which) -> postLaptopPowerAction(
                                     screenHelperLink.getText().toString().trim(), action, true, laptopScreenStatus)).show();
                 } else {
                     postLaptopPowerAction(screenHelperLink.getText().toString().trim(), action, false, laptopScreenStatus);
@@ -482,6 +486,48 @@ public final class MainActivity extends Activity {
         powerNote.setText("Windows sign-in cannot be done remotely: \u201cWake & show sign-in\u201d only wakes the display so the PIN or password box is ready on the laptop. Wake works only while the laptop is awake enough to run the helper; a sleeping or shut-down laptop cannot be reached over Wi-Fi.");
         powerNote.setTextColor(COLOR_MUTED); powerNote.setTextSize(12);
         powerNote.setPadding(dp(4), 0, dp(4), dp(12)); content.addView(powerNote, matchWrap());
+
+        // The PHONE's airplane-mode reset (refresh mobile data). Labelled as the
+        // phone on purpose: the laptop's own radios are switched only on the laptop.
+        LinearLayout airplaneCard = new LinearLayout(this);
+        airplaneCard.setOrientation(LinearLayout.VERTICAL);
+        TextView airplaneState = new TextView(this);
+        airplaneState.setTextColor(COLOR_MUTED);
+        airplaneState.setTextSize(12);
+        airplaneState.setPadding(dp(4), 0, dp(4), dp(8));
+        Runnable showAirplaneState = () -> {
+            String method = AirplaneController.method(this);
+            airplaneState.setText("This phone: airplane mode " + (AirplaneController.isAirplaneOn(this) ? "ON" : "OFF")
+                    + " \u00b7 hotspot " + (AirplaneController.isHotspotOn(this) ? "ON" : "OFF")
+                    + " \u00b7 " + ("secure-settings".equals(method) ? "automatic (adb grant)"
+                    : "accessibility".equals(method) ? "automatic (accessibility)" : "guided steps"));
+        };
+        showAirplaneState.run();
+        Button airplaneCycle = button("Refresh phone's mobile data (airplane ON \u2192 OFF \u2192 hotspot ON)", COLOR_GREEN);
+        airplaneCycle.setOnClickListener(v -> new android.app.AlertDialog.Builder(this)
+                .setTitle("Refresh this phone's mobile data")
+                .setMessage("Switches THIS PHONE's airplane mode on and back off, then turns its hotspot on again. The laptop disconnects for a moment and rejoins by itself.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Start", (dialog, which) -> {
+                    if ("guided".equals(AirplaneController.method(this))) {
+                        startActivity(new Intent(this, AirplaneCycleActivity.class));
+                    } else if (!AirplaneController.startCycle(this, "phone")) {
+                        Toast.makeText(this, "A reset is already running.", Toast.LENGTH_SHORT).show();
+                    } else {
+                        airplaneState.setText("Resetting\u2026 the hotspot drops for a few seconds.");
+                    }
+                }).show());
+        airplaneCard.addView(airplaneState, matchWrap());
+        airplaneCard.addView(airplaneCycle, matchWrap());
+        TextView airplaneHelp = new TextView(this);
+        airplaneHelp.setText("Android does not let apps switch airplane mode or the hotspot. Without setup, PocketBridge walks you through it. "
+                + "To make it automatic, enable \u201cPocketBridge airplane reset\u201d in Accessibility, or run once from a computer: "
+                + AirplaneController.ADB_GRANT);
+        airplaneHelp.setTextColor(COLOR_MUTED); airplaneHelp.setTextSize(11);
+        airplaneHelp.setPadding(dp(4), dp(8), dp(4), 0);
+        airplaneCard.addView(airplaneHelp, matchWrap());
+        airplaneCard.setOnClickListener(v -> showAirplaneState.run());
+        addCard(content, "PHONE AIRPLANE MODE", airplaneCard);
 
         stopButton = button("Stop sharing", Color.rgb(150, 60, 60));
         stopButton.setEnabled(false);
@@ -1476,20 +1522,15 @@ public final class MainActivity extends Activity {
         status.setText("Sending to the laptop…");
         background.execute(() -> {
             try {
-                HelperLink helper = HelperClient.resolve(link, message -> runOnUiThread(() -> status.setText(message)));
-                byte[] payload = new JSONObject().put("action", action).put("confirm", confirmed).toString()
-                        .getBytes(java.nio.charset.StandardCharsets.UTF_8);
-                // Never retry a power action automatically: a lost reply does not
-                // mean the laptop ignored it, and a second shutdown is not wanted.
-                HelperClient.Response response = HelperClient.request("POST", helper.url("/power"), payload,
-                        HelperClient.CONNECT_TIMEOUT_MS, 10000, 1);
-                if (!response.ok()) throw new HelperClient.HelperException(HelperClient.errorMessage(response.status, response.body), response.status);
-                String message = response.json().optString("message", "Windows command sent: " + action + ".");
-                runOnUiThread(() -> status.setText(message));
-            } catch (HelperClient.HelperException error) {
-                runOnUiThread(() -> status.setText("Laptop control failed: " + error.getMessage()));
-            } catch (java.io.IOException error) {
-                runOnUiThread(() -> status.setText("Laptop control failed: " + HelperClient.networkMessage(error)));
+                LaptopPowerClient.Outcome outcome = LaptopPowerClient.run(LaptopPowerClient.lanLink(link), action, confirmed,
+                        LaptopRelay.INSTANCE, message -> runOnUiThread(() -> status.setText(message)));
+                String shown = (outcome.ok ? "\u2713 " : "Laptop control failed: ") + outcome.message;
+                runOnUiThread(() -> {
+                    status.setText(shown);
+                    Toast.makeText(this, outcome.ok ? outcome.message : shown, Toast.LENGTH_LONG).show();
+                });
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
             } catch (Exception error) {
                 runOnUiThread(() -> status.setText("Laptop control failed: " + error.getMessage()));
             }

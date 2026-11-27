@@ -992,16 +992,25 @@ async function jpegStart() {
     if (res.status === 401) { location.href = authed('/'); return; }
     if (!res.ok || !res.body) throw new Error('HTTP ' + res.status);
     const reader = res.body.getReader();
-    let buf = new Uint8Array(0);
+    // One growing buffer, compacted after each complete frame. Copying the
+    // whole backlog into a new array on every network chunk (the old code)
+    // cost the phone's WebView more CPU the larger the frames were, and
+    // that, not the network, became the delay.
+    let store = new Uint8Array(512 * 1024), len = 0;
     while (jpegAbort === controller) {
       const { done, value } = await reader.read();
       if (done) break;
-      const merged = new Uint8Array(buf.length + value.length);
-      merged.set(buf, 0); merged.set(value, buf.length);
-      buf = merged;
-      let part;
-      while ((part = takeMultipartFrame(buf))) { pending = part.frame; buf = part.rest; }
-      if (buf.length > 32 * 1024 * 1024) buf = new Uint8Array(0);   // garbage, resync
+      if (len + value.length > store.length) {
+        const grown = new Uint8Array(Math.max(store.length * 2, len + value.length));
+        grown.set(store.subarray(0, len));
+        store = grown;
+      }
+      store.set(value, len);
+      len += value.length;
+      let part, consumed = 0;
+      while ((part = takeMultipartFrame(store.subarray(consumed, len)))) { pending = part.frame; consumed = len - part.rest.length; }
+      if (consumed > 0) { store.copyWithin(0, consumed, len); len -= consumed; }
+      if (len > 32 * 1024 * 1024) len = 0;   // garbage, resync
       showLatest();
     }
   } catch (e) {
@@ -1122,10 +1131,15 @@ function h264Start() {
       live = true;
       setStatus('live');
       sbQueue.push(new Uint8Array(ev.data));
-      // Live view: never fall behind. If buffering drifts, jump to the edge.
+      // Live view: never fall behind. A small lag is caught up by playing a
+      // little faster; anything over half a second jumps to the newest frame.
+      // (The old 1.5 s threshold let MediaSource sit up to 1.5 s behind.)
       if (videoEl.buffered.length) {
         const end = videoEl.buffered.end(videoEl.buffered.length - 1);
-        if (end - videoEl.currentTime > 1.5) videoEl.currentTime = end - 0.1;
+        const lag = end - videoEl.currentTime;
+        if (lag > 0.5) { videoEl.currentTime = Math.max(0, end - 0.05); videoEl.playbackRate = 1; }
+        else if (lag > 0.15) videoEl.playbackRate = 1.15;
+        else if (videoEl.playbackRate !== 1) videoEl.playbackRate = 1;
       }
       pumpBuffer();
       if (videoEl.paused) {
@@ -1213,3 +1227,68 @@ setInterval(() => {
     : wsBlocked ? 'Control: fallback mode (slower)'
     : 'Control: reconnecting';
 }, 1000);
+
+
+// ---- Airplane mode (0.7.0.1) ----
+// Laptop radios via /radios (only from this laptop) and the PHONE's airplane
+// reset via the paired phone relay (/phone-link, /phone-airplane).
+(function airplaneControls() {
+  const msg = document.getElementById('airMsg');
+  if (!msg) return;
+  const say = (text) => { msg.textContent = text; };
+  async function call(path, body) {
+    const res = await fetch(authed(path), body === undefined ? { cache: 'no-store' }
+      : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), cache: 'no-store' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) throw new Error(data.error || ('HTTP ' + res.status));
+    return data;
+  }
+  async function showRadios() {
+    try {
+      const r = await call('/radios');
+      if (r.supported === false || r.ok === false) { say('Laptop radios: ' + (r.error || 'not available')); return; }
+      say('Laptop radios: ' + r.radios + (r.airplane ? ' (airplane ON)' : ''));
+    } catch (e) { say('Laptop radios: ' + e.message); }
+  }
+  async function setLaptopAirplane(on) {
+    if (on && !confirm('Turn THIS LAPTOP\'s radios off? Wi-Fi drops, so the phone and this page lose their connection until you turn them back on here.')) return;
+    say(on ? 'Turning the laptop radios off…' : 'Turning the laptop radios on…');
+    try {
+      const r = await call('/radios', { airplane: on });
+      say('Laptop radios: ' + r.radios + (r.airplane ? ' (airplane ON)' : ' (airplane OFF)'));
+    } catch (e) { say('Laptop airplane mode failed: ' + e.message); }
+  }
+  document.getElementById('laptopAirOn').addEventListener('click', () => setLaptopAirplane(true));
+  document.getElementById('laptopAirOff').addEventListener('click', () => setLaptopAirplane(false));
+  try {
+    document.getElementById('phoneLink').value = localStorage.getItem('pb_phone_link') || '';
+  } catch {}
+  document.getElementById('phonePair').addEventListener('click', async () => {
+    const phone = document.getElementById('phoneLink').value.trim().replace(/\/?(\?.*)?$/, '');
+    const code = document.getElementById('phoneCode').value.trim();
+    try {
+      const r = await call('/phone-link', { phone, code });
+      try { localStorage.setItem('pb_phone_link', phone); } catch {}
+      say('Paired with the phone at ' + r.phone + '. Its laptop buttons now work through this helper.');
+    } catch (e) { say('Pairing failed: ' + e.message); }
+  });
+  document.getElementById('phoneAirCycle').addEventListener('click', async () => {
+    if (!confirm('Reset the PHONE\'s airplane mode? Its hotspot drops for a while; this laptop rejoins it automatically.')) return;
+    say('Asking the phone…');
+    try {
+      const r = await call('/phone-airplane', {});
+      const phone = r.phone || {};
+      say((phone.message || 'The phone is resetting.') + (r.profile ? ' The laptop will rejoin "' + r.profile + '".' : '')
+        + (r.reconnectError ? ' (' + r.reconnectError + ')' : ''));
+      const started = Date.now();
+      const timer = setInterval(async () => {
+        try {
+          const s = await call('/phone-link');
+          say('Phone: ' + s.state + ' · ' + Math.round((Date.now() - started) / 1000) + ' s');
+          if (s.state === 'connected' && Date.now() - started > 8000) clearInterval(timer);
+        } catch {}
+      }, 2000);
+    } catch (e) { say('Phone reset failed: ' + e.message); }
+  });
+  showRadios();
+})();

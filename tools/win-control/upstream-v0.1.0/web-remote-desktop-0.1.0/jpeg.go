@@ -36,15 +36,21 @@ func jpegStreamHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
 	w.Header().Set("Connection", "keep-alive")
 	flusher.Flush()
+	limitSendBuffer(r, streamSendBuffer)
 
 	lastJPEG := time.Time{}
-	ticker := time.NewTicker(time.Second / time.Duration(maxInt(1, minInt(30, liveCfg().FPS))))
+	interval := time.Second / time.Duration(maxInt(1, minInt(30, liveCfg().FPS)))
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	var skipper frameSkipper
 	for {
 		select {
 		case <-r.Context().Done():
 			return
 		case <-ticker.C:
+		}
+		if !skipper.ready(time.Now().UnixNano()) {
+			continue
 		}
 		c := liveCfg()
 		frame, changed, err := captureDisplayChanged(c.Monitor)
@@ -69,6 +75,7 @@ func jpegStreamHandler(w http.ResponseWriter, r *http.Request) {
 			jpegBufferPool.Put(data)
 			continue
 		}
+		writeStart := time.Now()
 		if _, err := fmt.Fprintf(w, "--pbframe\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n", data.Len()); err != nil {
 			data.Reset()
 			jpegBufferPool.Put(data)
@@ -88,6 +95,7 @@ func jpegStreamHandler(w http.ResponseWriter, r *http.Request) {
 		jpegBufferPool.Put(data)
 		flusher.Flush()
 		lastJPEG = time.Now()
+		skipper.sent(writeStart.UnixNano(), lastJPEG.UnixNano(), int64(interval))
 	}
 }
 

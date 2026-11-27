@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"encoding/json"
 	"io"
 	"net"
@@ -33,16 +34,12 @@ func phoneSignal(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Enter the current six-digit phone code.", 400)
 		return
 	}
-	u, err := url.Parse(in.Phone)
-	if err != nil || u.Scheme != "http" || u.Port() != "43117" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
-		http.Error(w, "Paste the hotspot link from Connect.", 400)
+	host, err := validPhoneLink(in.Phone)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
 		return
 	}
-	ip, err := netip.ParseAddr(u.Hostname())
-	if err != nil || !ip.Is4() || !(ip.IsPrivate() || ip.IsLinkLocalUnicast() || netip.MustParsePrefix("192.0.0.0/24").Contains(ip)) {
-		http.Error(w, "Use the phone's local IPv4 address.", 400)
-		return
-	}
+	ip := netip.MustParseAddr(host)
 	path, method := "", "POST"
 	var body []byte
 	switch in.Feature {
@@ -89,6 +86,11 @@ func phoneSignal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 300 {
+		// This laptop and phone are paired: open the command relay so the
+		// phone's laptop buttons work without an inbound firewall rule.
+		rememberPhone(ip.String(), in.Code)
+	}
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		http.Error(w, "Unexpected phone response.", 502)
 		return
@@ -97,4 +99,17 @@ func phoneSignal(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, io.LimitReader(resp.Body, 512*1024))
+}
+
+// validPhoneLink accepts only the phone's PocketBridge hotspot link and returns its IPv4.
+func validPhoneLink(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "http" || u.Port() != "43117" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return "", errors.New("Paste the hotspot link from Connect.")
+	}
+	ip, err := netip.ParseAddr(u.Hostname())
+	if err != nil || !ip.Is4() || !(ip.IsPrivate() || ip.IsLinkLocalUnicast() || netip.MustParsePrefix("192.0.0.0/24").Contains(ip)) {
+		return "", errors.New("Use the phone's local IPv4 address.")
+	}
+	return ip.String(), nil
 }

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="airplane_accessibility_label">PocketBridge airplane reset</string>
+    <string name="airplane_accessibility_description">Lets PocketBridge refresh the phone\'s mobile data when you ask for it: it opens Quick Settings and taps the Airplane mode tile on and off, then the Hotspot tile. It reads nothing else and acts only when you start a reset from PocketBridge, its Quick Settings tile or the paired laptop.</string>
+</resources>

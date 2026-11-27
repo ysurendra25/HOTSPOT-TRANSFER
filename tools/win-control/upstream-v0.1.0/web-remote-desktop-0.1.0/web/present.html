@@ -80,6 +80,51 @@ video{margin-top:12px;background:#000;max-height:50vh;width:100%;object-fit:cont
     start.disabled = !standalone && !channel;
     status.textContent = message;
   }
+  // 0.7.0.1 latency fixes for laptop → phone. Edge used to send the screen as
+  // VP8 at Chrome's default screenshare limits (about 2.5 Mbps and
+  // maintain-resolution), so a 1080p+ desktop dropped to a few frames per
+  // second and the phone decoded VP8 in software. Prefer H.264 (hardware
+  // encode on Windows, hardware decode on every Android phone), raise the
+  // bitrate ceiling for the hotspot, and let both frame rate and resolution
+  // adapt under congestion instead of building a backlog.
+  function preferHardwareCodec(transceiver) {
+    try {
+      if (!transceiver || !transceiver.setCodecPreferences || !RTCRtpSender.getCapabilities) return;
+      const codecs = RTCRtpSender.getCapabilities('video').codecs;
+      const rank = c => {
+        const mime = c.mimeType.toLowerCase(), f = (c.sdpFmtpLine || '').toLowerCase();
+        if (mime === 'video/h264') return f.includes('packetization-mode=1') && /profile-level-id=42e0/.test(f) ? 0 : f.includes('packetization-mode=1') ? 1 : 2;
+        if (mime === 'video/vp8') return 3;
+        if (mime === 'video/vp9') return 4;
+        if (mime === 'video/av1') return 5;
+        return 6; // rtx, red, ulpfec keep their place after the media codecs
+      };
+      transceiver.setCodecPreferences(codecs.slice().sort((a, b) => rank(a) - rank(b)));
+    } catch {}
+  }
+  async function tuneSender(sender) {
+    try {
+      const p = sender.getParameters();
+      if (!p.encodings || !p.encodings.length) p.encodings = [{}];
+      p.encodings[0].maxBitrate = 12000000;
+      p.encodings[0].maxFramerate = 30;
+      p.encodings[0].scaleResolutionDownBy = 1;
+      p.degradationPreference = 'balanced';
+      await sender.setParameters(p);
+    } catch {}
+  }
+  function tuneVideoSdp(sdp, maxKbps) {
+    const params = 'x-google-start-bitrate=2500;x-google-min-bitrate=300;x-google-max-bitrate=' + maxKbps;
+    const out = [];
+    let video = false;
+    for (const line of sdp.split(/\r?\n/)) {
+      if (line.startsWith('m=')) video = line.startsWith('m=video');
+      if (video && (line.startsWith('b=AS:') || line.startsWith('b=TIAS:'))) continue;
+      const tune = video && line.startsWith('a=fmtp:') && !line.includes("x-google-max-bitrate") && !/apt=/.test(line) && !/^a=fmtp:\d+ \d+\//.test(line);
+      out.push(tune ? line + ';' + params : line);
+    }
+    return out.join('\r\n');
+  }
   async function sendToViewer(gen, offer, viewer) {
     closePeer();
     const pc = new RTCPeerConnection({iceServers:[]});
@@ -89,9 +134,14 @@ video{margin-top:12px;background:#000;max-height:50vh;width:100%;object-fit:cont
       if (pc.connectionState === 'connected') status.textContent = 'Your phone is receiving this screen.';
       if (pc.connectionState === 'failed') status.textContent = 'Reconnecting to the phone…';
     };
-    await pc.setRemoteDescription({type:'offer',sdp:offer});
-    pc.addTrack(stream.getVideoTracks()[0], stream);
+    await pc.setRemoteDescription({type:'offer',sdp:tuneVideoSdp(offer, 12000)});
+    const track = stream.getVideoTracks()[0];
+    // Text on a laptop screen must stay sharp, but motion must not stall.
+    try { if ('contentHint' in track) track.contentHint = 'detail'; } catch {}
+    const sender = pc.addTrack(track, stream);
+    preferHardwareCodec(pc.getTransceivers().find(t => t.sender === sender));
     await pc.setLocalDescription(await pc.createAnswer());
+    await tuneSender(sender);
     for (let i = 0; gen === generation && pc.iceGatheringState !== 'complete' && i < 45; i++) await delay(100);
     if (gen !== generation) return;
     if (!/^a=candidate:/m.test(pc.localDescription.sdp)) throw new Error('Edge found no local network route to the phone.');

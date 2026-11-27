@@ -598,13 +598,36 @@ final class MediaHttpServer {
                 streamMedia(socket, output, method, headers, item);
                 return;
             }
+            // The Windows helper's outbound long-poll (see LaptopRelay): it picks up
+            // laptop commands queued by the phone and posts back their results.
+            if (path.equals("/api/laptop-commands") && method.equals("POST")) {
+                JSONObject request = new JSONObject(new String(body, StandardCharsets.UTF_8));
+                if ("result".equals(request.optString("action"))) {
+                    String message = request.optString("message", "");
+                    if (!request.optBoolean("ok", false) && !request.optString("error", "").isEmpty()) message = request.optString("error");
+                    LaptopRelay.INSTANCE.complete(request.optString("id"), request.optBoolean("ok", false), message);
+                    respond(output, 200, "application/json; charset=utf-8", "{\"ok\":true}", null);
+                    return;
+                }
+                LaptopRelay.Command next = LaptopRelay.INSTANCE.poll(request.optString("version", ""), LaptopRelay.POLL_HOLD_MS);
+                JSONObject reply = new JSONObject().put("command", next == null ? JSONObject.NULL : next.toJson());
+                respond(output, 200, "application/json; charset=utf-8", reply.toString(), "Cache-Control: no-store\r\n");
+                return;
+            }
+            if (path.equals("/api/airplane")) {
+                JSONObject request = method.equals("POST") ? new JSONObject(new String(body, StandardCharsets.UTF_8)) : new JSONObject();
+                JSONObject reply = AirplaneController.handleApi(context, method, request);
+                respond(output, reply.optInt("httpStatus", 200), "application/json; charset=utf-8", reply.toString(), "Cache-Control: no-store\r\n");
+                return;
+            }
             if (path.equals("/api/screen/status") && method.equals("GET")) {
                 JSONObject state = new JSONObject().put("ready", ScreenCaptureService.isRunning())
                         .put("starting", ScreenCaptureService.isStarting())
                         .put("iceState", ScreenCaptureService.getIceState())
                         .put("frames", ScreenCaptureService.framesSent())
                         .put("lastFrameAgeMs", ScreenCaptureService.lastFrameAgeMs())
-                        .put("capture", ScreenCaptureService.captureDescription());
+                        .put("capture", ScreenCaptureService.captureDescription())
+                        .put("encoder", ScreenCaptureService.encoderDescription());
                 String setupError = ScreenCaptureService.getSetupError();
                 if (setupError != null) state.put("error", setupError);
                 String offerError = ScreenCaptureService.getLastOfferError();

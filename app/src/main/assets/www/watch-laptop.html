@@ -41,6 +41,10 @@
     pc.addTransceiver('video', {direction:'recvonly'});
     pc.ontrack = event => {
       if (pc !== peer) return;
+      // Live view: show each frame as soon as it is decoded instead of
+      // buffering for smoothness (the default target adds latency).
+      try { if ('jitterBufferTarget' in event.receiver) event.receiver.jitterBufferTarget = 0; } catch (e) {}
+      try { if ('playoutDelayHint' in event.receiver) event.receiver.playoutDelayHint = 0; } catch (e) {}
       video.srcObject = new MediaStream([event.track]);
       video.play().catch(() => {});
     };

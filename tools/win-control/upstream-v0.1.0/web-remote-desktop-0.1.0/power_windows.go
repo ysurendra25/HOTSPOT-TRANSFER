@@ -26,6 +26,7 @@ var (
 
 const (
 	ewxShutdown    = 0x00000001
+	ewxReboot      = 0x00000002
 	ewxPowerOff    = 0x00000008
 	ewxForceIfHung = 0x00000010
 	// SHTDN_REASON_MAJOR_OTHER | SHTDN_REASON_MINOR_OTHER | SHTDN_REASON_FLAG_PLANNED
@@ -124,6 +125,14 @@ func runPowerAction(action string) error {
 			}
 		}
 		return runHidden("shutdown.exe", "/s", "/t", "0")
+	case "restart":
+		releaseSystemHoldFor(5 * time.Minute)
+		if err := enableShutdownPrivilege(); err == nil {
+			if ok, _, _ := exitWindowsEx.Call(ewxReboot|ewxForceIfHung, shutdownReason); ok != 0 {
+				return nil
+			}
+		}
+		return runHidden("shutdown.exe", "/r", "/t", "0")
 	case "cancel-shutdown":
 		return runHidden("shutdown.exe", "/a")
 	default:

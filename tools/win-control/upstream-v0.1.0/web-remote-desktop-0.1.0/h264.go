@@ -151,7 +151,7 @@ func encoderArgs(enc string, fps, kbps, quality int) []string {
 	case "h264_qsv":
 		q := 34 - (quality-20)*14/75
 		return []string{"-c:v", enc, "-preset", "veryfast", "-global_quality", strconv.Itoa(q),
-			"-maxrate", max, "-low_power", "0"}
+			"-maxrate", max, "-low_power", "0", "-async_depth", "1", "-look_ahead", "0"}
 	case "h264_amf":
 		return []string{"-c:v", enc, "-usage", "ultralowlatency", "-rc", "vbr_latency",
 			"-qp_i", "26", "-qp_p", "28", "-maxrate", max}
@@ -216,12 +216,19 @@ func h264StreamHandler(w http.ResponseWriter, r *http.Request) {
 		// Keyframes are the most expensive frames there are, and on a mostly
 		// static screen one per second is nearly all of the bitrate. Every 5s is
 		// still a tolerable wait for a picture when joining or recovering.
-		"-g", strconv.Itoa(cfgSnap.FPS * 5),
+		// 0.7.0.1: a 2 s keyframe interval (was 5 s) so a viewer joining or
+		// recovering from loss gets a picture quickly, and no B-frames on any
+		// encoder: B-frames make the decoder hold frames back for reordering.
+		"-g", strconv.Itoa(cfgSnap.FPS * 2),
+		"-bf", "0",
 	}
 	args = append(args, encoderArgs(enc, cfgSnap.FPS, kbps, cfgSnap.Quality)...)
 	args = append(args, "-f", "mp4",
 		"-movflags", "frag_keyframe+empty_moov+default_base_moof+delay_moov",
-		"-frag_duration", "100000", // 100ms fragments keep latency down
+		// One fragment per frame and no muxer buffering: MediaSource can show
+		// a frame only once its fragment has arrived.
+		"-frag_duration", strconv.Itoa(1000000/maxInt(1, cfgSnap.FPS)),
+		"-flush_packets", "1",
 		"pipe:1")
 
 	ctx, cancel := context.WithCancel(r.Context())

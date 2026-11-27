@@ -278,6 +278,16 @@
       <button class="btn btn-ghost" id="lockBtn" type="button">Change code</button>
     </section>
 
+    <section class="screen-card" id="airplaneSection">
+      <div><div class="screen-title">Phone airplane mode · refresh mobile data</div>
+        <div class="screen-desc" id="airStatus" role="status">Switches the PHONE's airplane mode on and off, then brings its hotspot back. This laptop rejoins automatically.</div>
+        <div class="screen-desc" id="airState">Phone: checking…</div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-white" id="airCycle" type="button">Reset phone airplane mode</button>
+        <button class="btn btn-ghost" id="airStop" type="button" hidden>Stop waiting</button>
+      </div>
+    </section>
+
     <section class="screen-card" id="screenSection">
       <div class="screen-copy">
         <div class="screen-icon">▣</div>
@@ -1333,12 +1343,46 @@
     screenPathLabel = 'Direct WebRTC · source resolution';
     screenFallbackReason = '';
     state.textContent = screenPathLabel;
+    watchScreenStats(peer, state, viewer);
     if (screenAbort) { try { screenAbort.abort(); } catch (e) {} screenAbort = null; }
     if (screenReader) { try { screenReader.cancel(); } catch (e) {} screenReader = null; }
     document.getElementById('screenCanvas').hidden = true;
     video.hidden = false;
     document.getElementById('screenHint').textContent = 'Your phone screen is streaming directly over the local network.';
     document.getElementById('screenViewHint').textContent = 'Live screen from your phone.';
+  }
+
+  // Live numbers for the direct stream, so a slow or stalled link is visible
+  // instead of guessed at: codec, decoded size, frame rate and how much the
+  // browser is buffering before display (should stay well under 100 ms).
+  let screenStatsTimer = null;
+  function watchScreenStats(peer, state, viewer) {
+    clearInterval(screenStatsTimer);
+    let previous = null;
+    screenStatsTimer = setInterval(async () => {
+      if (screenPeer !== peer || viewer !== activeViewer) { clearInterval(screenStatsTimer); screenStatsTimer = null; return; }
+      try {
+        const report = await peer.getStats();
+        let inbound = null; const codecs = {};
+        report.forEach(item => {
+          if (item.type === 'inbound-rtp' && (item.kind === 'video' || item.mediaType === 'video')) inbound = item;
+          if (item.type === 'codec') codecs[item.id] = item;
+        });
+        if (!inbound) return;
+        try { peer.getReceivers().forEach(r => { if ('jitterBufferTarget' in r && r.jitterBufferTarget !== 0) r.jitterBufferTarget = 0; }); } catch (e) {}
+        const codec = codecs[inbound.codecId] ? String(codecs[inbound.codecId].mimeType || '').replace(/^video\//i, '') : '';
+        let buffer = '';
+        if (previous && inbound.jitterBufferEmittedCount > previous.jitterBufferEmittedCount) {
+          buffer = Math.round(1000 * (inbound.jitterBufferDelay - previous.jitterBufferDelay)
+            / (inbound.jitterBufferEmittedCount - previous.jitterBufferEmittedCount)) + ' ms buffer';
+        }
+        const fps = inbound.framesPerSecond ? Math.round(inbound.framesPerSecond) + ' fps' : '';
+        const size = inbound.frameWidth ? inbound.frameWidth + '×' + inbound.frameHeight : '';
+        const dropped = inbound.framesDropped ? inbound.framesDropped + ' dropped' : '';
+        previous = inbound;
+        state.textContent = ['Direct WebRTC', codec, size, fps, buffer, dropped].filter(Boolean).join(' · ');
+      } catch (e) {}
+    }, 2000);
   }
 
   function waitForVideoFrame(video, timeoutMs) {
@@ -1392,6 +1436,8 @@
 
   function closeScreenPeer(viewer) {
     if (screenSignalAbort) { try { screenSignalAbort.abort(); } catch (e) {} screenSignalAbort = null; }
+    clearInterval(screenStatsTimer);
+    screenStatsTimer = null;
     const closing = screenPeer;
     screenPeer = null;
     if (!closing) return;
@@ -1869,9 +1915,77 @@
   document.getElementById('musicSearch').addEventListener('input',renderMusic);
   setInterval(refreshMessages, 2500);
 
+  /* ---------- phone airplane mode (refresh mobile data) ---------- */
+  // The PHONE switches airplane mode on and off and restores its hotspot. The
+  // hotspot (and so this page's connection) disappears for a while; the page
+  // keeps retrying until the phone answers again, however long that takes.
+  const airStatus = document.getElementById('airStatus');
+  const airState = document.getElementById('airState');
+  let airWaiting = false;
+  async function airRequest(body, timeout) {
+    const options = body ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)} : {};
+    const response = await fetch(endpoint('/api/airplane'), {...options, cache:'no-store', signal:AbortSignal.timeout(timeout || 5000)});
+    const data = await response.json().catch(() => ({}));
+    return {ok: response.ok, data};
+  }
+  function showAirState(state) {
+    if (!state || state.on === undefined) return;
+    const how = state.method === 'secure-settings' ? 'automatic (adb grant)' : state.method === 'accessibility' ? 'automatic (accessibility)' : 'guided steps on the phone';
+    airState.textContent = 'Phone: airplane ' + (state.on ? 'ON' : 'OFF') + ' · hotspot ' + (state.hotspot ? 'ON' : 'OFF') + ' · ' + how
+      + (state.laptopRelay ? ' · laptop helper will rejoin the hotspot' : '');
+  }
+  async function refreshAirplane() {
+    if (airWaiting || app.style.display !== 'block') return;
+    try { const r = await airRequest(); if (r.ok) showAirState(r.data); } catch (e) {}
+  }
+  async function waitForPhoneBack(started) {
+    airWaiting = true;
+    document.getElementById('airStop').hidden = false;
+    let dropped = false, delayMs = 1000;
+    while (airWaiting) {
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+      if (!airWaiting) break;
+      const seconds = Math.round((Date.now() - started) / 1000);
+      try {
+        const r = await airRequest(null, 3000);
+        if (r.ok) {
+          showAirState(r.data);
+          if (!r.data.cycling && (dropped || seconds > 6) && r.data.hotspot !== false) {
+            airStatus.textContent = 'Back online after ' + seconds + ' s. ' + (r.data.lastResult || 'The phone finished the reset.');
+            break;
+          }
+          airStatus.textContent = r.data.step === 'guided' ? 'Finish the steps on the phone (airplane ON, OFF, then hotspot ON)… ' + seconds + ' s'
+            : 'The phone is resetting (' + (r.data.step || 'working') + ')… ' + seconds + ' s';
+        }
+      } catch (e) {
+        dropped = true;
+        airStatus.textContent = 'Waiting for the phone hotspot to come back… ' + seconds + ' s. Windows rejoins it automatically; this page keeps retrying.';
+      }
+      delayMs = Math.min(3000, delayMs + 250);
+    }
+    airWaiting = false;
+    document.getElementById('airStop').hidden = true;
+  }
+  document.getElementById('airStop').addEventListener('click', () => { airWaiting = false; airStatus.textContent = 'Stopped waiting. Reload this page when the hotspot is back.'; });
+  document.getElementById('airCycle').addEventListener('click', async () => {
+    if (airWaiting) return;
+    if (!confirm('Reset the PHONE\'s airplane mode? It switches on and back off, then the phone hotspot is turned on again. This page and the laptop\'s Wi-Fi drop for a while and reconnect automatically.')) return;
+    const started = Date.now();
+    try {
+      const r = await airRequest({action:'cycle', from:'edge'}, 8000);
+      if (!r.ok) { airStatus.textContent = r.data.error || 'The phone refused the reset.'; return; }
+      showAirState(r.data);
+      airStatus.textContent = r.data.message || 'Resetting…';
+    } catch (e) {
+      airStatus.textContent = 'The connection dropped: the phone is resetting.';
+    }
+    await waitForPhoneBack(started);
+  });
+  setInterval(refreshAirplane, 10000);
+
   /* ---------- sections behind the tab bar ---------- */
   const TAB_GROUPS = {
-    connect: ['heroSection', 'transferSection', 'edgeFilesSection'],
+    connect: ['heroSection', 'airplaneSection', 'transferSection', 'edgeFilesSection'],
     screen: ['screenSection', 'laptopScreenSection', 'screenView', 'helperSetup'],
     camera: ['cameraSection', 'helperSetup'],
     files: ['inboxSection', 'inboxGrid', 'librarySection', 'kindTabs', 'grid', 'filesPaging', 'transferSection', 'edgeFilesSection'],

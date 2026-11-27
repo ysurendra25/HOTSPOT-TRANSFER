@@ -235,6 +235,22 @@
     </div>
     <div id="est"></div>
   </div>
+  <div class="row" id="airRow">
+    <h4>Airplane mode</h4>
+    <p style="margin:0 0 8px;font-size:12px;opacity:.8">THIS LAPTOP: turns every laptop radio (Wi-Fi, Bluetooth, mobile broadband) off or on through Windows.Devices.Radios. Only works on the laptop itself, because it cuts the phone's connection.</p>
+    <div class="opts">
+      <button class="opt" id="laptopAirOn" type="button">✈ Laptop airplane ON</button>
+      <button class="opt" id="laptopAirOff" type="button">Laptop airplane OFF</button>
+    </div>
+    <p style="margin:12px 0 8px;font-size:12px;opacity:.8">PHONE: switch the phone's airplane mode on and off, then bring its hotspot back (refreshes mobile data). This laptop keeps rejoining the hotspot until it returns.</p>
+    <div class="opts">
+      <input id="phoneLink" placeholder="http://192.168.43.1:43117" style="flex:1;min-width:180px" autocomplete="off">
+      <input id="phoneCode" placeholder="code" inputmode="numeric" maxlength="6" style="width:90px" autocomplete="off">
+      <button class="opt" id="phonePair" type="button">Pair phone</button>
+      <button class="opt" id="phoneAirCycle" type="button">✈ Reset phone airplane mode</button>
+    </div>
+    <div id="airMsg" role="status" style="font-size:12px;margin-top:8px;opacity:.9"></div>
+  </div>
 </div>
 <script src="app.js"></script>
 </body>

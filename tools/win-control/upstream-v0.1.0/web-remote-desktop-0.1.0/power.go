@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -16,11 +17,45 @@ var powerActionRunner = runPowerAction
 // Sleep and shut down end the network connection the phone is waiting on, so
 // the helper answers first and acts a moment later.
 var schedulePowerAction = func(action string) {
+	recordPowerResult(action, nil, true)
 	time.AfterFunc(700*time.Millisecond, func() {
-		if err := powerActionRunner(action); err != nil {
+		err := powerActionRunner(action)
+		if err != nil {
 			log.Printf("[pc-remote] %s failed: %v", action, err)
 		}
+		recordPowerResult(action, err, false)
 	})
+}
+
+// powerResult is the outcome of the most recent power action. Sleep, restart
+// and shut down answer the phone before they run, so the phone asks for this
+// afterwards to show a real error instead of an optimistic "sent".
+type powerResult struct {
+	Action  string `json:"action"`
+	OK      bool   `json:"ok"`
+	Pending bool   `json:"pending"`
+	Error   string `json:"error,omitempty"`
+	At      int64  `json:"at"`
+}
+
+var (
+	lastPowerMu sync.Mutex
+	lastPower   powerResult
+)
+
+func recordPowerResult(action string, err error, pending bool) {
+	lastPowerMu.Lock()
+	defer lastPowerMu.Unlock()
+	lastPower = powerResult{Action: action, OK: err == nil, Pending: pending, At: time.Now().UnixMilli()}
+	if err != nil {
+		lastPower.Error = err.Error()
+	}
+}
+
+func lastPowerResult() powerResult {
+	lastPowerMu.Lock()
+	defer lastPowerMu.Unlock()
+	return lastPower
 }
 
 type powerRequest struct {
@@ -43,6 +78,7 @@ var powerCatalog = []powerAction{
 		Note: "Windows sign-in cannot be bypassed: this wakes the display so the PIN or password box is ready on the laptop."},
 	{ID: "sleep", Label: "Sleep", Confirm: true, Deferred: true},
 	{ID: "shutdown", Label: "Shut down", Confirm: true, Deferred: true},
+	{ID: "restart", Label: "Restart", Confirm: true, Deferred: true},
 	{ID: "cancel-shutdown", Label: "Cancel shutdown"},
 }
 
@@ -73,6 +109,8 @@ func normalizePowerAction(action string) string {
 		return "sleep"
 	case "poweroff", "power-off", "shut-down":
 		return "shutdown"
+	case "reboot", "re-start":
+		return "restart"
 	}
 	return action
 }
@@ -89,6 +127,8 @@ func powerMessage(action string) string {
 		return "The laptop will sleep in a moment. It disconnects until it wakes."
 	case "shutdown":
 		return "The laptop is shutting down. The connection will end."
+	case "restart":
+		return "The laptop is restarting. The connection returns when Windows and this helper start again."
 	case "cancel-shutdown":
 		return "Pending shutdown cancelled."
 	}
@@ -105,7 +145,7 @@ func writePowerJSON(w http.ResponseWriter, status int, body map[string]any) {
 func powerHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
-		writePowerJSON(w, http.StatusOK, map[string]any{"ok": true, "actions": powerActions()})
+		writePowerJSON(w, http.StatusOK, map[string]any{"ok": true, "actions": powerActions(), "last": lastPowerResult()})
 		return
 	case http.MethodPost:
 	default:
@@ -124,27 +164,36 @@ func powerHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	req.Action = normalizePowerAction(req.Action)
-	action, ok := findPowerAction(req.Action)
-	if !ok {
-		writePowerJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "Unsupported power action: " + req.Action})
-		return
-	}
-	if action.Confirm && !req.Confirm {
-		writePowerJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "Confirm " + action.Label + " on the phone first.", "confirm": true})
-		return
-	}
-	if action.Deferred {
-		writePowerJSON(w, http.StatusAccepted, map[string]any{"ok": true, "action": action.ID, "scheduled": true, "message": powerMessage(action.ID)})
+	status, body, deferred := decidePower(req)
+	writePowerJSON(w, status, body)
+	if deferred != "" {
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
-		schedulePowerAction(action.ID)
-		return
+		schedulePowerAction(deferred)
 	}
-	if err := powerActionRunner(action.ID); err != nil {
-		writePowerJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "action": action.ID, "error": err.Error()})
-		return
+}
+
+// decidePower validates and runs one power request. Immediate actions run
+// here; a deferred one (sleep, restart, shut down) is returned for the caller
+// to schedule after the answer has been sent. The phone relay uses it too, so
+// a button on the phone behaves exactly like the helper's own route.
+func decidePower(req powerRequest) (int, map[string]any, string) {
+	req.Action = normalizePowerAction(req.Action)
+	action, ok := findPowerAction(req.Action)
+	if !ok {
+		return http.StatusBadRequest, map[string]any{"ok": false, "error": "Unsupported power action: " + req.Action}, ""
 	}
-	writePowerJSON(w, http.StatusOK, map[string]any{"ok": true, "action": action.ID, "message": powerMessage(action.ID)})
+	if action.Confirm && !req.Confirm {
+		return http.StatusBadRequest, map[string]any{"ok": false, "error": "Confirm " + action.Label + " on the phone first.", "confirm": true}, ""
+	}
+	if action.Deferred {
+		return http.StatusAccepted, map[string]any{"ok": true, "action": action.ID, "scheduled": true, "message": powerMessage(action.ID)}, action.ID
+	}
+	err := powerActionRunner(action.ID)
+	recordPowerResult(action.ID, err, false)
+	if err != nil {
+		return http.StatusInternalServerError, map[string]any{"ok": false, "action": action.ID, "error": err.Error()}, ""
+	}
+	return http.StatusOK, map[string]any{"ok": true, "action": action.ID, "message": powerMessage(action.ID)}, ""
 }

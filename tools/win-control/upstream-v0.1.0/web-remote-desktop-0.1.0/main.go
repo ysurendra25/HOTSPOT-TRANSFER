@@ -50,8 +50,8 @@ func defaultConfig() Config {
 		Token:     randToken(),
 		Monitor:   0,
 		FPS:       30,
-		Quality:   95,
-		MaxW:      0,
+		Quality:   jpegDefaultQuality,
+		MaxW:      jpegDefaultMaxWidth,
 		KeepAwake: "ac",
 		ShareDir:  defaultShareDir(),
 		ShareFile: "",
@@ -107,7 +107,8 @@ func main() {
 		fmt.Println("No private IPv4 address found. Connect the laptop to the phone's hotspot and restart this helper.")
 	}
 	writeLinkFile(links)
-	if err := http.Serve(listener, mux); err != nil {
+	server := &http.Server{Handler: mux, ConnContext: rememberConn}
+	if err := server.Serve(listener); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -140,6 +141,10 @@ func newMux() *http.ServeMux {
 	mux.Handle("/file/", protect(http.HandlerFunc(fileHandler)))
 	mux.Handle("/qr.png", protect(http.HandlerFunc(qrImageHandler)))
 	mux.Handle("/power", protect(http.HandlerFunc(powerHandler)))
+	mux.Handle("/radios", protect(http.HandlerFunc(radiosHandler)))
+	mux.Handle("/phone-link", protect(http.HandlerFunc(phoneLinkHandler)))
+	mux.Handle("/phone-airplane", protect(http.HandlerFunc(phoneAirplaneHandler)))
+	mux.Handle("/hotspot-reconnect", protect(http.HandlerFunc(hotspotReconnectHandler)))
 	mux.Handle("/open-vlc", protect(http.HandlerFunc(openVLCHandler)))
 	mux.Handle("/open-with", protect(http.HandlerFunc(openWithHandler)))
 	mux.Handle("/open-player", protect(http.HandlerFunc(openPlayerHandler)))
@@ -147,7 +152,7 @@ func newMux() *http.ServeMux {
 }
 
 // helperVersion is reported by /ping so the phone can show which helper answered.
-const helperVersion = "0.6.0.12"
+const helperVersion = "0.7.0.1"
 
 // pingHandler is the cheap reachability check the phone uses to find the
 // helper and to tell "wrong link" from "laptop asleep". It touches no disk and
@@ -261,9 +266,14 @@ func loadConfig() bool {
 		cfg.FPS, cfg.Quality, cfg.MaxW = 10, 60, 1280
 		dirty = true
 	}
-	// Upgrade the former out-of-box hotspot profile to source-resolution capture.
-	if cfg.FPS == 10 && cfg.Quality == 60 && cfg.MaxW == 1280 {
-		cfg.FPS, cfg.Quality, cfg.MaxW = 30, 95, 0
+	// 0.5.9.7 to 0.6.0.12 shipped (and migrated every config to) 30 fps at
+	// JPEG quality 95 and native width. On a phone hotspot that is several
+	// times more data than the link carries, so frames queued in the laptop's
+	// send buffer and the phone showed the laptop seconds late. Move that exact
+	// built-in profile (and the older ones) to the latency-safe default; a
+	// profile the user picked by hand is left alone.
+	if (cfg.FPS == 10 && cfg.Quality == 60 && cfg.MaxW == 1280) || (cfg.FPS == 30 && cfg.Quality == 95 && cfg.MaxW == 0) {
+		cfg.FPS, cfg.Quality, cfg.MaxW = 30, jpegDefaultQuality, jpegDefaultMaxWidth
 		dirty = true
 	}
 	return dirty
@@ -311,7 +321,8 @@ func wantsHTML(r *http.Request) bool {
 		return false
 	}
 	switch r.URL.Path {
-	case "/input", "/screen", "/settings", "/ws", "/h264", "/jpeg", "/ping", "/files", "/power":
+	case "/input", "/screen", "/settings", "/ws", "/h264", "/jpeg", "/ping", "/files", "/power",
+		"/radios", "/phone-link", "/phone-airplane", "/hotspot-reconnect":
 		return false
 	}
 	return strings.Contains(r.Header.Get("Accept"), "text/html")

@@ -19,6 +19,8 @@ import android.graphics.YuvImage;
 import org.webrtc.DefaultVideoDecoderFactory;
 import org.webrtc.DefaultVideoEncoderFactory;
 import org.webrtc.EglBase;
+import org.webrtc.HardwareVideoEncoderFactory;
+import org.webrtc.VideoCodecInfo;
 import org.webrtc.IceCandidate;
 import org.webrtc.MediaConstraints;
 import org.webrtc.PeerConnection;
@@ -69,6 +71,7 @@ public final class ScreenCaptureService extends Service {
     private volatile JpegSink jpegSink;
     private volatile int captureWidth;
     private volatile int captureHeight;
+    private volatile ScreenEncoderPlan encoderPlan;
     private final HandlerThread captureThread = new HandlerThread("PocketBridge-screen-setup");
     private Handler captureHandler;
     private volatile boolean initializing;
@@ -157,6 +160,13 @@ public final class ScreenCaptureService extends Service {
         return service.captureWidth + "x" + service.captureHeight;
     }
 
+    /** "H264 hardware" etc.: the encoder the direct stream will use. */
+    static String encoderDescription() {
+        ScreenCaptureService service = instance;
+        ScreenEncoderPlan plan = service == null ? null : service.encoderPlan;
+        return plan == null ? "" : plan.describe();
+    }
+
     public static String answerOffer(String sdp, String viewer) {
         ScreenCaptureService service = instance;
         if (service == null || sdp == null || sdp.isEmpty()) return null;
@@ -238,6 +248,8 @@ public final class ScreenCaptureService extends Service {
                 .setVideoEncoderFactory(new DefaultVideoEncoderFactory(eglBase.getEglBaseContext(), true, true))
                 .setVideoDecoderFactory(new DefaultVideoDecoderFactory(eglBase.getEglBaseContext()))
                 .createPeerConnectionFactory();
+        encoderPlan = planEncoder(eglBase);
+        android.util.Log.i("PocketBridge", "Screen encoder plan: " + encoderPlan.describe() + " order=" + encoderPlan.codecOrder);
         // Marking the source as a screencast avoids needless work on a static screen.
         // The sender uses balanced adaptation so congestion does not build a stale
         // multi-second frame queue on a busy phone hotspot.
@@ -259,6 +271,7 @@ public final class ScreenCaptureService extends Service {
         capturer.startCapture(size[0], size[1], ScreenStreamTuning.MAX_FRAMERATE);
         captureWidth = size[0];
         captureHeight = size[1];
+        limitSourceFrameRate(size[0], size[1]);
         VideoTrack track = factory.createVideoTrack("pocketbridge-screen", videoSource);
         track.setEnabled(true);
         videoTrack = track;
@@ -308,6 +321,7 @@ public final class ScreenCaptureService extends Service {
             capturer.changeCaptureFormat(size[0], size[1], ScreenStreamTuning.MAX_FRAMERATE);
             captureWidth = size[0];
             captureHeight = size[1];
+            limitSourceFrameRate(size[0], size[1]);
             android.util.Log.i("PocketBridge", "Screen capture resized to " + captureWidth + "x" + captureHeight);
         } catch (RuntimeException error) {
             android.util.Log.e("PocketBridge", "Could not resize screen capture after rotation", error);
@@ -315,10 +329,40 @@ public final class ScreenCaptureService extends Service {
     }
 
     private int[] boundedCaptureSize(int width, int height) {
-        // WebRTC needs even dimensions for the native YUV encoder, but should
-        // retain the display's original pixel size. The compatibility JPEG
-        // sink applies its own cap so it does not add a full-resolution CPU cost.
-        return ScreenCaptureSizing.evenSize(width, height);
+        // Keep the display's original pixel size whenever the chosen hardware
+        // encoder accepts it. A portrait 1080x2400 frame is larger than what
+        // many encoders take (often 1920x1088); feeding it anyway produced a
+        // corrupted or half picture, or a silent fall back to software VP8.
+        ScreenEncoderPlan plan = encoderPlan;
+        return plan == null ? ScreenCaptureSizing.evenSize(width, height) : plan.captureSize(width, height);
+    }
+
+    /**
+     * A virtual display delivers frames at the panel's refresh rate (60–120 Hz).
+     * Cap the source at the stream's frame rate without changing its size, so
+     * the encoder and the JPEG fallback are not handed two to four frames for
+     * every one that is sent.
+     */
+    private void limitSourceFrameRate(int width, int height) {
+        if (videoSource == null) return;
+        // UNDEFINED aspect ratios and no pixel limit: only the frame rate is
+        // limited. A fixed size here would make WebRTC crop frames of another
+        // shape, which is exactly the half-picture bug after a rotation.
+        try {
+            videoSource.adaptOutputFormat(VideoSource.AspectRatio.UNDEFINED, null,
+                    VideoSource.AspectRatio.UNDEFINED, null, ScreenStreamTuning.MAX_FRAMERATE);
+        } catch (RuntimeException ignored) { }
+    }
+
+    /** Which codecs WebRTC runs in hardware on this phone, and what sizes they accept. */
+    private static ScreenEncoderPlan planEncoder(EglBase egl) {
+        java.util.Set<String> hardware = new java.util.HashSet<>();
+        try {
+            for (VideoCodecInfo codec : new HardwareVideoEncoderFactory(egl.getEglBaseContext(), true, true).getSupportedCodecs()) {
+                hardware.add(codec.name.toLowerCase(java.util.Locale.ROOT));
+            }
+        } catch (RuntimeException ignored) { }
+        return ScreenEncoderPlan.choose(HardwareEncoders.usableByWebRtc(HardwareEncoders.list(), hardware));
     }
 
     /** JPEG is CPU-heavy, so reserve it for old browsers or a failed WebRTC link. */
@@ -405,7 +449,11 @@ public final class ScreenCaptureService extends Service {
                 sender.setParameters(parameters);
             } catch (Exception ignored) { }
         }
-        SessionDescription offer = new SessionDescription(SessionDescription.Type.OFFER, ScreenStreamTuning.tuneOffer(offerSdp));
+        // Put the hardware codec first: libwebrtc answers in the offer's order,
+        // so this decides what the phone encodes with (see ScreenEncoderPlan).
+        ScreenEncoderPlan plan = encoderPlan;
+        String preferred = plan == null ? offerSdp : ScreenEncoderPlan.preferCodecs(offerSdp, plan.codecOrder);
+        SessionDescription offer = new SessionDescription(SessionDescription.Type.OFFER, ScreenStreamTuning.tuneOffer(preferred));
         activePeer.setRemoteDescription(new EmptySdpObserver() {
             @Override public void onSetSuccess() {
                 activePeer.createAnswer(new EmptySdpObserver() {
@@ -476,11 +524,15 @@ public final class ScreenCaptureService extends Service {
         // Native resolution: the fallback is for browsers without WebRTC and
         // should look like the phone, not like a thumbnail of it. 4096 only
         // guards memory on unusual displays.
-        private static final int MAX_EDGE = 4096;
-        static final int QUALITY = 88;
-        // At most 30 fps. Frames arriving while one is still encoding are
+        // 0.7.0.1: the fallback had been raised to native size at quality 88.
+        // Each frame then needed a full-resolution GPU read-back on the same
+        // thread that delivers frames to the WebRTC encoder, so the two paths
+        // slowed each other down while both ran. Scale on the GPU first.
+        private static final int MAX_EDGE = 1920;
+        static final int QUALITY = 80;
+        // At most 20 fps. Frames arriving while one is still encoding are
         // dropped, so only the newest frame is ever sent.
-        private static final long MIN_FRAME_NS = 33_000_000L;
+        private static final long MIN_FRAME_NS = 50_000_000L;
         private final Object frameLock = new Object();
         private final AtomicBoolean encoding = new AtomicBoolean();
         private final ExecutorService encoder = Executors.newSingleThreadExecutor(task -> {
