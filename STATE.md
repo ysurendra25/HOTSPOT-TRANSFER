@@ -122,6 +122,38 @@ Never touch `main`, tags or releases from this branch.
   (routes, mid-range interruption + resume, folders, keep-alive, ETag/If-Range unchanged, 48 MiB loopback
   upload + parallel download with equal SHA-256). Full suite: 213 tests, 0 failures. Lint 0 errors.
 
+## Phase 3b (done): Go helper, Edge page, app wiring, benchmarks, docs
+- Go helper (upload.go): same upload protocol as the phone (start / PUT ?offset= / GET / DELETE / finish /
+  PBB1 batch) under /api/upload/, files land in <shared folder>/PocketBridge (state in
+  .pocketbridge-uploads/<id>.data + .pbresume, PBRESUME 1, session id identical to the phone's). Sparse
+  Truncate, WriteAt from a sync.Pool of 1 MiB buffers, sync then manifest every 64 MiB / 2 s and on a dropped
+  read, 507 free-space check (GetDiskFreeSpaceEx / Statfs), 7-day prune, mtime restored, " (2)" on clash.
+  safeRelPath refuses .., absolute/UNC paths, drive letters and device names (CON..LPT9, CONIN$/CONOUT$).
+  auth also accepts "Authorization: Bearer <token>" (the app's ChunkedUploader). fileHandler sends a strong
+  ETag "pb-<size hex>-<mtime ns hex>" (ServeFile honours If-Range). CORS: GET/HEAD/POST/PUT/DELETE/OPTIONS,
+  allows Range/If-Range/Authorization, exposes ETag/Content-Range/Accept-Ranges/Content-Disposition.
+  Tests upload_test.go (loopback 24 MiB upload + 4-way ranged download SHA-256, resume after a dropped PUT and
+  a restart, escapes, batch, prune, 507); transfer_bench_test.go (PB_BENCH_4G=1 for 4 GB).
+- Edge page: "Transfer engine" section (pbUploadChunked 2-4 PUTs x 4-16 MiB, retry via status route,
+  PBB1 batches for files <= 2 MiB, legacy POST on 404, pbDownloadRanged with showSaveFilePicker + positional
+  createWritable for files >= 32 MiB, else the ?download=1 link). "Choose files" (multiple) + "Send folder"
+  (webkitdirectory, keeps webkitRelativePath). Fixed bottom progress toast with % + MB/s + Cancel; download
+  links carry data-size. check-web-page.py: route constants (UPLOAD_ROUTE/BATCH_ROUTE) + 3b markers.
+  tools/test-transfer-plan.js (planner, PBB1 bytes, retry, legacy fallback).
+- App: picked files (Send button and chat Attach) -> chooser: Laptop (saved helper link) / Other phone
+  (PeerCameraLink target) / Keep on this phone for Edge (old behaviour; also used directly when neither is
+  set). sendToReceiver: probe (start size:-1 -> 400 new, 404/405 old), small files in one PBB1 batch
+  (uploadBatchSources), others ChunkedUploader.send; progress dialog with MB/s, Cancel (stop() disconnects),
+  Retry/Resume dialog (same keys -> resumes). Old helper -> files go to the phone inbox + message; old phone
+  -> legacy POST. ChunkedUploader now takes a Source (File or content Uri via ParcelFileDescriptor; non-seekable
+  documents are copied to cache/outgoing first). Runs on phoneUploadQueue in the activity (no foreground
+  service yet).
+- Tests: TransferServerTest +4 (probe, legacy fallback, cancel then resume, source batch); TransferBenchmarkTest
+  (gated, -Ppocketbridge.bench=true). Full suite 220 tests (3 skipped = gated benchmark), 0 failures; lint
+  0 errors (136 warnings); assembleDebug OK; go vet (linux + windows/amd64), go test, Windows amd64 build OK.
+- docs/TRANSFER_ENGINE.md (protocol, endpoints, back-compat, resume format, migration) and
+  docs/TRANSFER_BENCHMARKS.md (loopback, 2 CPUs, numbers).
+
 ## Build environment notes (sandbox, not committed)
 - The sandbox is aarch64: Temurin JDK 17 aarch64 in /tmp/jdk, Go 1.26 arm64 in /tmp/go (the helper is
   built during preBuild), Android SDK in /tmp/sdk (platforms 35/36, build-tools 35/36, via sdkmanager),
@@ -132,16 +164,18 @@ Never touch `main`, tags or releases from this branch.
   truststore built from the sandbox CA bundle. GRADLE_USER_HOME=/tmp/gradle-home holds those properties
   and an init script with Google's Maven Central mirror; it also sets Robolectric LEGACY graphics/sqlite,
   Conscrypt OFF, and the mirror as Robolectric's repo (android-all is downloaded once, not offline).
+- Long Gradle runs: start them detached (`setsid nohup /tmp/test-x86.sh ... &`) and poll /tmp/test.rc; a full
+  test + lint + assemble chain is in /tmp/full.sh (logs /tmp/full-*.log, rc /tmp/full-*.rc).
 - /tmp/env.sh, /tmp/build.sh <tasks> (log /tmp/build.log, rc /tmp/build.rc), /tmp/test-x86.sh [--tests X]
   (log /tmp/test.log, rc /tmp/test.rc). gradlew is not executable on this file system: run `bash ./gradlew`.
 
 ## Next
-- 3a: done (above).
-- 3b: Go helper: the same upload protocol (start/PUT/status/finish/batch), ETag + If-Range on its file
-  routes, CORS for the Edge page; Edge page: chunked + parallel upload and download with the same constants
-  as TransferPlan, folder picker (webkitdirectory / showDirectoryPicker) using PBB1 for small files;
-  wire ChunkedUploader into the app (phone->laptop, phone->phone); benchmarks; docs.
+- 3a, 3b: done (above).
 - 4: installable Windows desktop app, full line-by-line review, release, Drive upload.
+  Carry-overs from 3b to look at in 4: move app sends into a foreground service so a long send survives the
+  activity; device tests over a real hotspot (parallel vs single stream on Wi-Fi); the app's "Send folder"
+  (ACTION_OPEN_DOCUMENT_TREE) is not wired (the Edge page has it); a "Download from laptop" path in the app
+  already uses RangedDownloader (3a).
 
 ## Known test notes
 - tools/test-edge-presentation.mjs launches msedge.exe and only runs on Windows (fails in the sandbox
