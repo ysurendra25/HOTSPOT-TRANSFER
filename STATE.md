@@ -83,15 +83,65 @@ Never touch `main`, tags or releases from this branch.
 - Tests: CameraCallTest, CameraSdpTest (host-only, H.264 first, link parsing), ServerFunctionalTest
   camera cases, Go phone_signal_camera_test.go.
 
+## Phase 3a (done): transfer engine, Android side
+- Core (pure Java, unit tested): TransferPlan (range split, Range/Content-Range maths, 1..16 MiB adaptive
+  chunks, 2..6 connections via Concurrency), BufferPool (bounded 1 MiB buffers, HEAP/DIRECT pools),
+  ResumeManifest (PBRESUME 1: size, validator, done ranges; merge, missing, atomic temp+fsync+rename),
+  RelPath (safe folder paths: no ../, drive letters, reserved chars or Windows device names; depth 32;
+  unique " (2)" names), BatchStream (PBB1: "PBB1" | u16 len, path, u64 size, bytes ... | u16 0).
+- UploadSessions: resumable uploads in filesDir/uploads/<id>.data + <id>.pbresume. id = first 32 hex of
+  SHA-256(name\nsize\nlastModified\nrelPath), so the same client file always resumes. Sparse
+  preallocation (setLength), positional FileChannel writes from BufferPool.HEAP, force() then manifest save
+  every 64 MiB or 2 s (and on a dropped connection, keeping the bytes that did arrive). Free space checked
+  once at start (507). finish renames into received/<relPath> (or received/edge-<id>-<name>), clash -> " (2)",
+  restores lastModified. Sessions are reloaded from disk after a restart; stale ones (7 days) pruned at start.
+- MediaHttpServer routes (same code/token auth): POST /api/upload/start {name,size,lastModified,relPath}
+  -> {id,received,missing:[[a,b]],chunk,connections,resumed}; PUT /api/upload/{id}?offset=N (raw body);
+  GET / DELETE /api/upload/{id}; POST /api/upload/{id}/finish -> {id (inbox id), name, bytes};
+  POST /api/upload/batch (PBB1 body, folders kept; <=20 files one chat entry each, else one chat line).
+- Transport: HTTP/1.1 keep-alive (Connection: keep-alive, Keep-Alive: timeout=40) only for upload routes
+  and media/inbox responses of known length; everything else still closes. SO_RCVBUF 4 MiB set before
+  bind; bulk responses (>= 1 MiB) get SO_SNDBUF 4 MiB and TCP_NODELAY off; NODELAY back on for the next
+  request on a kept-alive socket (control/screen keep NODELAY). 40 s idle: socket read timeout plus a
+  watchdog that closes a bulk send with no progress for 40 s. Legacy /api/upload checks free space once.
+  A short read on a kept-alive response now closes instead of leaving the client waiting.
+- /api/inbox lists received/ recursively: id = path below received/ ("Trip/day 1/a.jpg"), plus "folder".
+  /api/inbox/{id} accepts nested ids (encoded or plain slashes), checked by EdgeInbox.validId/resolve;
+  ReceivedFileProvider and the chat actions use the same check. ?download=1, ETag and If-Range unchanged.
+- RangedDownloader (client): probe "Range: bytes=0-0"; 206 -> size + strong ETag, preallocate .part,
+  2..6 adaptive workers with Range + If-Range, manifest beside the part (.part.pbresume) for resume;
+  a 200 to If-Range (or a different ETag/size) = source changed -> restart (max 2); a 200 to the probe =
+  no ranges -> single stream from that response. LaptopFileTransfer uses it with a stable hidden part
+  name (.pb-<hash of url-without-query, size, name>-<name>.part) so a retry resumes.
+- DownloadPublisher copies into Downloads with FileChannel.transferTo (stream fallback).
+- ChunkedUploader (client, phone->laptop helper once 3b lands, phone->phone now): start, parallel PUTs of
+  the missing ranges (retry asks the receiver for what is still missing), finish; uploadBatch for PBB1.
+  Not wired into MainActivity yet (no UI entry point).
+- Tests: TransferPlanTest, BufferPoolTest, ResumeManifestTest, RelPathTest, BatchStreamTest,
+  UploadSessionsTest, RangedDownloaderTest (+ RangeHttpServer test server), TransferServerTest
+  (routes, mid-range interruption + resume, folders, keep-alive, ETag/If-Range unchanged, 48 MiB loopback
+  upload + parallel download with equal SHA-256). Full suite: 213 tests, 0 failures. Lint 0 errors.
+
 ## Build environment notes (sandbox, not committed)
-- The sandbox is aarch64: JDK 17 aarch64, Android SDK (platform 35, build-tools 35/36) and an
-  x86 aapt2 run through qemu-x86_64 (`-Pandroid.aapt2FromMavenOverride`). Maven Central is reached
-  through a Google mirror (Gradle init script). Robolectric runs offline from pre-fetched
-  android-all-instrumented jars with LEGACY graphics/sqlite and Conscrypt OFF.
+- The sandbox is aarch64: Temurin JDK 17 aarch64 in /tmp/jdk, Go 1.26 arm64 in /tmp/go (the helper is
+  built during preBuild), Android SDK in /tmp/sdk (platforms 35/36, build-tools 35/36, via sdkmanager),
+  qemu-user 11 (Debian .deb, extracted) runs the x86 build-tools aapt2 with an x86 glibc + libgcc root
+  (/tmp/x86root) through the /tmp/aapt2 wrapper (`-Pandroid.aapt2FromMavenOverride=/tmp/aapt2`).
+- The sandbox proxy needs credentials that Java tools do not send on CONNECT, so a tiny local forwarder
+  (/tmp/fwdproxy.py on 127.0.0.1:3128) adds them; Java uses it through system properties and a JKS
+  truststore built from the sandbox CA bundle. GRADLE_USER_HOME=/tmp/gradle-home holds those properties
+  and an init script with Google's Maven Central mirror; it also sets Robolectric LEGACY graphics/sqlite,
+  Conscrypt OFF, and the mirror as Robolectric's repo (android-all is downloaded once, not offline).
+- /tmp/env.sh, /tmp/build.sh <tasks> (log /tmp/build.log, rc /tmp/build.rc), /tmp/test-x86.sh [--tests X]
+  (log /tmp/test.log, rc /tmp/test.rc). gradlew is not executable on this file system: run `bash ./gradlew`.
 
 ## Next
-- 3: transfer engine.
-- 4: Windows desktop app, full line-by-line review, release, Drive upload.
+- 3a: done (above).
+- 3b: Go helper: the same upload protocol (start/PUT/status/finish/batch), ETag + If-Range on its file
+  routes, CORS for the Edge page; Edge page: chunked + parallel upload and download with the same constants
+  as TransferPlan, folder picker (webkitdirectory / showDirectoryPicker) using PBB1 for small files;
+  wire ChunkedUploader into the app (phone->laptop, phone->phone); benchmarks; docs.
+- 4: installable Windows desktop app, full line-by-line review, release, Drive upload.
 
 ## Known test notes
 - tools/test-edge-presentation.mjs launches msedge.exe and only runs on Windows (fails in the sandbox
