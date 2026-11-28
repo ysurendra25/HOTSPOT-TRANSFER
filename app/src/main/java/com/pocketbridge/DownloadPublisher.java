@@ -69,10 +69,26 @@ final class DownloadPublisher {
         Uri item = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
         if (item == null) throw new IOException("Android did not create a Downloads entry for " + name + ".");
         try {
-            try (InputStream input = new FileInputStream(source);
-                 OutputStream output = resolver.openOutputStream(item, "w")) {
-                if (output == null) throw new IOException("Android did not open the Downloads entry.");
-                copy(input, output, source.length(), progress);
+            boolean copied = false;
+            // A file descriptor lets the copy run channel to channel (no Java buffer).
+            try (android.os.ParcelFileDescriptor descriptor = resolver.openFileDescriptor(item, "w")) {
+                if (descriptor != null) {
+                    try (FileInputStream input = new FileInputStream(source);
+                         FileOutputStream output = new FileOutputStream(descriptor.getFileDescriptor())) {
+                        copyChannel(input.getChannel(), output.getChannel(), source.length(), progress);
+                        output.getFD().sync();
+                    }
+                    copied = true;
+                }
+            } catch (java.io.FileNotFoundException | UnsupportedOperationException noDescriptor) {
+                // Some providers only offer a stream; use it below.
+            }
+            if (!copied) {
+                try (InputStream input = new FileInputStream(source);
+                     OutputStream output = resolver.openOutputStream(item, "w")) {
+                    if (output == null) throw new IOException("Android did not open the Downloads entry.");
+                    copy(input, output, source.length(), progress);
+                }
             }
             ContentValues done = new ContentValues();
             done.put(MediaStore.MediaColumns.IS_PENDING, 0);
@@ -90,8 +106,8 @@ final class DownloadPublisher {
         if (folder == null) throw new IOException("Shared storage is not available right now.");
         if (!folder.exists() && !folder.mkdirs()) throw new IOException("Could not create the Downloads folder.");
         File target = uniqueFile(folder, name);
-        try (InputStream input = new FileInputStream(source); OutputStream output = new FileOutputStream(target)) {
-            copy(input, output, source.length(), progress);
+        try (FileInputStream input = new FileInputStream(source); FileOutputStream output = new FileOutputStream(target)) {
+            copyChannel(input.getChannel(), output.getChannel(), source.length(), progress);
         }
         DownloadManager downloads = context.getSystemService(DownloadManager.class);
         if (downloads == null) return Uri.fromFile(target);
@@ -108,6 +124,24 @@ final class DownloadPublisher {
         String extension = dot > 0 ? name.substring(dot) : "";
         for (int counter = 2; candidate.exists(); counter++) candidate = new File(folder, base + " (" + counter + ")" + extension);
         return candidate;
+    }
+
+    /** FileChannel copy in 8 MiB steps (the kernel moves the bytes), with progress after each step. */
+    static long copyChannel(java.nio.channels.FileChannel from, java.nio.channels.FileChannel to, long total,
+                            Progress progress) throws IOException {
+        long done = 0;
+        int stalls = 0;
+        while (done < total) {
+            long moved = from.transferTo(done, Math.min(8L * 1024 * 1024, total - done), to);
+            if (moved <= 0) {
+                if (from.size() <= done || ++stalls > 100) throw new IOException("The file got shorter while it was being saved.");
+                continue;
+            }
+            stalls = 0;
+            done += moved;
+            if (progress != null) progress.update(done, total);
+        }
+        return done;
     }
 
     private static void copy(InputStream input, OutputStream output, long total, Progress progress) throws IOException {

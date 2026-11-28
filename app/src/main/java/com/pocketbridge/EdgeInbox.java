@@ -9,11 +9,41 @@ import java.util.*;
 
 final class EdgeInbox {
     private EdgeInbox() {}
+    /**
+     * An inbox id is a file name in received/, or a folder path below it
+     * ("Trip/day 1/a.jpg") for files that arrived with their folders.
+     */
     static boolean validId(String id) {
-        return !id.isEmpty() && !id.equals(".") && !id.equals("..") && id.indexOf('/') < 0
-                && id.indexOf((char)92) < 0 && id.chars().noneMatch(c -> c < 32 || c == 127);
+        if (id == null || id.isEmpty() || id.length() > 4096) return false;
+        String[] segments = id.split("/", -1);
+        if (segments.length > RelPath.MAX_DEPTH) return false;
+        for (String segment : segments) if (!validSegment(segment)) return false;
+        return true;
     }
 
+    private static boolean validSegment(String segment) {
+        return !segment.isEmpty() && !segment.equals(".") && !segment.equals("..")
+                && segment.indexOf((char)92) < 0 && segment.chars().noneMatch(c -> c < 32 || c == 127);
+    }
+
+    /** The received file an id names, only when it really is inside {@code inbox}; otherwise null. */
+    static File resolve(File inbox, String id) {
+        if (!validId(id)) return null;
+        try {
+            File root = inbox.getCanonicalFile();
+            File file = new File(root, id).getCanonicalFile();
+            return file.getPath().startsWith(root.getPath() + File.separator) && file.isFile() ? file : null;
+        } catch (java.io.IOException invalid) {
+            return null;
+        }
+    }
+
+    /** True for transfer bookkeeping files that never show in the inbox. */
+    static boolean hidden(String fileName) {
+        return fileName.startsWith(".") || fileName.endsWith(".part") || fileName.endsWith(".pbresume") || fileName.endsWith(".tmp");
+    }
+
+    /** Display name for a received file id: the folder path stays, a top-level transfer prefix goes. */
     static String name(String id) {
         return id.replaceFirst("^(edge-[0-9a-f]{32}-|[0-9]+-)", "");
     }

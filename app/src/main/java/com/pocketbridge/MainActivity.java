@@ -2276,7 +2276,7 @@ public final class MainActivity extends Activity {
         String name = attachment.optString("name", EdgeInbox.name(id));
         String mime = MediaTypeClassifier.mimeType(name, attachment.optString("mime", ""));
         try {
-            if (!EdgeInbox.validId(id) || !source.getCanonicalFile().getParentFile().equals(inbox.getCanonicalFile()) || !source.isFile()) {
+            if (EdgeInbox.resolve(inbox, id) == null) {
                 throw new java.io.IOException("The received file is no longer available.");
             }
         } catch (Exception error) {
@@ -2311,7 +2311,7 @@ public final class MainActivity extends Activity {
         java.io.File inbox = new java.io.File(getFilesDir(), "received");
         java.io.File source = new java.io.File(inbox, id);
         try {
-            if (!source.getCanonicalFile().getParentFile().equals(inbox.getCanonicalFile()) || !source.isFile()) {
+            if (EdgeInbox.resolve(inbox, id) == null) {
                 throw new java.io.IOException("The received file is no longer available.");
             }
         } catch (Exception error) {

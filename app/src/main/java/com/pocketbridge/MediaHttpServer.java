@@ -87,6 +87,24 @@ final class MediaHttpServer {
     private final Map<Socket, Long> streamWrites = new java.util.concurrent.ConcurrentHashMap<>();
     static final int MAX_SCREEN_STREAMS = 2;
     static final long STUCK_STREAM_WRITE_MS = 10_000L;
+    /** A connection that neither reads nor writes for this long is closed (keep-alive wait, stalled bulk send). */
+    static final int IDLE_TIMEOUT_MS = 40_000;
+    static final String UPLOAD_ROUTE = "/api/upload/";
+    static final String BATCH_ROUTE = "/api/upload/batch";
+    /** Socket buffers for bulk transfers: enough to keep a fast hotspot link full across scheduling hiccups. */
+    static final int BULK_SOCKET_BUFFER = 4 * 1024 * 1024;
+    /** Responses at least this long are bulk sends: big send buffer, Nagle on. */
+    static final long BULK_RESPONSE_BYTES = 1024 * 1024;
+    /**
+     * Per-request connection state for the worker thread: 0 = close after this
+     * response, 1 = the client allows keep-alive, 2 = this response keeps the
+     * connection open. Only routes that consumed their whole request body and
+     * send a known length set 2.
+     */
+    private static final ThreadLocal<int[]> CONNECTION = ThreadLocal.withInitial(() -> new int[1]);
+    /** Last progress (System.nanoTime) of each bulk send, for the idle watchdog. */
+    private final Map<Socket, Long> bulkProgress = new java.util.concurrent.ConcurrentHashMap<>();
+    private final UploadSessions uploads;
     private Thread watchdogThread;
     private final LruCache<String, byte[]> thumbCache = new LruCache<String, byte[]>(THUMB_CACHE_BYTES) {
         @Override protected int sizeOf(String key, byte[] value) { return value == null ? 0 : value.length; }
@@ -104,6 +122,7 @@ final class MediaHttpServer {
         this.token = token;
         this.media = new MediaRepository(context);
         this.videoCompatibility = new VideoCompatibility(context);
+        this.uploads = new UploadSessions(context.getFilesDir());
     }
 
     static final int MAX_CLIENT_THREADS = 64;
@@ -134,6 +153,10 @@ final class MediaHttpServer {
         // with "Address already in use" while the old socket is still closing.
         serverSocket = java.nio.channels.ServerSocketChannel.open().socket();
         serverSocket.setReuseAddress(true);
+        // Set before bind so accepted sockets start with a window big enough for
+        // multi-gigabyte uploads (the TCP window scale is agreed in the handshake).
+        try { serverSocket.setReceiveBufferSize(BULK_SOCKET_BUFFER); } catch (IOException ignored) { }
+        try { uploads.prune(System.currentTimeMillis()); } catch (RuntimeException ignored) { }
         serverSocket.bind(new InetSocketAddress("0.0.0.0", PORT), 24);
         activeEdgeFiles = edgeFiles;
         activeLibrary = media;
@@ -142,7 +165,7 @@ final class MediaHttpServer {
             while (running.get()) {
                 try {
                     Socket socket = serverSocket.accept();
-                    socket.setSoTimeout(40000);
+                    socket.setSoTimeout(IDLE_TIMEOUT_MS);
                     socket.setTcpNoDelay(true);
                     openSockets.add(socket);
                     try {
@@ -191,6 +214,14 @@ final class MediaHttpServer {
                     streamWrites.remove(entry.getKey());
                 }
             }
+            long nowNanos = System.nanoTime();
+            for (Map.Entry<Socket, Long> entry : bulkProgress.entrySet()) {
+                if (nowNanos - entry.getValue() > IDLE_TIMEOUT_MS * 1_000_000L) {
+                    android.util.Log.w("PocketBridge", "Closing a transfer that made no progress for 40 s");
+                    try { entry.getKey().close(); } catch (IOException ignored) { }
+                    bulkProgress.remove(entry.getKey());
+                }
+            }
         }
     }
 
@@ -213,6 +244,7 @@ final class MediaHttpServer {
         if (watchdogThread != null) watchdogThread.interrupt();
         clients.shutdownNow();
         videoCompatibility.stop();
+        uploads.closeAll();
         thumbCache.evictAll();
         previewCache.evictAll();
     }
@@ -223,6 +255,7 @@ final class MediaHttpServer {
         } finally {
             openSockets.remove(socket);
             streamWrites.remove(socket);
+            bulkProgress.remove(socket);
         }
     }
 
@@ -235,14 +268,48 @@ final class MediaHttpServer {
         }
     }
 
+    /**
+     * Serves one connection. Most responses close it; uploads and media or inbox
+     * responses of known length keep it open (HTTP/1.1 keep-alive), so a chunked
+     * upload or a ranged download does not pay a TCP handshake per chunk. An idle
+     * kept-alive connection closes after 40 s (the socket read timeout).
+     */
     private void handleRequest(Socket socket) {
+        int[] state = CONNECTION.get();
         try (Socket ignored = socket;
-             BufferedInputStream input = new BufferedInputStream(socket.getInputStream());
-             BufferedOutputStream output = new BufferedOutputStream(socket.getOutputStream())) {
+             BufferedInputStream input = new BufferedInputStream(socket.getInputStream(), 64 * 1024);
+             BufferedOutputStream output = new BufferedOutputStream(socket.getOutputStream(), 64 * 1024)) {
+            boolean first = true;
+            while (running.get()) {
+                state[0] = 0;
+                if (!first) socket.setTcpNoDelay(true); // the next request may be control traffic
+                if (!serveOne(socket, input, output, state)) break;
+                output.flush();
+                if (state[0] != 2) break;
+                first = false;
+            }
+        } catch (java.net.SocketTimeoutException idle) {
+            // A kept-alive connection that sent nothing more: normal.
+        } catch (Exception error) {
+            android.util.Log.w("PocketBridge", "HTTP client closed", error);
+        } finally {
+            state[0] = 0;
+        }
+    }
+
+    /** Marks the response being written as keep-alive when the client allows it. */
+    private static void keepAlive() {
+        int[] state = CONNECTION.get();
+        if (state[0] >= 1) state[0] = 2;
+    }
+
+    /** One request; false when the connection has nothing more to read. */
+    private boolean serveOne(Socket socket, BufferedInputStream input, BufferedOutputStream output, int[] connState) throws Exception {
+        {
             String requestLine = readLine(input, 8192);
-            if (requestLine == null) return;
+            if (requestLine == null) return false;
             String[] parts = requestLine.split(" ");
-            if (parts.length < 2) { respond(output, 400, "text/plain", "Bad request", null); return; }
+            if (parts.length < 2) { respond(output, 400, "text/plain", "Bad request", null); return false; }
             String method = parts[0].toUpperCase(Locale.ROOT);
             Uri target = Uri.parse("http://local" + parts[1]);
             String path = Uri.decode(target.getEncodedPath());
@@ -255,12 +322,20 @@ final class MediaHttpServer {
             try { if (lengthText != null) declaredLength = Long.parseLong(lengthText.trim()); } catch (Exception ignoredLength) { }
             // Refuse an oversized body before reading it. Reading first would tie up a
             // worker for the whole socket timeout while a too-large upload drained.
-            boolean uploadRequest = method.equals("POST") && path.equals("/api/upload");
+            boolean uploadRequest = method.equals("POST") && (path.equals("/api/upload") || path.equals(BATCH_ROUTE));
+            boolean chunkedBody = headers.containsKey("transfer-encoding");
+            // Keep-alive needs HTTP/1.1, no "Connection: close", and a body this
+            // server reads exactly (never a chunked one).
+            if (parts.length >= 3 && "HTTP/1.1".equals(parts[2]) && !chunkedBody
+                    && !"close".equalsIgnoreCase(headers.getOrDefault("connection", ""))
+                    && (method.equals("POST") || method.equals("PUT") || declaredLength == 0)) {
+                connState[0] = 1;
+            }
             long maxRequestBytes = uploadRequest ? MAX_UPLOAD_BYTES : MAX_JSON_BODY_BYTES;
             if (method.equals("POST") && declaredLength > maxRequestBytes) {
                 respond(output, 413, "application/json; charset=utf-8",
                         uploadRequest ? "{\"error\":\"Upload must include a valid, non-empty file size.\"}" : "{\"error\":\"Request body is too large.\"}", null);
-                return;
+                return true;
             }
 
 
@@ -272,30 +347,30 @@ final class MediaHttpServer {
                             .replace("__PB_HELPER_PORT__", String.valueOf(helper == null ? 7070 : helper.port));
                     respond(output, 200, "text/javascript; charset=utf-8", script, "Cache-Control: no-store\r\n");
                 }
-                return;
+                return true;
             }
             if (path.equals("/") || path.equals("/index.html")) {
                 respond(output, 200, "text/html; charset=utf-8", page(false), "Cache-Control: no-store\r\n");
-                return;
+                return true;
             }
             // Old links that embedded the long token keep working.
             if (path.startsWith("/share/")) {
                 String requestToken = path.substring("/share/".length());
                 if (!constantTimeEquals(requestToken, token)) {
                     respond(output, 403, "text/plain; charset=utf-8", "This share link is invalid or expired.", null);
-                    return;
+                    return true;
                 }
                 respond(output, 200, "text/html; charset=utf-8", page(true), "Cache-Control: no-store\r\n");
-                return;
+                return true;
             }
-            if (path.equals("/health")) { respond(output, 200, "application/json", "{\"ok\":true}", null); return; }
-            if (path.equals("/favicon.ico")) { writeHead(output, 204, "text/plain", 0, null, null); output.flush(); return; }
+            if (path.equals("/health")) { respond(output, 200, "application/json", "{\"ok\":true}", null); return true; }
+            if (path.equals("/favicon.ico")) { writeHead(output, 204, "text/plain", 0, null, null); output.flush(); return true; }
 
             // A local media player receives only its opaque, session-scoped file URL.
             if (path.startsWith("/api/edge-media/") && (method.equals("GET") || method.equals("HEAD"))) {
-                if (!socket.getInetAddress().isLoopbackAddress()) { respond(output, 403, "text/plain", "Phone playback only", null); return; }
+                if (!socket.getInetAddress().isLoopbackAddress()) { respond(output, 403, "text/plain", "Phone playback only", null); return true; }
                 streamEdgeFile(output, method, headers, path.substring("/api/edge-media/".length()));
-                return;
+                return true;
             }
             // While locked out, no six-digit code is checked at all, not even the
             // right one; otherwise the lockout only slowed a guesser down without
@@ -303,17 +378,17 @@ final class MediaHttpServer {
             if (looksLikeCodeAttempt(target) && !hasTokenCredential(target, headers) && codesLockedOut()) {
                 respond(output, 429, "application/json; charset=utf-8",
                         "{\"error\":\"Too many wrong codes. Wait a minute and try again.\"}", "Retry-After: 60\r\n");
-                return;
+                return true;
             }
             if (!authorized(target, headers)) {
                 if (looksLikeCodeAttempt(target) && registerBadCode()) {
                     respond(output, 429, "application/json; charset=utf-8",
                             "{\"error\":\"Too many wrong codes. Wait a minute and try again.\"}", "Retry-After: 60\r\n");
-                    return;
+                    return true;
                 }
                 respond(output, 403, "application/json; charset=utf-8",
                         "{\"error\":\"Enter the code shown in PocketBridge on the phone.\"}", null);
-                return;
+                return true;
             }
 
             int contentLength = uploadRequest ? 0 : (int) Math.max(0, declaredLength);
@@ -330,7 +405,7 @@ final class MediaHttpServer {
                     }
                     output.flush();
                 }
-                return;
+                return true;
             }
             if (path.equals("/watch-laptop.html") || path.equals("/api/laptop-cast")) {
                 String viewerHost = "127.0.0.1:" + PORT;
@@ -352,7 +427,7 @@ final class MediaHttpServer {
                 } else {
                     respond(output, 403, "text/plain", "Open the viewer on the phone.", null);
                 }
-                return;
+                return true;
             }
             if (path.equals("/api/open-vlc") && method.equals("GET")) {
                 String helper = laptopHelperLink;
@@ -364,13 +439,13 @@ final class MediaHttpServer {
                         || !(mediaUrl.startsWith("http://") || mediaUrl.startsWith("https://"))) {
                     respond(output, 503, "text/plain; charset=utf-8",
                             "Paste and start the Windows helper link in Connect before using VLC.", null);
-                    return;
+                    return true;
                 }
                 String launch = helperUri.buildUpon().path("/open-vlc").clearQuery()
                         .appendQueryParameter("t", helperToken).appendQueryParameter("url", mediaUrl).build().toString();
                 respond(output, 302, "text/plain; charset=utf-8", "Opening VLC",
                         "Location: " + launch + "\r\n");
-                return;
+                return true;
             }
 
             if (path.equals("/api/open-with") && method.equals("GET")) {
@@ -383,13 +458,13 @@ final class MediaHttpServer {
                         || !(mediaUrl.startsWith("http://") || mediaUrl.startsWith("https://"))) {
                     respond(output, 503, "text/plain; charset=utf-8",
                             "Start the Windows helper and paste its current link in Connect to choose a laptop player.", null);
-                    return;
+                    return true;
                 }
                 String launch = helperUri.buildUpon().path("/open-with").clearQuery()
                         .appendQueryParameter("t", helperToken).appendQueryParameter("url", mediaUrl).build().toString();
                 respond(output, 302, "text/plain; charset=utf-8", "Choose a player",
                         "Location: " + launch + "\r\n");
-                return;
+                return true;
             }
 
             if (path.equals("/api/edge-files") && method.equals("POST")) {
@@ -408,19 +483,23 @@ final class MediaHttpServer {
                 } catch (EdgeFiles.Failure error) {
                     respond(output, error.status, "application/json", new JSONObject().put("error", error.getMessage()).toString(), null);
                 } catch (org.json.JSONException invalid) { respond(output, 400, "application/json", "{}", null); }
-                return;
+                return true;
             }
             if (path.startsWith("/api/edge-chunk/") && method.equals("POST")) {
                 try {
                     edgeFiles.deliver(headers.get("x-edge-owner"), path.substring("/api/edge-chunk/".length()), body);
                     respond(output, 200, "application/json", "{}", null);
                 } catch (EdgeFiles.Failure error) { respond(output, error.status, "text/plain", error.getMessage(), null); }
-                return;
+                return true;
+            }
+            if (path.startsWith(UPLOAD_ROUTE)) {
+                handleUpload(socket, input, output, method, path.substring(UPLOAD_ROUTE.length()), target, body, declaredLength, chunkedBody);
+                return true;
             }
             if (path.equals("/api/upload") && method.equals("POST")) {
                 if (!uploadAllowed(declaredLength)) {
                     respond(output, 413, "application/json; charset=utf-8", "{\"error\":\"Upload must include a valid, non-empty file size.\"}", null);
-                    return;
+                    return true;
                 }
                 String requested = target.getQueryParameter("name");
                 String safeName = requested == null ? "shared-file" : requested.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "_").trim();
@@ -428,11 +507,11 @@ final class MediaHttpServer {
                 File inbox = new File(context.getFilesDir(), "received");
                 if (!inbox.exists() && !inbox.mkdirs()) {
                     respond(output, 500, "application/json; charset=utf-8", "{\"error\":\"Could not create the receive folder.\"}", null);
-                    return;
+                    return true;
                 }
                 if (!hasEnoughStorage(inbox.getUsableSpace(), declaredLength)) {
                     respond(output, 507, "application/json; charset=utf-8", "{\"error\":\"The phone needs more free storage for this file.\"}", null);
-                    return;
+                    return true;
                 }
                 File destination = new File(inbox, "edge-" + java.util.UUID.randomUUID().toString().replace("-", "") + "-" + safeName);
                 File partial = File.createTempFile("pb-upload-", ".part", context.getCacheDir());
@@ -444,73 +523,87 @@ final class MediaHttpServer {
                     while (receivedBytes < declaredLength) {
                         int read = input.read(buffer, 0, (int) Math.min(buffer.length, declaredLength - receivedBytes));
                         if (read < 0) throw new IOException("The upload ended early.");
-                        if (!hasEnoughStorage(inbox.getUsableSpace(), read)) throw new StorageFullException();
+                        // Free space was checked once above; a write that still runs out
+                        // fails here and is reported as a full phone below.
                         file.write(buffer, 0, read);
                         receivedBytes += read;
-                        long remaining = declaredLength - receivedBytes;
-                        if (remaining > 0 && !hasEnoughStorage(inbox.getUsableSpace(), remaining)) throw new StorageFullException();
                     }
                     file.getFD().sync();
                 } catch (Exception uploadError) {
                     // Never leave a truncated file in the recipient's inbox.
                     //noinspection ResultOfMethodCallIgnored
                     partial.delete();
-                    int status = uploadError instanceof StorageFullException ? 507 : 400;
+                    boolean full = uploadError instanceof StorageFullException
+                            || inbox.getUsableSpace() < declaredLength - receivedBytes;
+                    int status = full ? 507 : 400;
                     String message = status == 507 ? "The phone ran out of free storage. Free space and try again." : "The upload did not finish. Try sending the file again.";
                     respond(output, status, "application/json; charset=utf-8", new JSONObject().put("error", message).toString(), null);
-                    return;
+                    return true;
                 }
                 if (!partial.renameTo(destination)) {
                     partial.delete();
                     respond(output, 500, "application/json", "{\"error\":\"Could not save the uploaded file. Try a shorter filename.\"}", null);
-                    return;
+                    return true;
                 }
                 ChatStore.appendFile(context, safeName, destination.getName(), receivedBytes, "laptop");
+                keepAlive();
                 respond(output, 201, "application/json; charset=utf-8",
                         new JSONObject().put("ok", true).put("name", safeName).put("bytes", receivedBytes).toString(), null);
-                return;
+                return true;
             }
             if (path.equals("/api/inbox") && method.equals("GET")) {
                 File inbox = new File(context.getFilesDir(), "received");
                 org.json.JSONArray received = new org.json.JSONArray();
-                File[] entries = inbox.listFiles(File::isFile);
-                if (entries != null) {
-                    java.util.Arrays.sort(entries, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
-                    for (File entry : entries) received.put(new JSONObject().put("name", EdgeInbox.name(entry.getName()))
-                            .put("id", entry.getName()).put("size", entry.length()).put("modified", entry.lastModified()));
+                // Files that arrived with their folders keep them: the id is the path
+                // below received/ ("Trip/day 1/a.jpg"), "folder" is its folder part.
+                List<String> ids = new ArrayList<>();
+                listInbox(inbox, "", 0, ids);
+                List<File> files = new ArrayList<>();
+                for (String id : ids) files.add(new File(inbox, id));
+                Integer[] order = new Integer[ids.size()];
+                for (int i = 0; i < order.length; i++) order[i] = i;
+                long[] modified = new long[order.length];
+                for (int i = 0; i < order.length; i++) modified[i] = files.get(i).lastModified();
+                java.util.Arrays.sort(order, (a, b) -> modified[a] != modified[b] ? Long.compare(modified[b], modified[a]) : ids.get(a).compareTo(ids.get(b)));
+                for (int index : order) {
+                    String id = ids.get(index);
+                    int slash = id.lastIndexOf('/');
+                    received.put(new JSONObject().put("name", slash < 0 ? EdgeInbox.name(id) : id)
+                            .put("id", id).put("folder", slash < 0 ? "" : id.substring(0, slash))
+                            .put("size", files.get(index).length()).put("modified", modified[index]));
                 }
                 respond(output, 200, "application/json; charset=utf-8", new JSONObject().put("files", received).toString(), null);
-                return;
+                return true;
             }
             if (path.equals("/api/messages") && method.equals("GET")) {
                 String json = new JSONObject().put("messages", ChatStore.read(context)).toString();
                 respond(output, 200, "application/json; charset=utf-8", json, "Cache-Control: no-store\r\n");
-                return;
+                return true;
             }
             if (path.equals("/api/messages") && method.equals("POST")) {
                 JSONObject request = new JSONObject(new String(body, StandardCharsets.UTF_8));
                 String text = request.optString("text", "").trim();
                 if (text.isEmpty() || text.length() > 2000) {
                     respond(output, 400, "application/json; charset=utf-8", "{\"error\":\"Message must be between 1 and 2000 characters.\"}", null);
-                    return;
+                    return true;
                 }
                 ChatStore.append(context, text, request.optString("from", "laptop"));
                 respond(output, 201, "application/json; charset=utf-8", "{\"ok\":true}", null);
-                return;
+                return true;
             }
             if (path.startsWith("/api/inbox/") && (method.equals("GET") || method.equals("HEAD"))) {
                 String id = Uri.decode(path.substring("/api/inbox/".length()));
-                if (id.contains("/") || id.contains("\\") || id.contains("..")) {
-                    respond(output, 400, "text/plain", "Invalid file name", null); return;
+                if (!EdgeInbox.validId(id)) {
+                    respond(output, 400, "text/plain", "Invalid file name", null); return true;
                 }
-                File received = new File(new File(context.getFilesDir(), "received"), id);
-                if (!received.isFile()) { respond(output, 404, "text/plain", "Received file not found", null); return; }
-                String receivedName = EdgeInbox.name(id);
+                File received = EdgeInbox.resolve(new File(context.getFilesDir(), "received"), id);
+                if (received == null) { respond(output, 404, "text/plain", "Received file not found", null); return true; }
+                String receivedName = EdgeInbox.name(id.substring(id.lastIndexOf('/') + 1));
                 // The real type lets the phone and the laptop open a received photo,
                 // video or PDF directly instead of only offering a download.
                 streamFile(socket, output, method, headers, received, MediaTypeClassifier.mimeType(receivedName, null), receivedName,
                         DownloadHeaders.wantsDownload(target.getQueryParameter("download")));
-                return;
+                return true;
             }
 
             if (path.startsWith("/api/video/compatible/") && (method.equals("GET") || method.equals("HEAD"))) {
@@ -518,7 +611,7 @@ final class MediaHttpServer {
                 MediaRepository.Item item = media.find(key);
                 if (item == null || !"video".equals(item.kind)) {
                     respond(output, 404, "application/json; charset=utf-8", "{\"error\":\"Video not found or media access is missing.\"}", null);
-                    return;
+                    return true;
                 }
                 try {
                     VideoCompatibility.Job job = videoCompatibility.prepare(item);
@@ -532,7 +625,7 @@ final class MediaHttpServer {
                             writeHead(output, 200, "video/mp4", -1, null, null);
                             output.flush();
                             // Headers are committed. Terminate this stream on disconnect or conversion failure.
-                            try { job.copyGrowing(growing, output); } catch (IOException disconnected) { return; }
+                            try { job.copyGrowing(growing, output); } catch (IOException disconnected) { return true; }
                         }
                     }
                 } catch (Exception conversionError) {
@@ -543,12 +636,12 @@ final class MediaHttpServer {
                     respond(output, 422, "application/json; charset=utf-8",
                             "{\"error\":\"Video conversion is not available for this phone's processor. Download the original video instead.\"}", null);
                 }
-                return;
+                return true;
             }
 
             if (path.equals("/api/session") && method.equals("GET")) {
                 respond(output, 200, "application/json", "{\"ok\":true}", null);
-                return;
+                return true;
             }
             if (path.equals("/api/files") && method.equals("GET")) {
                 String kind = target.getQueryParameter("kind");
@@ -564,42 +657,42 @@ final class MediaHttpServer {
                         .put("hasMore", page.hasMore)
                         .put("access", media.accessJson());
                 respond(output, 200, "application/json; charset=utf-8", response.toString(), null);
-                return;
+                return true;
             }
             if (path.startsWith("/api/thumb/") && method.equals("GET")) {
                 String key = Uri.decode(path.substring("/api/thumb/".length()));
                 MediaRepository.Item item = media.find(key);
-                if (item == null) { respond(output, 404, "text/plain", "Media not found or permission is missing", null); return; }
+                if (item == null) { respond(output, 404, "text/plain", "Media not found or permission is missing", null); return true; }
                 byte[] preview = thumbnail(item);
-                if (preview == null) { respond(output, 404, "text/plain", "No preview available", null); return; }
+                if (preview == null) { respond(output, 404, "text/plain", "No preview available", null); return true; }
                 writeHead(output, 200, "image/jpeg", preview.length,
                         "Cache-Control: private, max-age=3600\r\n", null);
                 output.write(preview);
                 output.flush();
-                return;
+                return true;
             }
             if (path.startsWith("/api/preview/") && method.equals("GET")) {
                 String key = Uri.decode(path.substring("/api/preview/".length()));
                 MediaRepository.Item item = media.find(key);
-                if (item == null) { respond(output, 404, "text/plain", "Media not found or permission is missing", null); return; }
+                if (item == null) { respond(output, 404, "text/plain", "Media not found or permission is missing", null); return true; }
                 byte[] picture = preview(item);
-                if (picture == null) { respond(output, 404, "text/plain", "No preview available", null); return; }
+                if (picture == null) { respond(output, 404, "text/plain", "No preview available", null); return true; }
                 writeHead(output, 200, "image/jpeg", picture.length,
                         "Cache-Control: private, max-age=3600\r\n", null);
                 output.write(picture);
                 output.flush();
-                return;
+                return true;
             }
             if (path.equals("/api/zip") && method.equals("GET")) {
                 streamZip(output, target);
-                return;
+                return true;
             }
             if (path.startsWith("/api/media/") && (method.equals("GET") || method.equals("HEAD"))) {
                 String key = Uri.decode(path.substring("/api/media/".length()));
                 MediaRepository.Item item = media.find(key);
-                if (item == null) { respond(output, 404, "text/plain", "Media not found or permission is missing", null); return; }
+                if (item == null) { respond(output, 404, "text/plain", "Media not found or permission is missing", null); return true; }
                 streamMedia(socket, output, method, headers, item, DownloadHeaders.wantsDownload(target.getQueryParameter("download")));
-                return;
+                return true;
             }
             // The Windows helper's outbound long-poll (see LaptopRelay): it picks up
             // laptop commands queued by the phone and posts back their results.
@@ -610,18 +703,18 @@ final class MediaHttpServer {
                     if (!request.optBoolean("ok", false) && !request.optString("error", "").isEmpty()) message = request.optString("error");
                     LaptopRelay.INSTANCE.complete(request.optString("id"), request.optBoolean("ok", false), message);
                     respond(output, 200, "application/json; charset=utf-8", "{\"ok\":true}", null);
-                    return;
+                    return true;
                 }
                 LaptopRelay.Command next = LaptopRelay.INSTANCE.poll(request.optString("version", ""), LaptopRelay.POLL_HOLD_MS);
                 JSONObject reply = new JSONObject().put("command", next == null ? JSONObject.NULL : next.toJson());
                 respond(output, 200, "application/json; charset=utf-8", reply.toString(), "Cache-Control: no-store\r\n");
-                return;
+                return true;
             }
             if (path.equals("/api/airplane")) {
                 JSONObject request = method.equals("POST") ? new JSONObject(new String(body, StandardCharsets.UTF_8)) : new JSONObject();
                 JSONObject reply = AirplaneController.handleApi(context, method, request);
                 respond(output, reply.optInt("httpStatus", 200), "application/json; charset=utf-8", reply.toString(), "Cache-Control: no-store\r\n");
-                return;
+                return true;
             }
             if (path.equals("/api/screen/status") && method.equals("GET")) {
                 JSONObject state = new JSONObject().put("ready", ScreenCaptureService.isRunning())
@@ -636,11 +729,11 @@ final class MediaHttpServer {
                 String offerError = ScreenCaptureService.getLastOfferError();
                 if (offerError != null) state.put("offerError", offerError);
                 respond(output, 200, "application/json; charset=utf-8", state.toString(), null);
-                return;
+                return true;
             }
             if (path.startsWith("/api/camera/")) {
                 handleCamera(output, method, path, headers, body);
-                return;
+                return true;
             }
             if (path.equals("/api/screen/mjpeg") && method.equals("GET")) {
                 if (!ScreenCaptureService.isRunning()) {
@@ -649,7 +742,7 @@ final class MediaHttpServer {
                             ? "Start Share phone screen on the phone and approve Android's capture prompt first."
                             : setupError);
                     respond(output, 409, "application/json; charset=utf-8", refusal.toString(), null);
-                    return;
+                    return true;
                 }
                 // WebRTC is the low-latency path. Only allocate and encode JPEGs
                 // while a browser is actually reading the compatibility stream.
@@ -669,7 +762,7 @@ final class MediaHttpServer {
                     streamWrites.remove(socket);
                     ScreenCaptureService.mjpegViewerEnded();
                 }
-                return;
+                return true;
             }
             if (path.equals("/api/screen/offer") && method.equals("POST")) {
                 JSONObject request = new JSONObject(new String(body, StandardCharsets.UTF_8));
@@ -681,22 +774,21 @@ final class MediaHttpServer {
                             ? "Screen setup did not finish. Restart screen sharing on the phone and try again."
                             : error);
                     respond(output, 409, "application/json; charset=utf-8", failure.toString(), null);
-                    return;
+                    return true;
                 }
                 JSONObject response = new JSONObject().put("type", "answer").put("sdp", answer);
                 respond(output, 200, "application/json", response.toString(), null);
-                return;
+                return true;
             }
             if (path.equals("/api/screen/stop") && method.equals("POST")) {
                 String viewer = target.getQueryParameter("viewer");
                 ScreenCaptureService.stopPeer(viewer == null ? "" : viewer);
                 respond(output, 200, "application/json", "{\"ok\":true}", null);
-                return;
+                return true;
             }
             respond(output, 404, "text/plain; charset=utf-8", "Not found", null);
-        } catch (Exception error) {
-            android.util.Log.w("PocketBridge", "HTTP client closed", error);
         }
+        return true;
     }
 
     /**
@@ -979,6 +1071,150 @@ final class MediaHttpServer {
         }
     }
 
+    /** Adds the ids of every visible file below {@code folder} ("a.txt", "Trip/day 1/b.jpg"). */
+    private static void listInbox(File folder, String prefix, int depth, List<String> ids) {
+        if (depth > RelPath.MAX_DEPTH || ids.size() >= 5000) return;
+        File[] entries = folder.listFiles();
+        if (entries == null) return;
+        for (File entry : entries) {
+            String name = entry.getName();
+            if (EdgeInbox.hidden(name)) continue;
+            if (entry.isDirectory()) listInbox(entry, prefix + name + "/", depth + 1, ids);
+            else if (entry.isFile() && ids.size() < 5000) ids.add(prefix + name);
+        }
+    }
+
+    /** The inbox id of a file below received/: its path with forward slashes. */
+    private String inboxId(File file) throws IOException {
+        java.nio.file.Path root = new File(context.getFilesDir(), "received").getCanonicalFile().toPath();
+        return root.relativize(file.getCanonicalFile().toPath()).toString().replace(File.separatorChar, '/');
+    }
+
+    private static JSONObject uploadState(UploadSessions.Session session) throws org.json.JSONException {
+        long size = session.size;
+        int connections = TransferPlan.initialConnections(size);
+        return new JSONObject().put("id", session.id).put("name", session.name)
+                .put("relPath", session.relPath == null ? "" : session.relPath)
+                .put("size", size).put("received", session.manifest.completedBytes())
+                .put("complete", session.manifest.complete()).put("resumed", session.resumed)
+                .put("missing", UploadSessions.rangesJson(session.manifest.missing()))
+                .put("chunk", TransferPlan.initialChunk(size, connections))
+                .put("connections", connections);
+    }
+
+    /**
+     * Resumable and batch uploads (same access-code auth as every /api route):
+     * <pre>
+     * POST   /api/upload/start          {name, size, lastModified, relPath}  -> state with missing ranges
+     * PUT    /api/upload/{id}?offset=N  raw bytes for [N, N+Content-Length)  -> {received, complete}
+     * GET    /api/upload/{id}           state
+     * DELETE /api/upload/{id}           drop it
+     * POST   /api/upload/{id}/finish    move it into received/              -> {id, name, bytes}
+     * POST   /api/upload/batch          PBB1 body of many small files       -> {files:[...]}
+     * </pre>
+     */
+    private void handleUpload(Socket socket, BufferedInputStream input, BufferedOutputStream output, String method, String rest,
+                              Uri target, byte[] body, long declaredLength, boolean chunkedBody) throws Exception {
+        String json = "application/json; charset=utf-8";
+        try {
+            if (rest.equals("start") && method.equals("POST")) {
+                JSONObject request = new JSONObject(new String(body, StandardCharsets.UTF_8));
+                UploadSessions.Session session = uploads.start(request.optString("name", ""),
+                        request.optLong("size", -1), request.optLong("lastModified", 0), request.optString("relPath", ""));
+                keepAlive();
+                respond(output, 200, json, uploadState(session).toString(), null);
+                return;
+            }
+            if (rest.equals("batch") && method.equals("POST")) {
+                if (chunkedBody || declaredLength <= 0) throw new UploadSessions.Failure(411, "A batch needs a Content-Length.");
+                File inbox = new File(context.getFilesDir(), "received");
+                if (!inbox.isDirectory() && !inbox.mkdirs()) throw new UploadSessions.Failure(500, "Could not create the receive folder.");
+                // One free-space check for the whole batch.
+                if (!hasEnoughStorage(inbox.getUsableSpace(), declaredLength)) {
+                    throw new UploadSessions.Failure(507, "The phone needs more free storage for these files.");
+                }
+                CountingInput counted = new CountingInput(input);
+                List<BatchStream.Entry> entries = BatchStream.read(counted, declaredLength, inbox, BufferPool.HEAP);
+                long leftover = declaredLength - counted.count;
+                if (leftover > 0 && leftover <= 64 * 1024) skipFully(input, leftover);
+                org.json.JSONArray files = new org.json.JSONArray();
+                long bytes = 0;
+                for (BatchStream.Entry entry : entries) {
+                    String id = inboxId(entry.file);
+                    files.put(new JSONObject().put("id", id).put("name", id).put("bytes", entry.size));
+                    bytes += entry.size;
+                    // A handful of files show one by one in chat; a big folder shows as one line.
+                    if (entries.size() <= 20) ChatStore.appendFile(context, id, id, entry.size, "laptop");
+                }
+                if (entries.size() > 20) ChatStore.append(context, "Received " + entries.size() + " files", "laptop");
+                if (leftover <= 64 * 1024) keepAlive();
+                respond(output, 201, json, new JSONObject().put("ok", true).put("count", entries.size())
+                        .put("bytes", bytes).put("files", files).toString(), null);
+                return;
+            }
+            String[] segments = rest.split("/");
+            String id = segments[0];
+            if (!UploadSessions.validId(id)) throw new UploadSessions.Failure(404, "Unknown upload. Start it again.");
+            if (segments.length == 1 && method.equals("PUT")) {
+                if (chunkedBody || declaredLength < 0) throw new UploadSessions.Failure(411, "A part needs a Content-Length.");
+                long offset;
+                try { offset = Long.parseLong(target.getQueryParameter("offset")); }
+                catch (Exception missing) { throw new UploadSessions.Failure(400, "A part needs ?offset=."); }
+                UploadSessions.Session session = uploads.require(id);
+                if (offset < 0 || offset + declaredLength > session.size) {
+                    throw new UploadSessions.Failure(416, "This part is outside the file.");
+                }
+                // The body is read straight into pooled buffers and written in place.
+                long done = uploads.write(id, offset, declaredLength, input, BufferPool.HEAP);
+                keepAlive();
+                respond(output, 200, json, new JSONObject().put("id", id).put("received", done)
+                        .put("size", session.size).put("complete", done >= session.size).toString(), null);
+                return;
+            }
+            if (segments.length == 1 && method.equals("GET")) {
+                keepAlive();
+                respond(output, 200, json, uploadState(uploads.require(id)).toString(), null);
+                return;
+            }
+            if (segments.length == 1 && method.equals("DELETE")) {
+                boolean removed = uploads.cancel(id);
+                keepAlive();
+                respond(output, removed ? 200 : 404, json, new JSONObject().put("ok", removed).toString(), null);
+                return;
+            }
+            if (segments.length == 2 && segments[1].equals("finish") && method.equals("POST")) {
+                UploadSessions.Finished finished = uploads.finish(id);
+                ChatStore.appendFile(context, finished.name, finished.inboxId, finished.size, "laptop");
+                keepAlive();
+                respond(output, 201, json, new JSONObject().put("ok", true).put("id", finished.inboxId)
+                        .put("name", finished.name).put("bytes", finished.size).toString(), null);
+                return;
+            }
+            respond(output, 405, json, "{\"error\":\"Unsupported upload request.\"}", null);
+        } catch (UploadSessions.Failure failure) {
+            // The request body may be unread: this response closes the connection.
+            respond(output, failure.status, json, new JSONObject().put("error", failure.getMessage()).toString(), null);
+        } catch (org.json.JSONException invalid) {
+            respond(output, 400, json, "{\"error\":\"Invalid upload request.\"}", null);
+        } catch (IOException failed) {
+            boolean full = new File(context.getFilesDir(), "uploads").getUsableSpace() < 16L * 1024 * 1024;
+            respond(output, full ? 507 : 400, json, new JSONObject().put("error", full
+                    ? "The phone ran out of free storage. Free space and try again."
+                    : "The upload did not finish. It resumes from where it stopped.").toString(), null);
+        }
+    }
+
+    /** Counts what a reader consumed, so the rest of a request body can be skipped. */
+    private static final class CountingInput extends java.io.FilterInputStream {
+        long count;
+        CountingInput(InputStream in) { super(in); }
+        @Override public int read() throws IOException { int v = super.read(); if (v >= 0) count++; return v; }
+        @Override public int read(byte[] b, int off, int len) throws IOException {
+            int n = super.read(b, off, len); if (n > 0) count += n; return n;
+        }
+        @Override public long skip(long n) throws IOException { long k = super.skip(n); count += k; return k; }
+    }
+
     private void streamEdgeFile(OutputStream out, String method, Map<String, String> headers, String id) throws Exception {
         JSONObject item = edgeFiles.find(id);
         if (item == null) { respond(out, 404, "text/plain", "The Edge tab is no longer sharing this file.", null); return; }
@@ -1041,6 +1277,8 @@ final class MediaHttpServer {
         long length = end - start + 1;
         String extra = "Accept-Ranges: bytes\r\nCache-Control: private, max-age=300\r\nETag: " + etag + "\r\n" + disposition;
         if (partial) extra += "Content-Range: bytes " + start + "-" + end + "/" + total + "\r\n";
+        keepAlive();
+        if (!method.equals("HEAD")) tuneForBulk(socket, length);
         writeHead(output, partial ? 206 : 200, item.mime, length, extra, null);
         output.flush();
         if (method.equals("HEAD") || length == 0) return;
@@ -1070,6 +1308,8 @@ final class MediaHttpServer {
         String extra = "Accept-Ranges: bytes\r\nCache-Control: private, max-age=3600\r\nETag: " + etag + "\r\n"
                 + DownloadHeaders.headerLine(downloadName, download);
         if (range.partial) extra += "Content-Range: bytes " + range.start + "-" + range.end + "/" + total + "\r\n";
+        keepAlive();
+        if (!method.equals("HEAD")) tuneForBulk(socket, length);
         writeHead(output, range.partial ? 206 : 200, mime, length, extra, null);
         output.flush();
         if (method.equals("HEAD") || length == 0) return;
@@ -1241,13 +1481,33 @@ final class MediaHttpServer {
         try (InputStream fallback = context.getContentResolver().openInputStream(item.uri)) {
             if (fallback == null) return;
             skipFully(fallback, start);
-            copyBytes(fallback, output, length);
+            long sent = copyBytes(fallback, output, length);
+            if (socket != null && length != Long.MAX_VALUE && sent < length) throw new IOException("The file got shorter while it was being sent.");
         }
     }
 
     // Headers are already flushed by the caller. Transfer directly from disk to the
     // socket when the platform supports it. ZIP and provider pipes use the stream path.
-    private static void sendFileRange(Socket socket, FileInputStream input, OutputStream output,
+    /** Big responses: a 4 MiB send buffer and Nagle on (full segments); control sockets keep NODELAY. */
+    private static void tuneForBulk(Socket socket, long length) {
+        if (socket == null || length < BULK_RESPONSE_BYTES) return;
+        try {
+            socket.setSendBufferSize(BULK_SOCKET_BUFFER);
+            socket.setTcpNoDelay(false);
+        } catch (IOException ignored) { }
+    }
+
+    private void sendFileRange(Socket socket, FileInputStream input, OutputStream output,
+                               long start, long length) throws IOException {
+        if (socket != null) bulkProgress.put(socket, System.nanoTime());
+        try {
+            sendFileRangeTracked(socket, input, output, start, length);
+        } finally {
+            if (socket != null) bulkProgress.remove(socket);
+        }
+    }
+
+    private void sendFileRangeTracked(Socket socket, FileInputStream input, OutputStream output,
                                       long start, long length) throws IOException {
         FileChannel file = input.getChannel();
         long position = start;
@@ -1263,15 +1523,29 @@ final class MediaHttpServer {
                 if (sent == 0) break;
                 position += sent;
                 remaining -= sent;
+                bulkProgress.put(socket, System.nanoTime());
             }
         }
         if (remaining > 0) {
             file.position(position);
-            copyBytes(input, output, remaining);
+            byte[] buffer = new byte[512 * 1024];
+            while (remaining > 0) {
+                int read = input.read(buffer, 0, (int) Math.min(buffer.length, remaining));
+                if (read < 0) {
+                    // No socket: a ZIP entry reading "up to" a bound; Long.MAX_VALUE: to the end.
+                    if (socket == null || length == Long.MAX_VALUE) break;
+                    // Never leave a kept-alive client waiting for bytes that will not come.
+                    throw new IOException("The file got shorter while it was being sent.");
+                }
+                output.write(buffer, 0, read);
+                remaining -= read;
+                if (socket != null) bulkProgress.put(socket, System.nanoTime());
+            }
+            output.flush();
         }
     }
 
-    private static void copyBytes(InputStream input, OutputStream output, long length) throws IOException {
+    private static long copyBytes(InputStream input, OutputStream output, long length) throws IOException {
         byte[] buffer = new byte[512 * 1024];
         long remaining = length;
         while (remaining > 0) {
@@ -1281,6 +1555,7 @@ final class MediaHttpServer {
             remaining -= read;
         }
         output.flush();
+        return length - remaining;
     }
 
     private static void skipFully(InputStream input, long count) throws IOException {
@@ -1351,6 +1626,8 @@ final class MediaHttpServer {
             case 403: return "Forbidden";
             case 404: return "Not Found";
             case 405: return "Method Not Allowed";
+            case 411: return "Length Required";
+            case 507: return "Insufficient Storage";
             case 409: return "Conflict";
             case 410: return "Gone";
             case 413: return "Payload Too Large";
@@ -1369,7 +1646,7 @@ final class MediaHttpServer {
                 "Content-Type: " + type + "\r\n" +
                 (length >= 0 ? "Content-Length: " + length + "\r\n" : "") +
                 ((extra != null && extra.toLowerCase(java.util.Locale.ROOT).contains("cache-control:")) ? "" : "Cache-Control: no-store\r\n") +
-                "Connection: close\r\n" +
+                (CONNECTION.get()[0] == 2 ? "Connection: keep-alive\r\nKeep-Alive: timeout=40\r\n" : "Connection: close\r\n") +
                 "X-Content-Type-Options: nosniff\r\n" +
                 (extra == null ? "" : extra) + "\r\n";
         output.write(headers.getBytes(StandardCharsets.UTF_8));

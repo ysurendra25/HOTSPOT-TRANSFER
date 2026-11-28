@@ -9,7 +9,6 @@ import android.os.ParcelFileDescriptor;
 import android.provider.OpenableColumns;
 import java.io.File;
 import java.io.FileNotFoundException;
-import java.io.IOException;
 
 /** A read-only URI grant for one completed file the phone owner chooses to open. */
 public final class ReceivedFileProvider extends ContentProvider {
@@ -19,13 +18,9 @@ public final class ReceivedFileProvider extends ContentProvider {
         String id = uri.getLastPathSegment();
         if (uri.getPathSegments().size() != 1 || id == null || !EdgeInbox.validId(id))
             throw new FileNotFoundException("Invalid file");
-        File inbox = new File(getContext().getFilesDir(), "received");
-        try {
-            File file = new File(inbox, id).getCanonicalFile();
-            if (!inbox.getCanonicalFile().equals(file.getParentFile()) || !file.isFile())
-                throw new FileNotFoundException("File is unavailable");
-            return file;
-        } catch (IOException invalid) { throw new FileNotFoundException("File is unavailable"); }
+        File file = EdgeInbox.resolve(new File(getContext().getFilesDir(), "received"), id);
+        if (file == null) throw new FileNotFoundException("File is unavailable");
+        return file;
     }
 
     @Override public String getType(Uri uri) {

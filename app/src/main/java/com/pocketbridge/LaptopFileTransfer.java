@@ -4,19 +4,11 @@ import android.content.Context;
 import android.os.storage.StorageManager;
 
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.util.UUID;
 
-/** Streams a selected laptop file into the phone's private received inbox. */
+/** Downloads a selected laptop file into the phone's private received inbox: parallel ranges, resumable. */
 final class LaptopFileTransfer {
-    private static final int CONNECT_TIMEOUT_MS = 8000;
-    private static final int READ_TIMEOUT_MS = 120000;
-    private static final int BUFFER_SIZE = 1024 * 1024;
-
     private LaptopFileTransfer() { }
 
     static File download(Context context, String url, File inbox, String requestedName, long listedSize) throws IOException {
@@ -27,56 +19,39 @@ final class LaptopFileTransfer {
                          DownloadPublisher.Progress progress) throws IOException {
         if (!inbox.exists() && !inbox.mkdirs()) throw new IOException("Could not create the phone's receive folder.");
         String name = safeName(requestedName);
-        File target = new File(inbox, System.currentTimeMillis() + "-" + name);
-        File partial = new File(inbox, target.getName() + ".part");
-        HttpURLConnection connection = null;
+        // A stable, hidden partial name: trying the same file again resumes it
+        // (RangedDownloader keeps a manifest beside it) instead of starting over.
+        File partial = partialFile(inbox, url, listedSize, name);
+        RangedDownloader downloader = new RangedDownloader(url, partial, listedSize,
+                progress == null ? null : progress::update);
+        if (listedSize > 0 && !partial.isFile()) prepareStorage(context, inbox, listedSize);
+        RangedDownloader.Result result;
         try {
-            connection = (HttpURLConnection) new URL(url).openConnection();
-            connection.setRequestMethod("GET");
-            connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
-            connection.setReadTimeout(READ_TIMEOUT_MS);
-            connection.setUseCaches(false);
-            connection.setRequestProperty("Accept-Encoding", "identity");
-            connection.setRequestProperty("Connection", "close");
-            int status = connection.getResponseCode();
-            if (status != HttpURLConnection.HTTP_OK) {
-                String detail = HelperClient.readText(connection.getErrorStream() == null
-                        ? new java.io.ByteArrayInputStream(new byte[0]) : connection.getErrorStream(), 4096);
-                throw new IOException(status == 404
-                        ? "The laptop file moved or was deleted. Reload laptop files and try again."
-                        : "The laptop could not send this file (HTTP " + status + "). " + detail.trim());
-            }
-            long contentLength = connection.getContentLengthLong();
-            if (listedSize >= 0 && contentLength >= 0 && listedSize != contentLength) {
-                throw new IOException("The file changed after it was listed. Reload laptop files before downloading.");
-            }
-            long expected = contentLength >= 0 ? contentLength : listedSize;
-            prepareStorage(context, inbox, expected);
-            long copied = 0;
-            try (InputStream input = connection.getInputStream();
-                 FileOutputStream output = new FileOutputStream(partial)) {
-                byte[] buffer = new byte[BUFFER_SIZE];
-                int read;
-                while ((read = input.read(buffer)) != -1) {
-                    output.write(buffer, 0, read);
-                    copied += read;
-                    if (progress != null) progress.update(copied, expected);
-                    if (expected >= 0 && copied > expected) throw new IOException("The laptop sent more bytes than the file listing reported.");
-                }
-                output.getFD().sync();
-            }
-            if (expected >= 0 && copied != expected) {
-                throw new IOException("Download ended early (" + copied + " of " + expected + " bytes). Try again.");
-            }
-            if (!partial.renameTo(target)) throw new IOException("The file downloaded but could not be saved in the phone inbox.");
-            return target;
+            result = downloader.download();
+        } catch (RangedDownloader.SizeChanged changed) {
+            downloader.discard();
+            throw new IOException(changed.getMessage(), changed);
         } catch (IOException failure) {
-            //noinspection ResultOfMethodCallIgnored
-            partial.delete();
+            // Keep the partial file and its manifest for the next attempt, unless the
+            // server cannot resume (no ranges), where RangedDownloader already removed it.
             throw failure;
-        } finally {
-            if (connection != null) connection.disconnect();
         }
+        File target = new File(inbox, System.currentTimeMillis() + "-" + name);
+        if (!result.file.renameTo(target)) {
+            downloader.discard();
+            throw new IOException("The file downloaded but could not be saved in the phone inbox.");
+        }
+        //noinspection ResultOfMethodCallIgnored
+        downloader.manifestFile().delete();
+        return target;
+    }
+
+    /** ".pb-<hash>-<name>.part" from the URL without its query (tokens change), the size and the name. */
+    static File partialFile(File inbox, String url, long listedSize, String name) {
+        String stable = url.replaceAll("[?#].*$", "") + "\n" + listedSize + "\n" + name;
+        String key = UploadSessions.sessionId(stable).substring(0, 16);
+        String shortName = name.length() > 80 ? name.substring(name.length() - 80) : name;
+        return new File(inbox, ".pb-" + key + "-" + shortName + ".part");
     }
 
     /** Ask Android to free or reserve cached storage before a large transfer. */
