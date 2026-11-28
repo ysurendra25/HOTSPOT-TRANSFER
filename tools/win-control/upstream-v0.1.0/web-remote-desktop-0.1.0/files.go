@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"mime"
 	"net/http"
 	"net/url"
@@ -268,6 +269,10 @@ func fileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// A strong validator: http.ServeFile honours If-Range against it, so a
+	// resumed or parallel ranged download never mixes two versions of a file.
+	w.Header().Set("ETag", fileETag(info))
+	w.Header().Set("Cache-Control", "private, max-age=300")
 	contentType := contentTypeForName(target)
 	w.Header().Set("Content-Type", contentType)
 	if strings.HasPrefix(contentType, "video/") || strings.HasPrefix(contentType, "audio/") || strings.HasPrefix(contentType, "image/") || contentType == "application/pdf" {
@@ -276,6 +281,12 @@ func fileHandler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+urlQueryEscape(filepath.Base(target)))
 	}
 	http.ServeFile(w, r, target)
+}
+
+// fileETag is a strong ETag from size and modification time (nanoseconds),
+// the same inputs the phone uses for its own files.
+func fileETag(info os.FileInfo) string {
+	return fmt.Sprintf("\"pb-%x-%x\"", info.Size(), info.ModTime().UnixNano())
 }
 
 func urlPathEscape(s string) string {

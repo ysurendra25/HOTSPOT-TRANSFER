@@ -139,6 +139,7 @@ func newMux() *http.ServeMux {
 	mux.Handle("/h264", protect(http.HandlerFunc(h264StreamHandler)))
 	mux.Handle("/files", protect(http.HandlerFunc(filesHandler)))
 	mux.Handle("/file/", protect(http.HandlerFunc(fileHandler)))
+	mux.Handle("/api/upload/", protect(http.HandlerFunc(uploadHandler)))
 	mux.Handle("/qr.png", protect(http.HandlerFunc(qrImageHandler)))
 	mux.Handle("/power", protect(http.HandlerFunc(powerHandler)))
 	mux.Handle("/radios", protect(http.HandlerFunc(radiosHandler)))
@@ -178,9 +179,9 @@ func cors(next http.Handler) http.Handler {
 		if origin := r.Header.Get("Origin"); origin != "" {
 			h := w.Header()
 			h.Set("Access-Control-Allow-Origin", "*")
-			h.Set("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS")
-			h.Set("Access-Control-Allow-Headers", "Content-Type, X-Token, Range")
-			h.Set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
+			h.Set("Access-Control-Allow-Methods", "GET, HEAD, POST, PUT, DELETE, OPTIONS")
+			h.Set("Access-Control-Allow-Headers", "Content-Type, X-Token, Authorization, Range, If-Range")
+			h.Set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges, ETag, Content-Disposition")
 			h.Set("Access-Control-Max-Age", "600")
 			// Chrome's Private Network Access preflight for LAN targets.
 			if r.Header.Get("Access-Control-Request-Private-Network") == "true" {
@@ -287,6 +288,12 @@ func auth(next http.Handler) http.Handler {
 		tok := r.URL.Query().Get("t")
 		if tok == "" {
 			tok = r.Header.Get("X-Token")
+		}
+		if tok == "" {
+			// The app's ChunkedUploader sends the token as a Bearer header.
+			if bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
+				tok = bearer
+			}
 		}
 		if tok == "" {
 			if c, err := r.Cookie("pcr"); err == nil {
