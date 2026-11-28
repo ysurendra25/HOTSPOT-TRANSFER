@@ -2750,8 +2750,7 @@ public final class MainActivity extends Activity {
                     });
                     return;
                 }
-                for (android.net.Uri uri : selected) savePhoneFileForLaptop(uri);
-                if (selected.size() > 1) Toast.makeText(this, "Queued " + selected.size() + " files in order.", Toast.LENGTH_SHORT).show();
+                chooseSendTarget(selected);
             }
             return;
         }
@@ -2798,6 +2797,232 @@ public final class MainActivity extends Activity {
         }
     }
 
+
+    // ---- Send to the laptop helper or another phone: resumable, parallel, cancellable ----
+
+    /** The saved Windows helper link when it parses as a LAN link, else null. */
+    private HelperLink savedHelperLinkOrNull() {
+        String raw = getSavedHelperLink();
+        if (raw == null || raw.trim().isEmpty()) return null;
+        try {
+            HelperLink link = HelperLink.parse(raw);
+            link.requireLanAddress();
+            return link;
+        } catch (IllegalArgumentException invalid) { return null; }
+    }
+
+    /**
+     * Where the picked files go: the laptop helper (resumable upload to its
+     * PocketBridge folder), the other phone (its inbox), or, as before, this
+     * phone's shared inbox for Edge to download. Without a helper link or a
+     * connected phone the old behaviour runs directly.
+     */
+    private void chooseSendTarget(List<android.net.Uri> selected) {
+        if (selected.isEmpty()) return;
+        HelperLink helper = savedHelperLinkOrNull();
+        PeerCameraLink.Target peer = PeerCameraLink.INSTANCE.target();
+        Runnable keepHere = () -> {
+            for (android.net.Uri uri : selected) savePhoneFileForLaptop(uri);
+            if (selected.size() > 1) Toast.makeText(this, "Queued " + selected.size() + " files in order.", Toast.LENGTH_SHORT).show();
+        };
+        if (helper == null && peer == null) { keepHere.run(); return; }
+        List<String> labels = new ArrayList<>();
+        List<Runnable> actions = new ArrayList<>();
+        if (helper != null) {
+            labels.add("Laptop (Windows helper at " + helper.host + ")");
+            actions.add(() -> sendToReceiver(selected, "http://" + helper.host + ":" + helper.port, null, helper.token, false, "the laptop"));
+        }
+        if (peer != null) {
+            labels.add("Other phone (" + addressFrom(peer.origin) + ")");
+            actions.add(() -> sendToReceiver(selected, peer.origin, peer.code, null, true, "the other phone"));
+        }
+        labels.add("Keep on this phone for Edge to download");
+        actions.add(keepHere);
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("Send " + (selected.size() == 1 ? "1 file" : selected.size() + " files") + " to")
+                .setItems(labels.toArray(new String[0]), (dialog, which) -> actions.get(which).run())
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    /** A picked document as an upload source: positional reads through its descriptor. */
+    private static final class UriSource implements ChunkedUploader.Source {
+        final android.content.ContentResolver resolver;
+        final android.net.Uri uri;
+        final String name;
+        final long size;
+        final long lastModified;
+        UriSource(android.content.ContentResolver resolver, android.net.Uri uri, String name, long size, long lastModified) {
+            this.resolver = resolver; this.uri = uri; this.name = name; this.size = size; this.lastModified = lastModified;
+        }
+        @Override public String name() { return name; }
+        @Override public long size() { return size; }
+        @Override public long lastModified() { return lastModified; }
+        @SuppressWarnings("resource")
+        @Override public java.nio.channels.FileChannel open() throws java.io.IOException {
+            android.os.ParcelFileDescriptor descriptor = resolver.openFileDescriptor(uri, "r");
+            if (descriptor == null) throw new java.io.IOException("Android could not open " + name + ".");
+            // Closing the channel closes the stream, which closes the descriptor.
+            return new android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).getChannel();
+        }
+    }
+
+    /**
+     * Reads name, size and lastModified (part of the resume key). A document
+     * that cannot be read by position (a pipe from a cloud provider, unknown
+     * size) is copied to the cache first and sent from there.
+     */
+    private ChunkedUploader.Source sourceFor(android.net.Uri uri) throws java.io.IOException {
+        android.content.ContentResolver resolver = getContentResolver();
+        String name = "shared-file";
+        long size = -1, modified = 0;
+        try (android.database.Cursor cursor = resolver.query(uri, null, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int nameColumn = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
+                int sizeColumn = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE);
+                int modifiedColumn = cursor.getColumnIndex(android.provider.DocumentsContract.Document.COLUMN_LAST_MODIFIED);
+                if (nameColumn >= 0 && cursor.getString(nameColumn) != null) name = cursor.getString(nameColumn);
+                if (sizeColumn >= 0 && !cursor.isNull(sizeColumn)) size = cursor.getLong(sizeColumn);
+                if (modifiedColumn >= 0 && !cursor.isNull(modifiedColumn)) modified = cursor.getLong(modifiedColumn);
+            }
+        }
+        long statSize = -1;
+        try (android.os.ParcelFileDescriptor descriptor = resolver.openFileDescriptor(uri, "r")) {
+            if (descriptor != null) statSize = descriptor.getStatSize();
+        }
+        if (statSize >= 0) return new UriSource(resolver, uri, name, statSize, modified);
+        // Not seekable: copy once, then send the copy (still resumable by its key).
+        java.io.File folder = new java.io.File(getCacheDir(), "outgoing");
+        if (!folder.isDirectory() && !folder.mkdirs()) throw new java.io.IOException("Could not prepare " + name + ".");
+        java.io.File copy = new java.io.File(folder, UploadSessions.sessionId(uri + "\n" + size + "\n" + modified) + ".bin");
+        if (!copy.isFile() || (size >= 0 && copy.length() != size)) {
+            try (java.io.InputStream input = resolver.openInputStream(uri);
+                 java.io.FileOutputStream output = new java.io.FileOutputStream(copy)) {
+                if (input == null) throw new java.io.IOException("Android could not open " + name + ".");
+                byte[] buffer = new byte[1024 * 1024];
+                for (int read; (read = input.read(buffer)) != -1; ) output.write(buffer, 0, read);
+            }
+        }
+        final String finalName = name;
+        final long finalModified = modified;
+        return new ChunkedUploader.Source() {
+            @Override public String name() { return finalName; }
+            @Override public long size() { return copy.length(); }
+            @Override public long lastModified() { return finalModified; }
+            @SuppressWarnings("resource")
+            @Override public java.nio.channels.FileChannel open() throws java.io.IOException { return new java.io.FileInputStream(copy).getChannel(); }
+        };
+    }
+
+    private android.app.AlertDialog sendDialog;
+
+    /**
+     * Sends the picked files with ChunkedUploader: probe first (an older
+     * receiver answers 404), small files in one PBB1 batch, big ones as parallel
+     * chunks; progress with MB/s, Cancel, and Retry that resumes.
+     */
+    private void sendToReceiver(List<android.net.Uri> uris, String base, String code, String token, boolean phonePeer, String label) {
+        ChunkedUploader uploader = new ChunkedUploader(base, code, token);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(12), dp(20), 0);
+        android.widget.ProgressBar bar = new android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        bar.setMax(1000);
+        TextView line = new TextView(this);
+        line.setText("Preparing…");
+        line.setTextColor(COLOR_INK);
+        box.addView(bar, matchWrap());
+        box.addView(line, matchWrap());
+        if (sendDialog != null) sendDialog.dismiss();
+        sendDialog = new android.app.AlertDialog.Builder(this)
+                .setTitle("Sending to " + label)
+                .setView(box)
+                .setCancelable(false)
+                .setNegativeButton("Cancel", (dialog, which) -> background.execute(uploader::stop))
+                .show();
+        android.app.AlertDialog shown = sendDialog;
+        long startedAt = System.nanoTime();
+        phoneUploadQueue.execute(() -> {
+            long[] lastUi = {0};
+            try {
+                boolean resumable = uploader.probe();
+                if (!resumable) {
+                    if (!phonePeer) {
+                        // An older helper has no upload route: keep the old way.
+                        runOnUiThread(() -> {
+                            shown.dismiss();
+                            Toast.makeText(this, "The laptop helper is an older version. The files are in this phone's shared inbox for Edge instead; update the helper for direct sending.", Toast.LENGTH_LONG).show();
+                            for (android.net.Uri uri : uris) savePhoneFileForLaptop(uri);
+                        });
+                        return;
+                    }
+                }
+                List<ChunkedUploader.Source> sources = new ArrayList<>();
+                long total = 0;
+                for (android.net.Uri uri : uris) { ChunkedUploader.Source source = sourceFor(uri); sources.add(source); total += source.size(); }
+                final long grand = total;
+                long[] finished = {0};
+                ChunkedUploader.Progress progress = (done, ignoredTotal) -> {
+                    long now = System.nanoTime();
+                    if (now - lastUi[0] < 250_000_000L && finished[0] + done < grand) return;
+                    lastUi[0] = now;
+                    long all = Math.min(grand, finished[0] + done);
+                    double seconds = Math.max(0.001, (now - startedAt) / 1e9);
+                    String text = String.format(java.util.Locale.ROOT, "%s of %s · %.1f MB/s",
+                            android.text.format.Formatter.formatShortFileSize(this, all),
+                            android.text.format.Formatter.formatShortFileSize(this, grand), all / 1e6 / seconds);
+                    runOnUiThread(() -> { bar.setProgress(grand == 0 ? 1000 : (int) (all * 1000 / grand)); line.setText(text); });
+                };
+                boolean legacy = !resumable;
+                // Small files together in one batch (current receivers only).
+                List<ChunkedUploader.Source> small = new ArrayList<>(), large = new ArrayList<>();
+                for (ChunkedUploader.Source source : sources) (source.size() <= TransferPlan.SMALL_FILE ? small : large).add(source);
+                if (!legacy && small.size() > 1) {
+                    List<String> paths = new ArrayList<>();
+                    Set<String> used = new HashSet<>();
+                    for (ChunkedUploader.Source source : small) {
+                        String name = UploadSessions.safeName(source.name()), candidate = name;
+                        for (int n = 2; !used.add(candidate.toLowerCase(java.util.Locale.ROOT)); n++) candidate = n + "-" + name;
+                        paths.add(candidate);
+                    }
+                    long smallBytes = 0;
+                    for (ChunkedUploader.Source source : small) smallBytes += source.size();
+                    final long batchBytes = smallBytes;
+                    uploader.uploadBatchSources(small, paths, (done, length) -> progress.update(Math.min(batchBytes, done), grand));
+                    finished[0] += smallBytes;
+                    small.clear();
+                }
+                large.addAll(0, small);
+                for (ChunkedUploader.Source source : large) {
+                    runOnUiThread(() -> shown.setTitle("Sending " + source.name()));
+                    if (legacy) uploader.uploadLegacy(source, progress);
+                    else uploader.send(source, "", progress, phonePeer);
+                    finished[0] += source.size();
+                }
+                double seconds = Math.max(0.001, (System.nanoTime() - startedAt) / 1e9);
+                String done = String.format(java.util.Locale.ROOT, "Sent %d file%s to %s (%.1f MB/s).",
+                        sources.size(), sources.size() == 1 ? "" : "s", label, grand / 1e6 / seconds);
+                ChatStore.append(this, done, "phone");
+                runOnUiThread(() -> { shown.dismiss(); Toast.makeText(this, done, Toast.LENGTH_LONG).show(); });
+            } catch (Exception error) {
+                boolean cancelled = uploader.stopped();
+                String message = cancelled ? "Cancelled. Send the same files again to continue where they stopped."
+                        : (error.getMessage() == null ? "The transfer stopped." : error.getMessage());
+                runOnUiThread(() -> {
+                    shown.dismiss();
+                    if (isFinishing()) return;
+                    android.app.AlertDialog.Builder builder = new android.app.AlertDialog.Builder(this)
+                            .setTitle(cancelled ? "Transfer cancelled" : "Transfer stopped")
+                            .setMessage(message)
+                            .setNegativeButton("Close", null);
+                    // Same files, same keys: the receiver reports what it has, so this resumes.
+                    builder.setPositiveButton(cancelled ? "Resume" : "Retry (resumes)",
+                            (dialog, which) -> sendToReceiver(uris, base, code, token, phonePeer, label));
+                    builder.show();
+                });
+            }
+        });
+    }
 
     private void savePhoneFileForLaptop(android.net.Uri uri) {
         phoneUploadQueue.execute(() -> {

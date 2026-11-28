@@ -42,14 +42,46 @@ final class ChunkedUploader {
 
     interface Progress { void update(long done, long total); }
 
+    /**
+     * What is sent: a name, a size, a lastModified (part of the resume key, so it
+     * must be stable for one file) and positional reads. A plain File or an
+     * Android content Uri (through a ParcelFileDescriptor) both fit.
+     */
+    interface Source {
+        String name();
+        long size();
+        long lastModified();
+        /** A channel for positional reads; the caller closes it. */
+        FileChannel open() throws IOException;
+    }
+
+    /** A local file as a Source. */
+    static Source fileSource(File file) {
+        return new Source() {
+            @Override public String name() { return file.getName(); }
+            @Override public long size() { return file.length(); }
+            @Override public long lastModified() { return file.lastModified(); }
+            @SuppressWarnings("resource")
+            @Override public FileChannel open() throws IOException { return new FileInputStream(file).getChannel(); }
+        };
+    }
+
+    /** The receiver has no /api/upload/start (404/405): an older PocketBridge. */
+    static final class LegacyPeer extends IOException {
+        LegacyPeer() { super("The receiver runs an older PocketBridge without resumable uploads."); }
+    }
+
     /** What the receiver reported for a finished file. */
     static final class Sent {
         final String id;
         final String name;
         final long bytes;
         final long bytesSent;
-        Sent(String id, String name, long bytes, long bytesSent) {
-            this.id = id; this.name = name; this.bytes = bytes; this.bytesSent = bytesSent;
+        /** True when it went through the legacy single POST (older receiver). */
+        final boolean legacy;
+        Sent(String id, String name, long bytes, long bytesSent) { this(id, name, bytes, bytesSent, false); }
+        Sent(String id, String name, long bytes, long bytesSent, boolean legacy) {
+            this.id = id; this.name = name; this.bytes = bytes; this.bytesSent = bytesSent; this.legacy = legacy;
         }
     }
 
@@ -62,6 +94,9 @@ final class ChunkedUploader {
     private final String authQuery;
     private final String bearer;
     private int maxConnections = TransferPlan.MAX_CONNECTIONS;
+    private volatile boolean stopped;
+    private final java.util.Set<HttpURLConnection> active =
+            java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
 
     /**
      * @param baseUrl "http://host:port" of the receiver
@@ -89,14 +124,38 @@ final class ChunkedUploader {
         return new URL(base + path + (q.isEmpty() ? "" : "?" + q));
     }
 
+    /**
+     * Stops every request of this uploader now (the Cancel button). What already
+     * arrived stays on the receiver, so sending the same file again resumes.
+     */
+    void stop() {
+        stopped = true;
+        for (HttpURLConnection connection : active) {
+            try { connection.disconnect(); } catch (RuntimeException ignored) { /* already closed */ }
+        }
+    }
+
+    boolean stopped() { return stopped; }
+
+    private void checkStopped() throws IOException {
+        if (stopped) throw new java.io.InterruptedIOException("Upload cancelled.");
+    }
+
     private HttpURLConnection open(String method, String path, String query) throws IOException {
+        checkStopped();
         HttpURLConnection connection = (HttpURLConnection) url(path, query).openConnection();
         connection.setRequestMethod(method);
         connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
         connection.setReadTimeout(READ_TIMEOUT_MS);
         connection.setUseCaches(false);
         if (bearer != null) connection.setRequestProperty("Authorization", bearer);
+        active.add(connection);
         return connection;
+    }
+
+    private void close(HttpURLConnection connection) {
+        active.remove(connection);
+        connection.disconnect();
     }
 
     private static String readAll(InputStream input) throws IOException {
@@ -135,17 +194,42 @@ final class ChunkedUploader {
             }
             return reply(connection);
         } finally {
-            connection.disconnect();
+            close(connection);
         }
+    }
+
+    /**
+     * True when the receiver speaks the resumable protocol. A start with an
+     * invalid size is refused with 400 by a current receiver and 404 (or 405)
+     * by an older one, which has no such route; nothing is created either way.
+     */
+    boolean probe() throws IOException {
+        try {
+            json("POST", "/api/upload/start", new JSONObject().put("name", "probe").put("size", -1));
+            return true;
+        } catch (HttpFailure refused) {
+            return refused.status != 404 && refused.status != 405;
+        } catch (JSONException impossible) { throw new IOException(impossible); }
     }
 
     /** Sends one file (optionally with its folder path) and returns where it landed. */
     Sent upload(File file, String relPath, Progress progress) throws IOException {
-        long size = file.length();
+        return upload(fileSource(file), relPath, progress);
+    }
+
+    /**
+     * Sends one source with the resumable protocol. Throws {@link LegacyPeer}
+     * when the receiver has no /api/upload/start (an older version).
+     */
+    Sent upload(Source source, String relPath, Progress progress) throws IOException {
+        long size = source.size();
         JSONObject start;
         try {
-            start = json("POST", "/api/upload/start", new JSONObject().put("name", file.getName()).put("size", size)
-                    .put("lastModified", file.lastModified()).put("relPath", relPath == null ? "" : relPath));
+            start = json("POST", "/api/upload/start", new JSONObject().put("name", source.name()).put("size", size)
+                    .put("lastModified", source.lastModified()).put("relPath", relPath == null ? "" : relPath));
+        } catch (HttpFailure refused) {
+            if (refused.status == 404 || refused.status == 405) throw new LegacyPeer();
+            throw refused;
         } catch (JSONException impossible) { throw new IOException(impossible); }
         String id = start.optString("id");
         if (!UploadSessions.validId(id)) throw new IOException("The receiver did not start the upload.");
@@ -154,10 +238,55 @@ final class ChunkedUploader {
         int connections = Math.max(1, Math.min(maxConnections, start.optInt("connections", 1)));
         long already = size - total(missing);
         AtomicLong sent = new AtomicLong();
-        if (!missing.isEmpty()) sendRanges(file, id, size, missing, chunk, connections, already, sent, progress);
-        else if (progress != null) progress.update(size, size);
+        if (progress != null) progress.update(already, size);
+        if (!missing.isEmpty()) sendRanges(source, id, size, missing, chunk, connections, already, sent, progress);
+        checkStopped();
         JSONObject done = json("POST", "/api/upload/" + id + "/finish", null);
         return new Sent(done.optString("id"), done.optString("name"), done.optLong("bytes", -1), sent.get());
+    }
+
+    /**
+     * Resumable upload, or for an older phone the legacy single POST
+     * (/api/upload?name=, the whole file in one body). An older laptop helper
+     * has no upload route at all, so it passes {@code legacyPost=false} and gets
+     * the {@link LegacyPeer} to fall back on its own.
+     */
+    Sent send(Source source, String relPath, Progress progress, boolean legacyPost) throws IOException {
+        try {
+            return upload(source, relPath, progress);
+        } catch (LegacyPeer old) {
+            if (!legacyPost) throw old;
+            return uploadLegacy(source, progress);
+        }
+    }
+
+    /** The pre-0.7.0.1 shape: POST /api/upload?name=... with the whole file. */
+    Sent uploadLegacy(Source source, Progress progress) throws IOException {
+        long size = source.size();
+        HttpURLConnection connection = open("POST", "/api/upload", "name=" + encode(source.name()));
+        try (FileChannel channel = source.open()) {
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Content-Type", "application/octet-stream");
+            connection.setFixedLengthStreamingMode(size);
+            ByteBuffer buffer = ByteBuffer.allocate(1024 * 1024);
+            long position = 0;
+            try (OutputStream output = connection.getOutputStream()) {
+                while (position < size) {
+                    checkStopped();
+                    buffer.clear();
+                    buffer.limit((int) Math.min(buffer.capacity(), size - position));
+                    int read = channel.read(buffer, position);
+                    if (read < 0) throw new IOException("The file got shorter while it was being sent.");
+                    output.write(buffer.array(), 0, read);
+                    position += read;
+                    if (progress != null) progress.update(position, size);
+                }
+            }
+            JSONObject done = reply(connection);
+            return new Sent("", done.optString("name", source.name()), done.optLong("bytes", size), size, true);
+        } finally {
+            close(connection);
+        }
     }
 
     /** The receiver's view of an upload (for a caller that wants to show resume state). */
@@ -181,19 +310,19 @@ final class ChunkedUploader {
         return list;
     }
 
-    private void sendRanges(File file, String id, long size, List<long[]> missing, long firstChunk, int connections,
+    private void sendRanges(Source source, String id, long size, List<long[]> missing, long firstChunk, int connections,
                             long already, AtomicLong sent, Progress progress) throws IOException {
         Deque<long[]> queue = new ArrayDeque<>();
         for (long[] range : missing) queue.addAll(TransferPlan.split(range[0], range[1], firstChunk));
         AtomicReference<IOException> failure = new AtomicReference<>();
         AtomicLong done = new AtomicLong(already);
         List<Thread> workers = new ArrayList<>();
-        try (FileInputStream input = new FileInputStream(file)) {
-            FileChannel channel = input.getChannel();
+        try (FileChannel channel = source.open()) {
             for (int i = 0; i < connections; i++) {
                 Thread worker = new Thread(() -> {
                     ByteBuffer buffer = ByteBuffer.allocate(1024 * 1024);
                     while (failure.get() == null) {
+                        if (stopped) { failure.compareAndSet(null, new java.io.InterruptedIOException("Upload cancelled.")); return; }
                         long[] range;
                         synchronized (queue) { range = queue.pollFirst(); }
                         if (range == null) return;
@@ -232,6 +361,7 @@ final class ChunkedUploader {
                 if (refused.status != 400 && refused.status < 500) throw refused;
                 last = refused;
             } catch (IOException error) {
+                if (stopped) throw new java.io.InterruptedIOException("Upload cancelled.");
                 last = error;
             }
             // Ask the receiver what actually arrived, then send only the rest of this range.
@@ -270,6 +400,7 @@ final class ChunkedUploader {
                     buffer.limit((int) Math.min(buffer.capacity(), end - position));
                     int read = channel.read(buffer, position);
                     if (read < 0) throw new IOException("The file got shorter while it was being sent.");
+                    checkStopped();
                     output.write(buffer.array(), 0, read);
                     position += read;
                     sent.addAndGet(read);
@@ -280,7 +411,7 @@ final class ChunkedUploader {
             long now = done.addAndGet(length);
             if (progress != null) progress.update(Math.min(size, now), size);
         } finally {
-            connection.disconnect();
+            close(connection);
         }
     }
 
@@ -301,7 +432,55 @@ final class ChunkedUploader {
             }
             return reply(connection);
         } finally {
-            connection.disconnect();
+            close(connection);
+        }
+    }
+
+    /**
+     * Many small sources in one PBB1 body (the app's multi-select). Throws
+     * {@link LegacyPeer} when the receiver has no batch route.
+     */
+    JSONObject uploadBatchSources(List<Source> sources, List<String> paths, Progress progress) throws IOException {
+        if (sources.size() != paths.size()) throw new IllegalArgumentException("one path per file");
+        long length = BatchStream.MAGIC.length + 2;
+        long[] sizes = new long[sources.size()];
+        for (int i = 0; i < sources.size(); i++) {
+            sizes[i] = sources.get(i).size();
+            length += 2 + paths.get(i).getBytes(StandardCharsets.UTF_8).length + 8 + sizes[i];
+        }
+        HttpURLConnection connection = open("POST", "/api/upload/batch", null);
+        try {
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Content-Type", "application/x-pocketbridge-batch");
+            connection.setFixedLengthStreamingMode(length);
+            ByteBuffer buffer = ByteBuffer.allocate(256 * 1024);
+            long written = 0;
+            try (OutputStream output = connection.getOutputStream()) {
+                output.write(BatchStream.MAGIC);
+                for (int i = 0; i < sources.size(); i++) {
+                    output.write(BatchStream.header(paths.get(i), sizes[i]));
+                    try (FileChannel channel = sources.get(i).open()) {
+                        long position = 0;
+                        while (position < sizes[i]) {
+                            checkStopped();
+                            buffer.clear();
+                            buffer.limit((int) Math.min(buffer.capacity(), sizes[i] - position));
+                            int read = channel.read(buffer, position);
+                            if (read < 0) throw new IOException(sources.get(i).name() + " got shorter while it was being sent.");
+                            output.write(buffer.array(), 0, read);
+                            position += read;
+                            written += read;
+                            if (progress != null) progress.update(written, length);
+                        }
+                    }
+                }
+                output.write(new byte[]{0, 0});
+            }
+            int status = connection.getResponseCode();
+            if (status == 404 || status == 405) throw new LegacyPeer();
+            return reply(connection);
+        } finally {
+            close(connection);
         }
     }
 }

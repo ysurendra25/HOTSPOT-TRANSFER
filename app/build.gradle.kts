@@ -102,6 +102,10 @@ tasks.withType<Test>().configureEach {
         "http.proxyHost", "http.proxyPort", "http.proxyUser", "http.proxyPassword",
         "javax.net.ssl.trustStore", "javax.net.ssl.trustStorePassword"
     ).forEach { key -> System.getProperty(key)?.let { systemProperty(key, it) } }
+    // Transfer benchmarks (TransferBenchmarkTest) run only when asked:
+    // ./gradlew :app:testDebugUnitTest -Ppocketbridge.bench=true --tests '*TransferBenchmarkTest*'
+    (project.findProperty("pocketbridge.bench") ?: System.getProperty("pocketbridge.bench"))
+        ?.let { systemProperty("pocketbridge.bench", it.toString()) }
     // Local, offline Robolectric runtime when the build machine has pre-fetched it.
     System.getenv("POCKETBRIDGE_ROBO_DIR")?.let {
         systemProperty("robolectric.offline", "true")

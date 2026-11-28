@@ -377,4 +377,69 @@ public class TransferServerTest {
         File stored = new File(new File(context.getFilesDir(), "received"), sent.id);
         assertArrayEquals(sha256(data), sha256(Files.readAllBytes(stored.toPath())));
     }
+
+    // ---------------------------------------------------------------- app sender (3b)
+
+    @Test public void probeFindsTheResumableRoutesWithoutCreatingAnything() throws Exception {
+        assertTrue(new ChunkedUploader(BASE, CODE, null).probe());
+        File[] sessions = new File(context.getFilesDir(), "uploads").listFiles();
+        assertTrue("the probe leaves no session behind", sessions == null || sessions.length == 0);
+    }
+
+    @Test public void anOlderReceiverGetsTheLegacyPostOrALegacyPeerError() throws Exception {
+        try (FakeHttpServer old = new FakeHttpServer()) {
+            String[] got = new String[1];
+            old.route("/api/upload", request -> {
+                got[0] = request.method + " " + request.rawQuery + " " + request.body;
+                return new FakeHttpServer.Reply(201, "{\"ok\":true,\"name\":\"a.txt\",\"bytes\":5}");
+            });
+            ChunkedUploader client = new ChunkedUploader("http://127.0.0.1:" + old.port(), CODE, null);
+            assertFalse("404 on /api/upload/start = older receiver", client.probe());
+            File file = temporary.newFile("a.txt");
+            Files.write(file.toPath(), "hello".getBytes(StandardCharsets.UTF_8));
+            ChunkedUploader.Sent sent = client.send(ChunkedUploader.fileSource(file), "", null, true);
+            assertTrue(sent.legacy);
+            assertEquals("a.txt", sent.name);
+            assertEquals("POST name=a.txt&code=" + CODE + " hello", got[0]);
+            try {
+                client.send(ChunkedUploader.fileSource(file), "", null, false);
+                throw new AssertionError("an older laptop helper must be reported, not posted to");
+            } catch (ChunkedUploader.LegacyPeer expected) { /* the app keeps the file for Edge instead */ }
+        }
+    }
+
+    @Test public void cancelStopsTheUploadAndSendingAgainResumes() throws Exception {
+        byte[] data = random(24 * 1024 * 1024, 21);
+        File source = temporary.newFile("cancel.bin");
+        Files.write(source.toPath(), data);
+        ChunkedUploader first = new ChunkedUploader(BASE, CODE, null).maxConnections(2);
+        try {
+            first.upload(ChunkedUploader.fileSource(source), "", (done, total) -> {
+                if (done >= 6 * 1024 * 1024) first.stop();
+            });
+            throw new AssertionError("the upload should have been cancelled");
+        } catch (java.io.InterruptedIOException cancelled) {
+            assertTrue(first.stopped());
+        }
+        // Give the server a moment to record the bytes of the dropped requests.
+        Thread.sleep(300);
+        ChunkedUploader.Sent sent = new ChunkedUploader(BASE, CODE, null).upload(source, "", null);
+        assertTrue("resumed: only part of the file is sent again (" + sent.bytesSent + ")", sent.bytesSent < data.length);
+        File stored = new File(new File(context.getFilesDir(), "received"), sent.id);
+        assertArrayEquals(sha256(data), sha256(Files.readAllBytes(stored.toPath())));
+    }
+
+    @Test public void sourceBatchKeepsEveryFile() throws Exception {
+        List<ChunkedUploader.Source> sources = new ArrayList<>();
+        List<String> paths = new ArrayList<>();
+        for (int i = 0; i < 30; i++) {
+            File file = temporary.newFile("s" + i + ".txt");
+            Files.write(file.toPath(), ("file " + i).getBytes(StandardCharsets.UTF_8));
+            sources.add(ChunkedUploader.fileSource(file));
+            paths.add("s" + i + ".txt");
+        }
+        JSONObject reply = new ChunkedUploader(BASE, CODE, null).uploadBatchSources(sources, paths, null);
+        assertEquals(30, reply.getInt("count"));
+        assertEquals("file 7", new String(Files.readAllBytes(new File(new File(context.getFilesDir(), "received"), "s7.txt").toPath()), StandardCharsets.UTF_8));
+    }
 }
