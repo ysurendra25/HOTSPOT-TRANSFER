@@ -39,6 +39,14 @@ def main():
     for match in re.finditer(r'path\.equals\("(/[^"]+)"\)', server):
         served.add(match.group(1))
     prefixes = [m.group(1) for m in re.finditer(r'path\.startsWith\("(/[^"]+)"\)', server)]
+    # Routes held in constants: static final String UPLOAD_ROUTE = "/api/upload/";
+    constants = dict(re.findall(r'static final String (\w+_ROUTE) = "(/[^"]+)"', server))
+    for name in re.findall(r'path\.startsWith\((\w+_ROUTE)\)', server):
+        if name in constants:
+            prefixes.append(constants[name])
+    for name in re.findall(r'path\.equals\((\w+_ROUTE)\)', server):
+        if name in constants:
+            served.add(constants[name])
 
     requested = set()
     for match in re.finditer(r"endpoint\('(/api/[^'?]+)", html):
@@ -92,6 +100,26 @@ def main():
         "library asks the phone for the chosen sort": "'&sort=' + encodeURIComponent(sortFor(currentKind))",
         "sort choice is kept per category": "'pb_sort_' + (kind || 'all')",
         "every library category tab": 'data-kind="documents"',
+        "chunked uploads start a resumable session": "endpoint('/api/upload/start')",
+        "chunks are PUT at an offset": "endpoint('/api/upload/' + start.id + '?offset=' + at)",
+        "a failed chunk asks the status route what arrived": "pbFirstMissing(state.missing, from, to)",
+        "uploads finish the session": "endpoint('/api/upload/' + start.id + '/finish')",
+        "older phones fall back to the legacy POST": "endpoint('/api/upload?name=' + encodeURIComponent(file.name))",
+        "a 404 on start means a legacy peer": "if (startResponse.status === 404 || startResponse.status === 405) throw new PbLegacyPeer('legacy');",
+        "2 to 4 parallel PUTs": "const PB_MIN_PUTS = 2, PB_MAX_PUTS = 4;",
+        "4 to 16 MiB chunks": "const PB_MIN_CHUNK = 4 * PB_MIB;",
+        "small files travel in PBB1 batches": "endpoint('/api/upload/batch')",
+        "PBB1 batch magic": "new TextEncoder().encode('PBB1')",
+        "batches only files up to 2 MiB": "const PB_SMALL_FILE = 2 * PB_MIB;",
+        "send folder picker": 'id="sendFolder" type="file" webkitdirectory',
+        "folders keep webkitRelativePath": "path:file.webkitRelativePath || file.name",
+        "big downloads use the save picker": "showSaveFilePicker({suggestedName:name})",
+        "positional writes into the saved file": "writable.write({type:'write', position:part[0], data})",
+        "ranged parts are checked with If-Range": "headers['If-Range'] = etag",
+        "ranged download from 32 MiB": "const PB_BIG_DOWNLOAD = 32 * PB_MIB;",
+        "download links carry their size": "data-size=\"' + (Number(file.size) || 0) + '\">Download</a>",
+        "transfer speed in MB/s": "' MB/s'",
+        "transfer progress and cancel": 'id="transferCancel"',
         "camera call prompt with accept and decline": 'id="cameraAccept"',
         "camera call live indicator": 'id="cameraLive"',
         "either side can end the camera call": 'id="cameraStop"',

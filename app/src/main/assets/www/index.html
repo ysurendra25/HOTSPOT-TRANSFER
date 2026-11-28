@@ -82,6 +82,9 @@
     padding:20px 22px;display:flex;justify-content:space-between;align-items:center;gap:18px;
     box-shadow:var(--shadow);margin-bottom:22px;flex-wrap:wrap}
   .transfer-card{background:var(--surface);color:var(--ink);border:1px solid var(--line)}
+  .transfer-progress{position:fixed;right:12px;bottom:12px;z-index:60;display:flex;flex-wrap:wrap;align-items:center;gap:8px;max-width:min(92vw,420px);padding:10px 12px;background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:12px;box-shadow:0 6px 24px rgba(0,0,0,.18)}
+  .transfer-progress[hidden]{display:none}
+  .transfer-progress progress{flex:1 1 160px;height:10px}
   .screen-copy{display:flex;align-items:center;gap:14px}
   .screen-icon{width:44px;height:44px;border-radius:14px;background:rgba(255,255,255,.13);display:grid;
     place-items:center;font-size:20px}
@@ -332,13 +335,20 @@
 
     <section class="screen-card transfer-card" id="transferSection">
       <div class="screen-copy"><div class="screen-icon" style="background:var(--teal-soft);color:var(--teal-dark)">⇧</div><div>
-        <div class="screen-title">Send a file to this phone</div>
-        <div class="screen-desc" style="color:var(--muted)">File size is limited only by the phone’s available storage.</div>
+        <div class="screen-title">Send files to this phone</div>
+        <div class="screen-desc" style="color:var(--muted)">Parallel and resumable: an interrupted file continues where it stopped. Size is limited only by the phone’s free storage.</div>
       </div></div>
-      <label class="btn btn-soft" for="sendFile">Choose file</label>
-      <input id="sendFile" type="file" hidden>
+      <label class="btn btn-soft" for="sendFile">Choose files</label>
+      <input id="sendFile" type="file" multiple hidden>
+      <label class="btn btn-outline" for="sendFolder">Send folder</label>
+      <input id="sendFolder" type="file" webkitdirectory multiple hidden>
       <span id="sendStatus" role="status" aria-live="polite"></span>
     </section>
+    <div id="transferProgress" class="transfer-progress" role="status" aria-live="polite" hidden>
+      <span id="transferText"></span>
+      <progress id="transferBar" max="1" value="0"></progress>
+      <button class="btn btn-outline" id="transferCancel" type="button">Cancel</button>
+    </div>
     <section class="screen-card" id="edgeFilesSection" hidden>
       <div class="screen-copy"><div><div class="screen-title">Share laptop files with the phone</div>
         <div class="screen-desc">Choose a folder once. Its files appear in the phone’s Library. Keep this tab open while browsing.</div></div></div>
@@ -778,7 +788,7 @@
           '<div class="name" title="' + safe(file.name) + '">' + safe(file.name) + '</div>' +
           '<div class="submeta">' + formatSize(file.size) + ' · ' + labelForKind(file.kind) + '</div>' +
           '<div class="actions">' + previewBtn +
-            '<a class="btn btn-outline" href="' + safe(downloadEndpoint(file.url)) + '" download="' + safe(file.name) + '">Download</a>' +
+            '<a class="btn btn-outline" href="' + safe(downloadEndpoint(file.url)) + '" download="' + safe(file.name) + '" data-size="' + (Number(file.size) || 0) + '">Download</a>' +
           '</div>' +
         '</div></article>';
     }).join('');
@@ -1037,6 +1047,7 @@
     const original = document.getElementById('origLink');
     original.href = downloadEndpoint(file.url);
     original.setAttribute('download', file.name);
+    original.dataset.size = String(Number(file.size) || 0);
 
     if (file.kind === 'video') {
       const ratioSelect = document.getElementById('aspectRatio');
@@ -1825,20 +1836,279 @@
       edgeState.textContent = error.message;
     }
   };
-  document.getElementById('sendFile').addEventListener('change', async event => {
-    const file = event.target.files && event.target.files[0];
-    if (!file) return;
-    const status = document.getElementById('sendStatus');
-    await sendFileToPhone(file, status);
-    event.target.value = '';
-  });
-  async function sendFileToPhone(file, status) {
-    status.textContent = 'Sending ' + file.name + '…';
+  /* Transfer engine: chunked, resumable, parallel uploads and ranged downloads.
+     Same protocol and limits as TransferPlan.java / ChunkedUploader.java and the
+     Go helper (docs/TRANSFER_ENGINE.md). Pure planning first, then network. */
+  const PB_MIB = 1048576;
+  const PB_MIN_CHUNK = 4 * PB_MIB;        // the page sends 4..16 MiB per PUT
+  const PB_MAX_CHUNK = 16 * PB_MIB;
+  const PB_MIN_PUTS = 2, PB_MAX_PUTS = 4; // parallel PUTs for one file
+  const PB_SMALL_FILE = 2 * PB_MIB;       // files up to this size travel in PBB1 batches
+  const PB_BATCH_BYTES = 64 * PB_MIB;     // one batch body stays below this
+  const PB_BATCH_FILES = 1000;
+  const PB_BIG_DOWNLOAD = 32 * PB_MIB;    // ranged parallel download from this size
+  const PB_RETRIES = 4;
+  function pbClamp(value, lo, hi) { return Math.max(lo, Math.min(hi, value)); }
+  // Parallel PUTs for a file of this size: one chunk needs one, then 2..4.
+  function pbUploadConnections(size) {
+    if (size <= PB_MIN_CHUNK) return 1;
+    if (size < 256 * PB_MIB) return PB_MIN_PUTS;
+    if (size < 1024 * PB_MIB) return 3;
+    return PB_MAX_PUTS;
+  }
+  // Chunk size: about 8 chunks per connection, 4..16 MiB, whole MiB.
+  function pbChunkSize(size, connections) {
+    const share = Math.floor(size / Math.max(1, connections) / 8);
+    return Math.floor(pbClamp(share, PB_MIN_CHUNK, PB_MAX_CHUNK) / PB_MIB) * PB_MIB;
+  }
+  // Splits the receiver's missing [start, end) ranges into PUT-sized pieces.
+  function pbPlanChunks(missing, chunk) {
+    if (!(chunk > 0)) throw new Error('chunk must be positive');
+    const plan = [];
+    for (const [start, end] of missing || []) {
+      for (let at = start; at < end; at += chunk) plan.push([at, Math.min(end, at + chunk)]);
+    }
+    return plan;
+  }
+  // First byte in [start, end) the receiver still misses; end when none.
+  function pbFirstMissing(missing, start, end) {
+    for (const [a, b] of missing || []) {
+      if (b <= start || a >= end) continue;
+      return Math.max(a, start);
+    }
+    return end;
+  }
+  // Small files go together in PBB1 batches; the rest are sent one by one, chunked.
+  // items: [{file, path}] where path keeps webkitRelativePath ("Trip/day 1/a.jpg").
+  function pbPlanSend(items) {
+    const batches = [], large = [];
+    let current = [], bytes = 0;
+    for (const item of items) {
+      const size = item.file.size;
+      if (size > PB_SMALL_FILE) { large.push(item); continue; }
+      const cost = size + item.path.length * 3 + 10;
+      if (current.length && (bytes + cost > PB_BATCH_BYTES || current.length >= PB_BATCH_FILES)) {
+        batches.push(current); current = []; bytes = 0;
+      }
+      current.push(item); bytes += cost;
+    }
+    if (current.length) batches.push(current);
+    return {batches, large};
+  }
+  // PBB1 entry header: u16 path length | UTF-8 path | u64 size (big-endian).
+  function pbBatchHeader(path, size) {
+    const name = new TextEncoder().encode(path);
+    if (!name.length || name.length > 4096) throw new Error('Bad path in batch: ' + path);
+    const head = new Uint8Array(2 + name.length + 8);
+    const view = new DataView(head.buffer);
+    view.setUint16(0, name.length);
+    head.set(name, 2);
+    view.setUint32(2 + name.length, Math.floor(size / 4294967296));
+    view.setUint32(6 + name.length, size >>> 0);
+    return head;
+  }
+  // The whole batch as a Blob: files are referenced, never read into memory.
+  function pbBatchBlob(items) {
+    const parts = [new TextEncoder().encode('PBB1')];
+    for (const item of items) parts.push(pbBatchHeader(item.path, item.file.size), item.file);
+    parts.push(new Uint8Array(2));
+    return new Blob(parts, {type:'application/x-pocketbridge-batch'});
+  }
+  // Rolling speed over the last few seconds, in MB/s (10^6 bytes).
+  function pbSpeedMeter(now = () => Date.now()) {
+    const samples = [];
+    return {
+      add(totalBytes) { const t = now(); samples.push([t, totalBytes]); while (samples.length > 2 && t - samples[0][0] > 4000) samples.shift(); },
+      mbps() {
+        if (samples.length < 2) return 0;
+        const [t0, b0] = samples[0], [t1, b1] = samples[samples.length - 1];
+        return t1 > t0 ? (b1 - b0) / 1e6 / ((t1 - t0) / 1000) : 0;
+      },
+    };
+  }
+  function pbProgressText(name, done, total, mbps) {
+    const pct = total > 0 ? Math.floor(done * 100 / total) : 100;
+    return name + ' · ' + pct + '%' + (mbps > 0 ? ' · ' + mbps.toFixed(1) + ' MB/s' : '');
+  }
+  class PbLegacyPeer extends Error {}
+  async function pbJson(response) {
+    let body = {};
+    try { body = await response.json(); } catch (_) { }
+    if (!response.ok) {
+      const error = new Error(body.error || ('HTTP ' + response.status));
+      error.status = response.status;
+      throw error;
+    }
+    return body;
+  }
+  const pbSleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+  // One file through start / parallel PUT / finish. A 404 on start means an
+  // older phone without the route: the caller falls back to the legacy POST.
+  async function pbUploadChunked(file, relPath, onProgress, signal) {
+    const startResponse = await fetch(endpoint('/api/upload/start'), {method:'POST', signal,
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name:file.name, size:file.size, lastModified:Number(file.lastModified) || 0, relPath:relPath || ''})});
+    if (startResponse.status === 404 || startResponse.status === 405) throw new PbLegacyPeer('legacy');
+    const start = await pbJson(startResponse);
+    const size = file.size;
+    const connections = pbUploadConnections(size);
+    const queue = pbPlanChunks(start.missing || [], pbChunkSize(size, connections));
+    let done = size - queue.reduce((sum, [a, b]) => sum + b - a, 0);
+    if (onProgress) onProgress(done, size);
+    const sendRange = async (from, to) => {
+      let at = from;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const response = await fetch(endpoint('/api/upload/' + start.id + '?offset=' + at), {method:'PUT', signal,
+            headers:{'Content-Type':'application/octet-stream'}, body:file.slice(at, to)});
+          await pbJson(response);
+          done += to - at;
+          if (onProgress) onProgress(done, size);
+          return;
+        } catch (error) {
+          if (signal && signal.aborted) throw error;
+          if (error.status && error.status !== 400 && error.status < 500 && error.status !== 408) throw error;
+          if (attempt >= PB_RETRIES) throw error;
+          await pbSleep(400 * (attempt + 1));
+          // Ask the receiver what actually arrived and send only the rest.
+          try {
+            const state = await pbJson(await fetch(endpoint('/api/upload/' + start.id), {cache:'no-store', signal}));
+            const next = pbFirstMissing(state.missing, from, to);
+            done += next - at;
+            at = next;
+            if (at >= to) return;
+          } catch (statusError) { if (signal && signal.aborted) throw statusError; }
+        }
+      }
+    };
+    const worker = async () => {
+      for (let range = queue.shift(); range; range = queue.shift()) await sendRange(range[0], range[1]);
+    };
+    await Promise.all(Array.from({length:Math.min(connections, Math.max(1, queue.length))}, worker));
+    return pbJson(await fetch(endpoint('/api/upload/' + start.id + '/finish'), {method:'POST', signal}));
+  }
+  async function pbUploadLegacy(file, signal) {
+    return pbJson(await fetch(endpoint('/api/upload?name=' + encodeURIComponent(file.name)),
+      {method:'POST', signal, headers:{'Content-Type':'application/octet-stream'}, body:file}));
+  }
+  async function pbUploadBatch(items, signal) {
+    const response = await fetch(endpoint('/api/upload/batch'), {method:'POST', signal,
+      headers:{'Content-Type':'application/x-pocketbridge-batch'}, body:pbBatchBlob(items)});
+    if (response.status === 404 || response.status === 405) throw new PbLegacyPeer('legacy');
+    return pbJson(response);
+  }
+  // Sends files (and folders) to the phone: small files in PBB1 batches, big
+  // ones chunked; an older phone gets one legacy POST per file.
+  async function pbSendAll(items, report, signal) {
+    const total = items.reduce((sum, item) => sum + item.file.size, 0);
+    const meter = pbSpeedMeter();
+    let finished = 0, sentFiles = 0, legacy = false;
+    const tick = (name, partDone) => {
+      meter.add(finished + partDone);
+      report(pbProgressText(name, finished + partDone, total, meter.mbps()), finished + partDone, total);
+    };
+    const one = async item => {
+      if (!legacy) {
+        try { await pbUploadChunked(item.file, item.path === item.file.name ? '' : item.path, d => tick(item.file.name, d), signal); }
+        catch (error) { if (!(error instanceof PbLegacyPeer)) throw error; legacy = true; }
+      }
+      if (legacy) { tick(item.file.name, 0); await pbUploadLegacy(item.file, signal); }
+      finished += item.file.size; sentFiles++;
+      tick(item.file.name, 0);
+    };
+    const plan = pbPlanSend(items);
+    for (const batch of plan.batches) {
+      const bytes = batch.reduce((sum, item) => sum + item.file.size, 0);
+      if (!legacy && batch.length > 1) {
+        tick(batch.length + ' small files', 0);
+        try { await pbUploadBatch(batch, signal); finished += bytes; sentFiles += batch.length; tick(batch.length + ' small files', 0); continue; }
+        catch (error) { if (!(error instanceof PbLegacyPeer)) throw error; legacy = true; }
+      }
+      for (const item of batch) await one(item);
+    }
+    for (const item of plan.large) await one(item);
+    return {files:sentFiles, bytes:total, legacy};
+  }
+  // Parallel ranged download into a file the user picks (showSaveFilePicker +
+  // positional createWritable). Returns false when the browser or the source
+  // cannot do it, so the caller keeps the plain ?download=1 link.
+  function pbCanSaveRanged(size) {
+    return size >= PB_BIG_DOWNLOAD && typeof showSaveFilePicker === 'function';
+  }
+  async function pbDownloadRanged(url, name, size, report, signal) {
+    const handle = await showSaveFilePicker({suggestedName:name});
+    const probe = await fetch(url, {headers:{Range:'bytes=0-0'}, cache:'no-store', signal});
+    const range = probe.headers.get('Content-Range') || '';
+    const etag = probe.headers.get('ETag') || '';
+    if (probe.body) probe.body.cancel().catch(() => {});
+    if (probe.status !== 206 || !range.includes('/')) return false;
+    const total = Number(range.slice(range.lastIndexOf('/') + 1)) || size;
+    const connections = pbUploadConnections(total);
+    const queue = pbPlanChunks([[0, total]], pbChunkSize(total, connections));
+    const writable = await handle.createWritable({keepExistingData:false});
+    const meter = pbSpeedMeter();
+    let done = 0;
     try {
-      const response = await fetch(endpoint('/api/upload?name=' + encodeURIComponent(file.name)), {method:'POST', headers:{'Content-Type':'application/octet-stream'}, body:file});
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || 'Transfer failed');
-      status.textContent = 'Sent: ' + result.name + ' · ';
+      await writable.truncate(total);
+      const worker = async () => {
+        for (let part = queue.shift(); part; part = queue.shift()) {
+          for (let attempt = 0; ; attempt++) {
+            try {
+              const headers = {Range:'bytes=' + part[0] + '-' + (part[1] - 1)};
+              if (etag) headers['If-Range'] = etag;
+              const response = await fetch(url, {headers, cache:'no-store', signal});
+              if (response.status !== 206) throw Object.assign(new Error('The file changed on the phone. Download it again.'), {fatal:true});
+              const data = await response.arrayBuffer();
+              if (data.byteLength !== part[1] - part[0]) throw new Error('short part');
+              await writable.write({type:'write', position:part[0], data});
+              done += data.byteLength; meter.add(done);
+              report(pbProgressText(name, done, total, meter.mbps()), done, total);
+              break;
+            } catch (error) {
+              if (error.fatal || (signal && signal.aborted) || attempt >= PB_RETRIES) throw error;
+              await pbSleep(400 * (attempt + 1));
+            }
+          }
+        }
+      };
+      await Promise.all(Array.from({length:connections}, worker));
+      await writable.close();
+      return true;
+    } catch (error) {
+      await writable.abort().catch(() => {});
+      throw error;
+    }
+  }
+  /* End transfer engine */
+  const transferBox = document.getElementById('transferProgress');
+  const transferBar = document.getElementById('transferBar');
+  const transferText = document.getElementById('transferText');
+  let transferAbort = null;
+  function showTransfer(text, done, total) {
+    transferBox.hidden = false;
+    transferText.textContent = text;
+    transferBar.max = Math.max(1, total);
+    transferBar.value = Math.min(done, total);
+  }
+  function beginTransfer() {
+    const controller = new AbortController();
+    transferAbort = controller;
+    return controller;
+  }
+  function endTransfer(controller) {
+    if (transferAbort === controller) transferAbort = null;
+    setTimeout(() => { if (!transferAbort) transferBox.hidden = true; }, 2500);
+  }
+  document.getElementById('transferCancel').addEventListener('click', () => { if (transferAbort) transferAbort.abort(); });
+  async function sendItemsToPhone(items, status) {
+    if (!items.length) return true;
+    if (transferAbort) { status.textContent = 'Another transfer is still running.'; return false; }
+    const controller = beginTransfer();
+    status.textContent = 'Sending ' + (items.length === 1 ? items[0].file.name : items.length + ' files') + '…';
+    try {
+      const result = await pbSendAll(items, (text, done, total) => { status.textContent = text; showTransfer(text, done, total); }, controller.signal);
+      status.textContent = 'Sent: ' + (items.length === 1 ? items[0].file.name : result.files + ' files') + ' · ';
+      showTransfer('Sent ' + (items.length === 1 ? items[0].file.name : result.files + ' files'), 1, 1);
       const chatLink = document.createElement('button');
       chatLink.type = 'button';
       chatLink.className = 'btn btn-outline';
@@ -1848,8 +2118,46 @@
       await refreshMessages();
       loadInbox();
       return true;
-    } catch (error) { status.textContent = error.message || 'Transfer failed. Check the connection.'; return false; }
+    } catch (error) {
+      const text = controller.signal.aborted ? 'Cancelled. Send the same file again to continue where it stopped.'
+        : (error.message || 'Transfer failed. Check the connection.') + ' Sending it again resumes.';
+      status.textContent = text;
+      showTransfer(text, 0, 1);
+      return false;
+    } finally { endTransfer(controller); }
   }
+  async function sendFileToPhone(file, status) { return sendItemsToPhone([{file, path:file.name}], status); }
+  document.getElementById('sendFile').addEventListener('change', async event => {
+    const picked = Array.from(event.target.files || []);
+    event.target.value = '';
+    await sendItemsToPhone(picked.map(file => ({file, path:file.name})), document.getElementById('sendStatus'));
+  });
+  // "Send folder" keeps each file's folder (webkitRelativePath) on the phone.
+  document.getElementById('sendFolder').addEventListener('change', async event => {
+    const picked = Array.from(event.target.files || []);
+    event.target.value = '';
+    await sendItemsToPhone(picked.map(file => ({file, path:file.webkitRelativePath || file.name})), document.getElementById('sendStatus'));
+  });
+  // Big downloads (>= 32 MiB) go through parallel ranged requests into a file
+  // the user picks, when Edge supports it; otherwise the ?download=1 link runs.
+  document.addEventListener('click', async event => {
+    const link = event.target && event.target.closest ? event.target.closest('a[download][data-size]') : null;
+    if (!link || event.defaultPrevented) return;
+    const size = Number(link.dataset.size) || 0;
+    if (!pbCanSaveRanged(size) || transferAbort) return;
+    event.preventDefault();
+    const name = link.getAttribute('download') || 'download';
+    const controller = beginTransfer();
+    try {
+      const saved = await pbDownloadRanged(link.href, name, size, showTransfer, controller.signal);
+      if (saved) showTransfer('Saved ' + name, 1, 1);
+      else startDownload(link.href, name);
+    } catch (error) {
+      if (controller.signal.aborted) showTransfer('Download cancelled.', 0, 1);
+      else if (error && error.name === 'AbortError') transferBox.hidden = true; // the save dialog was closed
+      else { showTransfer((error.message || 'Download failed') + ' Using a normal download instead.', 0, 1); startDownload(link.href, name); }
+    } finally { endTransfer(controller); }
+  }, true);
   async function loadInbox() {
     const grid = document.getElementById('inboxGrid');
     try {
@@ -1857,7 +2165,7 @@
       if (!response.ok) throw new Error('Could not load received files');
       const data = await response.json();
       document.getElementById('inboxCount').textContent = (data.files || []).length + ' items';
-      grid.innerHTML = data.files.length ? data.files.map(item => '<article class="card"><div class="meta"><div class="name" title="' + safe(item.name) + '">' + safe(item.name) + '</div><div class="submeta">' + formatSize(item.size) + '</div><a class="btn btn-soft" href="' + safe(downloadEndpoint('/api/inbox/' + encodeURIComponent(item.id))) + '" download="' + safe(item.name) + '">Download</a></div></article>').join('') : '<div class="empty"><strong>Inbox is empty</strong>Choose a file above to send it here.</div>';
+      grid.innerHTML = data.files.length ? data.files.map(item => '<article class="card"><div class="meta"><div class="name" title="' + safe(item.name) + '">' + safe(item.name) + '</div><div class="submeta">' + formatSize(item.size) + '</div><a class="btn btn-soft" href="' + safe(downloadEndpoint('/api/inbox/' + encodeURIComponent(item.id))) + '" download="' + safe(item.name) + '" data-size="' + (Number(item.size) || 0) + '">Download</a></div></article>').join('') : '<div class="empty"><strong>Inbox is empty</strong>Choose a file above to send it here.</div>';
     } catch (_) { grid.innerHTML = '<div class="empty">Could not load received files.</div>'; }
   }
   document.getElementById('refreshInbox').addEventListener('click', loadInbox);
@@ -1933,6 +2241,7 @@
               // A real link with the download attribute: Edge lists it in Downloads.
               button.href = downloadEndpoint(inboxPath);
               button.download = filename;
+              button.dataset.size = String(Number(attachment.size) || 0);
               button.textContent = 'Download';
             } else {
               button.type = 'button';
